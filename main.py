@@ -2,19 +2,26 @@ import sys
 import requests
 import json
 import os
+import re
+import posixpath
+import zipfile
 import threading
 import time
 import keyboard
 import ctypes
 import traceback
+import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
+from urllib.parse import unquote
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QAction, QDialog, QFormLayout, QLineEdit, QSlider,
-                             QSpinBox, QPushButton, QSystemTrayIcon, QStyle,
+                             QSpinBox, QDoubleSpinBox, QPushButton, QSystemTrayIcon, QStyle,
                              QColorDialog, QCheckBox, QHBoxLayout,
                              QFrame, QTextEdit, QShortcut, QListWidget,
                              QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog)
 from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject, QThread, QTimer, QEvent
-from PyQt5.QtGui import QFont, QColor, QCursor, QKeySequence, QPainter, QPen, QFontMetrics
+from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
+                         QFontMetrics, QTextCursor, QTextBlockFormat)
 
 # 启用高分屏支持
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -22,11 +29,50 @@ QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
 
 CONFIG_FILE = "config.json"
 
+# 行距（字号行高的百分比）、段间距（同样以行高为基准）、页边距（逻辑像素）
+LINE_SPACING_MIN = 80
+LINE_SPACING_MAX = 250
+LINE_SPACING_DEFAULT = 100
+PARA_SPACING_MIN = 0
+PARA_SPACING_MAX = 200
+PAGE_MARGIN_MIN = 0
+PAGE_MARGIN_MAX = 60
+# 首行缩进：1 字符 = 一个全角空格的宽度，所以换字号字体会跟着变
+FIRST_LINE_INDENT_MIN = 0.0
+FIRST_LINE_INDENT_MAX = 4.0
+FIRST_LINE_INDENT_DEFAULT = 2.0
+
+
+def clamp_config_int(config, key, default, low, high):
+    """配置里的整数：非法值回落默认，越界值夹到范围内。"""
+    try:
+        value = int(config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
+def clamp_config_number(config, key, default, low, high):
+    """配置里的数值（可为小数）：非法值回落默认，越界值夹到范围内。"""
+    try:
+        value = float(config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
 DEFAULT_CONFIG = {
     "ip": "http://192.168.1.10:1122",
     "opacity": 0.9,
     "font_size": 14,
     "font_family": "Microsoft YaHei",
+    "line_spacing": LINE_SPACING_DEFAULT,
+    "paragraph_spacing": 0,
+    "page_margin": 0,
+    "first_line_indent": FIRST_LINE_INDENT_DEFAULT,
+    "paragraph_indent": True,
+    # 标题永远不缩进；这个键只作为 txt 猜错标题时的手动开关，不在界面上
+    "heading_no_indent": True,
     "text_color": "rgba(200, 200, 200, 255)",
     "bg_color": "rgba(30, 30, 30, 200)",
     "boss_key": "Esc",
@@ -51,6 +97,337 @@ DARK_STYLESHEET = """
     QComboBox QAbstractItemView { background-color: #3c3c3c; color: white; selection-background-color: #505050; }
     QLabel { color: #aaa; }
 """
+
+
+# ================= EPUB 解析（仅用标准库） =================
+EPUB_SKIP_TAGS = {"script", "style", "head", "title", "meta", "link", "svg"}
+EPUB_HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+EPUB_BLOCK_TAGS = {
+    "p", "div", "br", "hr", "li", "tr", "td", "th", "section", "article",
+    "blockquote", "pre", "figure", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6",
+}
+
+
+class _EpubHtmlText(HTMLParser):
+    """把 XHTML 正文抽成纯文本行，记录每个 id/name 锚点落在哪一行，并标记标题行。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.lines = []
+        self.ids = {}
+        self.heading_lines = set()
+        self._buf = []
+        self._skip = 0
+        self._heading_depth = 0
+
+    def _flush(self):
+        line = re.sub(r"[ \t\f\v\u00a0\u3000]+", " ", "".join(self._buf)).strip()
+        self._buf = []
+        if line:
+            if self._heading_depth:
+                self.heading_lines.add(len(self.lines))
+            self.lines.append(line)
+
+    def _mark(self, attrs):
+        for key, value in attrs:
+            if key in ("id", "name") and value:
+                self.ids.setdefault(value, len(self.lines))
+
+    def handle_starttag(self, tag, attrs):
+        self._mark(attrs)
+        if tag in EPUB_SKIP_TAGS:
+            self._skip += 1
+        elif tag in EPUB_BLOCK_TAGS:
+            self._flush()
+            if tag in EPUB_HEADING_TAGS:
+                self._heading_depth += 1
+
+    def handle_startendtag(self, tag, attrs):
+        self._mark(attrs)
+        if tag in EPUB_BLOCK_TAGS:
+            self._flush()
+
+    def handle_endtag(self, tag):
+        if tag in EPUB_SKIP_TAGS:
+            if self._skip:
+                self._skip -= 1
+        elif tag in EPUB_BLOCK_TAGS:
+            self._flush()
+            if tag in EPUB_HEADING_TAGS and self._heading_depth:
+                self._heading_depth -= 1
+
+    def handle_data(self, data):
+        if self._skip:
+            return
+        for i, segment in enumerate(data.split("\n")):
+            if i:
+                self._flush()
+            if segment:
+                self._buf.append(segment)
+
+    def finish(self):
+        """返回 (纯文本, {锚点: 字符偏移}, {标题行的字符偏移})。"""
+        self._flush()
+        text = "\n".join(self.lines)
+        offsets = [0]
+        for line in self.lines:
+            offsets.append(offsets[-1] + len(line) + 1)
+        anchors = {key: offsets[min(idx, len(self.lines))]
+                   for key, idx in self.ids.items()}
+        headings = {offsets[idx] for idx in self.heading_lines}
+        return text, anchors, headings
+
+
+def _epub_local_name(tag):
+    return tag.rsplit("}", 1)[-1]
+
+
+def _epub_html_to_text(raw_bytes):
+    for enc in ("utf-8", "gb18030"):
+        try:
+            source = raw_bytes.decode(enc)
+            break
+        except UnicodeDecodeError:
+            source = None
+    if source is None:
+        return "", {}, set()
+    parser = _EpubHtmlText()
+    try:
+        parser.feed(source)
+        parser.close()
+    except Exception:
+        pass
+    return parser.finish()
+
+
+EPUB_CHAPTER_TAIL = re.compile(
+    r"^(?P<lead>.+?)\s*(?:CHAPTER\s*(?P<num>[IVXLCDM0-9]+)\s*\.?"
+    r"|第\s*(?P<cn>[0-9一二三四五六七八九十百零]+)\s*[章节回])\s*$",
+    re.IGNORECASE)
+
+
+def _epub_clean_label(label):
+    """有些 epub（如 Gutenberg 版）把插画说明和图注混进目录标题，这里只取末尾的章节号。"""
+    label = " ".join((label or "").split())
+    match = EPUB_CHAPTER_TAIL.match(label)
+    if not match:
+        return label
+    if match.group("num"):
+        return f"CHAPTER {match.group('num').upper()}."
+    return f"第 {match.group('cn')} 章"
+
+
+def _epub_toc_entries(zf, opf_path, manifest):
+    """按文档顺序返回 [(zip 内路径, 锚点, 标题)]：优先 epub3 的 nav，其次 epub2 的 ncx。"""
+    entries = []
+    opf_dir = posixpath.dirname(opf_path)
+    nav_href = None
+    ncx_href = None
+    for item in manifest.values():
+        if "nav" in (item.get("properties") or ""):
+            nav_href = item["href"]
+        if item.get("media-type") == "application/x-dtbncx+xml":
+            ncx_href = item["href"]
+
+    def resolve(href):
+        base, _, fragment = (href or "").partition("#")
+        target = posixpath.normpath(posixpath.join(opf_dir, unquote(base)))
+        return target, fragment
+
+    def read_xml(href):
+        return ET.fromstring(zf.read(posixpath.normpath(posixpath.join(opf_dir, unquote(href)))))
+
+    try:
+        if nav_href:
+            root = read_xml(nav_href)
+            for nav in root.iter():
+                if _epub_local_name(nav.tag) != "nav":
+                    continue
+                nav_type = (nav.get("{http://www.idpf.org/2007/ops}type")
+                            or nav.get("{http://www.w3.org/1999/xhtml}type")
+                            or nav.get("type") or "")
+                if nav_type != "toc":
+                    continue
+                for a in nav.iter():
+                    if _epub_local_name(a.tag) != "a":
+                        continue
+                    target, fragment = resolve(a.get("href"))
+                    entries.append((target, fragment, "".join(a.itertext())))
+        elif ncx_href:
+            root = read_xml(ncx_href)
+            for point in root.iter():
+                if _epub_local_name(point.tag) != "navPoint":
+                    continue
+                href, label = None, ""
+                for child in point.iter():
+                    name = _epub_local_name(child.tag)
+                    if name == "content" and child.get("src"):
+                        href = child.get("src")
+                    elif name == "text" and not label:
+                        label = "".join(child.itertext())
+                target, fragment = resolve(href)
+                entries.append((target, fragment, label))
+    except Exception:
+        pass
+    return [(t, f, l) for t, f, l in entries if l and l.strip()]
+
+
+def _load_epub(path):
+    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移), ...], {标题行偏移})。"""
+    with zipfile.ZipFile(path) as zf:
+        opf_path = None
+        try:
+            container = ET.fromstring(zf.read("META-INF/container.xml"))
+            for node in container.iter():
+                if _epub_local_name(node.tag) == "rootfile" and node.get("full-path"):
+                    opf_path = node.get("full-path")
+                    break
+        except Exception:
+            pass
+        if not opf_path:
+            for name in zf.namelist():
+                if name.lower().endswith(".opf"):
+                    opf_path = name
+                    break
+        if not opf_path:
+            raise ValueError("找不到 OPF，不是有效的 epub")
+
+        opf_dir = posixpath.dirname(opf_path)
+        opf = ET.fromstring(zf.read(opf_path))
+
+        manifest = {}
+        spine_ids = []
+        for node in opf.iter():
+            name = _epub_local_name(node.tag)
+            if name == "item":
+                manifest[node.get("id")] = {
+                    "href": node.get("href") or "",
+                    "media-type": (node.get("media-type") or "").lower(),
+                    "properties": node.get("properties") or "",
+                }
+            elif name == "itemref":
+                if (node.get("linear") or "yes").lower() != "no":
+                    spine_ids.append(node.get("idref"))
+
+        toc = _epub_toc_entries(zf, opf_path, manifest)
+        names = set(zf.namelist())
+
+        docs = []  # [(zip 内路径, 该文件纯文本, {锚点: 字符偏移}, {标题行偏移})]
+        for idref in spine_ids:
+            item = manifest.get(idref)
+            if not item or "html" not in item["media-type"]:
+                continue
+            target = posixpath.normpath(posixpath.join(opf_dir, unquote(item["href"].split("#")[0])))
+            if target not in names:
+                continue
+            body, anchors, headings = _epub_html_to_text(zf.read(target))
+            if body:
+                docs.append((target, body, anchors, headings))
+
+        if not docs:
+            raise ValueError("epub 里没有可读文字（可能是纯图片书）")
+
+        has_anchors = any(fragment for _, fragment, _ in toc)
+
+        if toc and has_anchors:
+            # 目录指向文件内的锚点：正文原样拼接，不额外插标题行，章节偏移由锚点换算
+            doc_anchors = {target: anchors for target, _body, anchors, _heads in docs}
+            blocks = []
+            file_start = {}
+            file_headings = {}
+            cursor = 0
+            for target, body, _anchors, heads in docs:
+                file_start[target] = cursor
+                file_headings[target] = heads
+                piece = body.strip("\n") + "\n\n"
+                blocks.append(piece)
+                cursor += len(piece)
+
+            chapters = []
+            used_offsets = set()
+            for target, fragment, label in toc:
+                if target not in file_start:
+                    continue
+                offset = file_start[target] + doc_anchors.get(target, {}).get(fragment, 0)
+                if offset in used_offsets:
+                    continue
+                used_offsets.add(offset)
+                chapters.append((_epub_clean_label(label), offset))
+            chapters.sort(key=lambda item: item[1])
+
+            # 标题行 = 原文里的 h1~h6，加上目录标题所在的那一行
+            headings = {file_start[target] + offset
+                        for target, offsets in file_headings.items()
+                        for offset in offsets}
+            headings.update(offset for _label, offset in chapters)
+            return "".join(blocks), chapters, headings
+
+        # 目录缺失或只到文件级：一个文件一章，需要时补一行标题
+        titles = {}
+        for target, _fragment, label in toc:
+            titles.setdefault(target, _epub_clean_label(label))
+
+        blocks = []
+        chapters = []
+        headings = set()
+        cursor = 0
+        for order, (target, body, _anchors, doc_headings) in enumerate(docs):
+            first_line = body.split("\n", 1)[0].strip()
+            title = titles.get(target, "")
+            if not title:
+                title = first_line if 0 < len(first_line) <= 60 else f"第 {order + 1} 节"
+
+            prepended = first_line != title
+            chunk = f"{title}\n\n{body}" if prepended else body
+            piece = chunk.strip("\n") + "\n\n"
+
+            chapters.append((title, cursor))
+            headings.add(cursor)  # 标题行本身
+            shift = len(title) + 2 if prepended else 0
+            headings.update(cursor + shift + offset for offset in doc_headings)
+            blocks.append(piece)
+            cursor += len(piece)
+
+        return "".join(blocks), chapters, headings
+
+
+def load_epub_with_headings(path):
+    """解析 epub，额外返回标题行偏移（首行缩进要用它来跳过标题）。"""
+    return _load_epub(path)
+
+
+def load_epub_text(path):
+    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移), ...])。"""
+    text, chapters, _headings = _load_epub(path)
+    return text, chapters
+
+
+# ================= txt 的标题识别（没有结构信息，只能按字面规则猜） =================
+TXT_HEADING_PATTERN = re.compile(
+    r"^(?:"
+    r"第\s*[0-9０-９一二三四五六七八九十百千零两]+\s*[章节節回卷篇部集]"
+    r"|(?:CHAPTER|PART|BOOK)\s+[IVXLCDM0-9]+\.?"
+    r"|(?:序|序言|自序|序章|前言|引子|楔子|导读|后记|後記|尾声|尾聲|附录|附錄|目录|目錄"
+    r"|版权|版權|献词|獻詞|致谢|致謝|译后记|譯後記|作者简介|作者簡介)(?:\s|$|[:：])"
+    r")",
+    re.IGNORECASE)
+TXT_HEADING_MAX_LEN = 40
+TXT_HEADING_TAIL = "。！？；：，、…—.!?;:,"
+
+
+def detect_txt_headings(text):
+    """猜哪些行是标题：以"第X章/序/前言"这类词打头，行要短，且不以句末标点收尾。
+    返回行的起始偏移集合（行首带空格时按行首算，和文本块的位置对齐）。"""
+    offsets = set()
+    position = 0
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if (stripped and len(stripped) <= TXT_HEADING_MAX_LEN
+                and not stripped.endswith(tuple(TXT_HEADING_TAIL))
+                and TXT_HEADING_PATTERN.match(stripped)):
+            offsets.add(position)
+        position += len(line) + 1
+    return offsets
 
 
 # ================= Windows 防截屏 API 封装 =================
@@ -268,6 +645,45 @@ class TocSelector(QDialog):
         super().closeEvent(event)
 
 
+# ================= 独立窗口：本地书籍目录（epub） =================
+class LocalTocSelector(QDialog):
+    def __init__(self, chapters, current_offset, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"📑 目录 (共 {len(chapters)} 章)")
+        self.resize(420, 600)
+        self.setStyleSheet(DARK_STYLESHEET)
+        self.chapters = chapters
+        self.selected_offset = None
+
+        layout = QVBoxLayout()
+        self.list_widget = QListWidget()
+        self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
+        layout.addWidget(self.list_widget)
+
+        hint = QLabel("双击章节跳转（当前章节已选中）")
+        hint.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint)
+        self.setLayout(layout)
+
+        for title, offset in chapters:
+            item = QListWidgetItem(str(title))
+            item.setData(Qt.UserRole, offset)
+            self.list_widget.addItem(item)
+
+        current = 0
+        for i, (_, offset) in enumerate(chapters):
+            if offset <= current_offset:
+                current = i
+        item = self.list_widget.item(current)
+        if item:
+            item.setSelected(True)
+            self.list_widget.scrollToItem(item, QListWidget.PositionAtCenter)
+
+    def on_item_double_clicked(self, item):
+        self.selected_offset = item.data(Qt.UserRole)
+        self.accept()
+
+
 # ================= 设置窗口 =================
 class SettingsDialog(QDialog):
     def __init__(self, config, parent=None):
@@ -316,6 +732,57 @@ class SettingsDialog(QDialog):
         self.font_combo.setCurrentFont(QFont(current_font_family))
         layout.addRow("字体样式:", self.font_combo)
 
+        self.spacing_spin = QSpinBox()
+        self.spacing_spin.setRange(LINE_SPACING_MIN, LINE_SPACING_MAX)
+        self.spacing_spin.setSingleStep(5)
+        self.spacing_spin.setSuffix(" %")
+        self.spacing_spin.setValue(clamp_config_int(self.config, "line_spacing", LINE_SPACING_DEFAULT,
+                                                    LINE_SPACING_MIN, LINE_SPACING_MAX))
+        self.spacing_spin.setToolTip("行距 = 行高的百分比。100% 为原始行距，150% 约等于一行字配半行空白。")
+        self.spacing_spin.valueChanged.connect(self.on_typography_change)
+        layout.addRow("行距:", self.spacing_spin)
+
+        self.para_spin = QSpinBox()
+        self.para_spin.setRange(PARA_SPACING_MIN, PARA_SPACING_MAX)
+        self.para_spin.setSingleStep(10)
+        self.para_spin.setSuffix(" %")
+        self.para_spin.setValue(clamp_config_int(self.config, "paragraph_spacing", 0,
+                                                 PARA_SPACING_MIN, PARA_SPACING_MAX))
+        self.para_spin.setToolTip("段与段之间的额外空白，同样以行高为基准，0% 为原始效果。\n"
+                                  "注意：若 txt 里每行都是硬换行，段间距会看起来像额外的行距。")
+        self.para_spin.valueChanged.connect(self.on_typography_change)
+        layout.addRow("段间距:", self.para_spin)
+
+        self.margin_spin = QSpinBox()
+        self.margin_spin.setRange(PAGE_MARGIN_MIN, PAGE_MARGIN_MAX)
+        self.margin_spin.setSingleStep(2)
+        self.margin_spin.setSuffix(" px")
+        self.margin_spin.setValue(clamp_config_int(self.config, "page_margin", 0,
+                                                   PAGE_MARGIN_MIN, PAGE_MARGIN_MAX))
+        self.margin_spin.setToolTip("文字四周的留白（上下左右相同）。窗口很窄时别设太大，会挤掉每行字数。")
+        self.margin_spin.valueChanged.connect(self.on_typography_change)
+        layout.addRow("页边距:", self.margin_spin)
+
+        self.para_indent_check = QCheckBox("段落缩进")
+        self.para_indent_check.setChecked(bool(self.config.get("paragraph_indent", True)))
+        self.para_indent_check.setToolTip("给每个自然段的第一行加缩进；标题（章节名、序、前言这类行）自动不缩进。\n"
+                                          "不想要缩进也可以把下面的「首行缩进」调到 0。")
+        self.para_indent_check.toggled.connect(self.on_typography_change)
+        layout.addRow(self.para_indent_check)
+
+        self.indent_spin = QDoubleSpinBox()
+        self.indent_spin.setRange(FIRST_LINE_INDENT_MIN, FIRST_LINE_INDENT_MAX)
+        self.indent_spin.setSingleStep(0.5)
+        self.indent_spin.setDecimals(1)
+        self.indent_spin.setSuffix(" 字")
+        self.indent_spin.setValue(clamp_config_number(self.config, "first_line_indent",
+                                                      FIRST_LINE_INDENT_DEFAULT,
+                                                      FIRST_LINE_INDENT_MIN, FIRST_LINE_INDENT_MAX))
+        self.indent_spin.setToolTip("缩进多少，1 字符 = 一个全角空格的宽度（随字号字体变化）。\n"
+                                    "0 就是不缩进。")
+        self.indent_spin.valueChanged.connect(self.on_typography_change)
+        layout.addRow("首行缩进:", self.indent_spin)
+
         self.btn_text_color = QPushButton("文字颜色 (手动)")
         self.btn_text_color.setStyleSheet(f"background-color: {self.temp_text_color};")
         self.btn_text_color.clicked.connect(self.pick_text_color)
@@ -355,6 +822,16 @@ class SettingsDialog(QDialog):
         if self.main_window:
             self.main_window.apply_style()
 
+    def on_typography_change(self, _value=None):
+        """行距/段间距/页边距/首行缩进都是拖动即预览。"""
+        self.config["line_spacing"] = self.spacing_spin.value()
+        self.config["paragraph_spacing"] = self.para_spin.value()
+        self.config["page_margin"] = self.margin_spin.value()
+        self.config["first_line_indent"] = self.indent_spin.value()
+        self.config["paragraph_indent"] = self.para_indent_check.isChecked()
+        if self.main_window:
+            self.main_window.apply_style()
+
     def pick_text_color(self):
         color = QColorDialog.getColor()
         if color.isValid():
@@ -371,6 +848,11 @@ class SettingsDialog(QDialog):
         self.config["ip"] = self.ip_input.text().strip()
         self.config["font_size"] = self.font_spin.value()
         self.config["font_family"] = self.font_combo.currentFont().family()
+        self.config["line_spacing"] = self.spacing_spin.value()
+        self.config["paragraph_spacing"] = self.para_spin.value()
+        self.config["page_margin"] = self.margin_spin.value()
+        self.config["first_line_indent"] = self.indent_spin.value()
+        self.config["paragraph_indent"] = self.para_indent_check.isChecked()
         self.config["boss_key"] = self.boss_key_input.text().strip()
         self.config["text_color"] = self.temp_text_color
         self.config["bg_color"] = self.temp_bg_color
@@ -411,6 +893,9 @@ class StealthReader(QWidget):
         self.local_start_index = 0  # 当前页起始字符在全文中的索引 (锚点)
         self.local_page_history = []  # 记录翻页历史，用于"上一页"
         self.local_file_path = ""  # 当前文件路径
+        self.local_chapters = []  # epub 章节目录 [(标题, 起始字符偏移)]，txt 时为空
+        self.local_heading_offsets = set()  # 标题行的字符偏移，首行缩进要跳过它们
+        self.displaying_local_text = False  # 当前显示的文本是否来自本地书（防止标题表串到网络章节上）
 
         # --- 界面控制 ---
         self.single_line_height = 20
@@ -462,9 +947,9 @@ class StealthReader(QWidget):
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "选择文本文件",
+            "选择书籍文件",
             "",
-            "Text Files (*.txt);;All Files (*)",
+            "书籍 (*.epub *.txt);;EPUB (*.epub);;纯文本 (*.txt);;All Files (*)",
             options=options
         )
 
@@ -490,17 +975,35 @@ class StealthReader(QWidget):
     def load_local_file(self, file_path, target_pos=0):
         try:
             content = ""
-            # 尝试多种编码读取
-            try:
-                with open(file_path, 'r', encoding='utf-8-sig') as f:
-                    content = f.read()
-            except UnicodeDecodeError:
+            chapters = []
+            headings = set()
+            if file_path.lower().endswith(".epub"):
+                # epub：转成纯文本 + 章节目录 + 标题行（标题用来跳过首行缩进）
                 try:
-                    with open(file_path, 'r', encoding='gb18030') as f:
-                        content = f.read()
-                except Exception as e:
-                    self.update_text_signal.emit(f"编码无法识别，请转为UTF-8或GBK", False)
+                    content, chapters, headings = load_epub_with_headings(file_path)
+                except zipfile.BadZipFile:
+                    self.update_text_signal.emit("EPUB 打不开（文件损坏或不是 epub）", False)
                     return
+                except Exception as e:
+                    self.update_text_signal.emit(f"EPUB 解析失败: {e}", False)
+                    return
+                if not content:
+                    self.update_text_signal.emit("EPUB 没有可读文字", False)
+                    return
+            else:
+                # 尝试多种编码读取
+                try:
+                    with open(file_path, 'r', encoding='utf-8-sig') as f:
+                        content = f.read()
+                except UnicodeDecodeError:
+                    try:
+                        with open(file_path, 'r', encoding='gb18030') as f:
+                            content = f.read()
+                    except Exception as e:
+                        self.update_text_signal.emit(f"编码无法识别，请转为UTF-8或GBK", False)
+                        return
+                # 纯文本没有结构信息，只能按字面规则猜标题行
+                headings = detect_txt_headings(content)
 
             if not content:
                 self.update_text_signal.emit("文件为空", False)
@@ -509,6 +1012,8 @@ class StealthReader(QWidget):
             self.is_local_mode = True
             self.local_file_path = file_path
             self.local_full_text = content
+            self.local_chapters = chapters
+            self.local_heading_offsets = headings
 
             # 安全校验索引
             safe_pos = min(max(0, target_pos), len(content) - 1)
@@ -529,6 +1034,99 @@ class StealthReader(QWidget):
             traceback.print_exc()
             self.update_text_signal.emit(f"打开文件失败: {str(e)}", False)
 
+    # --- 排版：行距 / 段间距 / 页边距（统一切口） ---
+    def line_spacing_percent(self):
+        return clamp_config_int(self.config, "line_spacing", LINE_SPACING_DEFAULT,
+                                LINE_SPACING_MIN, LINE_SPACING_MAX)
+
+    def paragraph_spacing_percent(self):
+        return clamp_config_int(self.config, "paragraph_spacing", 0,
+                                PARA_SPACING_MIN, PARA_SPACING_MAX)
+
+    def paragraph_spacing_px(self):
+        """段间距按行高换算：行高多少，就按百分比给多少空白。"""
+        line_height = QFontMetrics(self.text_edit.font()).lineSpacing()
+        return int(line_height * self.paragraph_spacing_percent() / 100)
+
+    def page_margin_px(self):
+        return clamp_config_int(self.config, "page_margin", 0,
+                                PAGE_MARGIN_MIN, PAGE_MARGIN_MAX)
+
+    def first_line_indent_chars(self):
+        return clamp_config_number(self.config, "first_line_indent", FIRST_LINE_INDENT_DEFAULT,
+                                   FIRST_LINE_INDENT_MIN, FIRST_LINE_INDENT_MAX)
+
+    def paragraph_indent(self):
+        """界面上那个「段落缩进」开关。"""
+        return bool(self.config.get("paragraph_indent", True))
+
+    def heading_no_indent(self):
+        """标题不缩进是自动行为；这个键只留给 txt 猜错标题时手动关掉。"""
+        return bool(self.config.get("heading_no_indent", True))
+
+    def first_line_indent_px(self):
+        """1 字符 = 一个全角空格的宽度，换字号字体时会跟着变。"""
+        if not self.paragraph_indent() or self.first_line_indent_chars() <= 0:
+            return 0
+        char_width = QFontMetrics(self.text_edit.font()).horizontalAdvance("\u3000")
+        return int(round(char_width * self.first_line_indent_chars()))
+
+    def skip_first_line_indent(self):
+        """挑出不该缩进的块：标题行，以及页首落在段落中间时的续行。
+
+        正文是一整串纯文本，所以"这段是不是标题"只能靠字符偏移查表；
+        "这块是不是段落开头"则看它前一个字符是不是换行——翻页是按像素切的，
+        一页的第一块经常是上一段的后半截，给它加缩进会像是新起了一段。"""
+        if self.first_line_indent_px() <= 0:
+            return
+        local = self.displaying_local_text
+        start = self.local_start_index if local else 0
+        source = self.local_full_text if local else None
+        headings = self.local_heading_offsets if (local and self.heading_no_indent()) else set()
+
+        no_indent = QTextBlockFormat()
+        no_indent.setTextIndent(0)
+        block = self.text_edit.document().begin()
+        while block.isValid():
+            absolute = start + block.position()
+            if absolute in headings:
+                QTextCursor(block).mergeBlockFormat(no_indent)
+            elif source is not None and absolute > 0 and source[absolute - 1:absolute] != "\n":
+                QTextCursor(block).mergeBlockFormat(no_indent)
+            block = block.next()
+
+    def apply_text_format(self):
+        """行距/段间距/页边距/首行缩进：Qt 样式表里没有这些属性，只能写进文本格式和文档本身。
+        每次换文本都要重新套一遍，否则翻页探测会按上一套排版测量。"""
+        document = self.text_edit.document()
+
+        margin = self.page_margin_px()
+        if abs(document.documentMargin() - margin) > 0.5:
+            document.setDocumentMargin(margin)
+
+        block_format = QTextBlockFormat()
+        block_format.setLineHeight(self.line_spacing_percent(), QTextBlockFormat.ProportionalHeight)
+        block_format.setTopMargin(self.paragraph_spacing_px())
+        block_format.setTextIndent(self.first_line_indent_px())
+
+        cursor = QTextCursor(document)
+        cursor.select(QTextCursor.Document)
+        cursor.mergeBlockFormat(block_format)
+
+        # 第一段不留上边距，否则每页顶部会凭空空出一块
+        if block_format.topMargin() > 0:
+            no_top_margin = QTextBlockFormat()
+            no_top_margin.setTopMargin(0)
+            QTextCursor(document.firstBlock()).mergeBlockFormat(no_top_margin)
+
+        # 标题与页首续行不缩进，必须在整体套用之后再逐块修正
+        self.skip_first_line_indent()
+
+    def set_display_text(self, text):
+        """换文本的唯一入口：换完立刻套同一套排版，否则翻页会按旧排版测量。"""
+        self.text_edit.setPlainText(text)
+        self.apply_text_format()
+
     # --- 本地分页渲染算法 (锚点核心) ---
     def render_local_page(self):
         if not self.is_local_mode or not self.local_full_text:
@@ -540,7 +1138,8 @@ class StealthReader(QWidget):
 
         display_text = self.local_full_text[self.local_start_index: end_buffer]
 
-        self.text_edit.setPlainText(display_text)
+        self.displaying_local_text = True
+        self.set_display_text(display_text)
 
         # 【关键】强制滚动条回顶，确保 local_start_index 对应的字符永远在第一行
         self.text_edit.verticalScrollBar().setValue(0)
@@ -577,7 +1176,8 @@ class StealthReader(QWidget):
             temp_start = max(0, self.local_start_index - buffer_size)
             prev_content = self.local_full_text[temp_start: self.local_start_index]
 
-            self.text_edit.setPlainText(prev_content)
+            self.displaying_local_text = True
+            self.set_display_text(prev_content)
 
             scrollbar = self.text_edit.verticalScrollBar()
             scrollbar.setValue(scrollbar.maximum())
@@ -675,7 +1275,8 @@ class StealthReader(QWidget):
             print(f"Failed to save config: {e}")
 
     def on_update_text_safe(self, text, is_bottom):
-        self.text_edit.setPlainText(text)
+        self.displaying_local_text = False
+        self.set_display_text(text)
         if "加载" in text or "连接" in text or "失败" in text:
             return
 
@@ -852,7 +1453,12 @@ class StealthReader(QWidget):
         self.text_edit.setFont(font)
 
         fm = QFontMetrics(font)
-        self.single_line_height = fm.lineSpacing()
+        # 最小窗口高度按实际排版算（行距 + 上下页边距），否则压到一行高时会被裁掉
+        self.single_line_height = max(
+            1,
+            int(fm.lineSpacing() * self.line_spacing_percent() / 100) + 2 * self.page_margin_px(),
+        )
+        self.apply_text_format()
         base_css = "padding: 0px; margin: 0px; border: none;"
 
         if self.config.get("auto_mode", False):
@@ -1126,7 +1732,10 @@ class StealthReader(QWidget):
 
     def contextMenuEvent(self, event):
         cmenu = QMenu(self)
-        cmenu.addAction("📂 打开本地 TXT").triggered.connect(self.open_local_file_dialog)
+        cmenu.addAction("📂 打开本地书籍 (TXT/EPUB)").triggered.connect(self.open_local_file_dialog)
+        toc_action = cmenu.addAction("📑 本地目录")
+        toc_action.triggered.connect(self.open_local_toc)
+        toc_action.setEnabled(bool(self.is_local_mode and self.local_chapters))
         cmenu.addSeparator()
         cmenu.addAction("📚 网络书架 (搜索)").triggered.connect(self.open_book_selector)
         cmenu.addAction("📖 章节目录 (网络)").triggered.connect(self.open_toc_selector)
@@ -1135,6 +1744,17 @@ class StealthReader(QWidget):
         cmenu.addSeparator()
         cmenu.addAction("❌ 退出").triggered.connect(self.quit_app)
         cmenu.exec_(self.mapToGlobal(event.pos()))
+
+    def open_local_toc(self):
+        if not self.local_chapters:
+            return
+        dialog = LocalTocSelector(self.local_chapters, self.local_start_index, self)
+        if dialog.exec_() == QDialog.Accepted and dialog.selected_offset is not None:
+            self.local_page_history = []
+            self.local_start_index = max(0, int(dialog.selected_offset))
+            self.config["last_local_pos"] = self.local_start_index
+            self.save_config()
+            self.render_local_page()
 
     def open_settings(self):
         self.is_settings_open = True
