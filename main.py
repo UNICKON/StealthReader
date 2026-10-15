@@ -2923,11 +2923,14 @@ class StealthReader(QWidget):
         # 背诵专用页脚：一行"学习计划 + 今日/本次 + 四个评分按钮（各自带下次复习间隔）"。
         # 平时整条藏着；安全文档盖上来时也藏着——周报底下挂一排评分按钮，一眼就露馅。
         self.review_bar = QWidget()
+        # 竖向 Maximum：页脚永远只占它需要的那一点高度。默认策略下 QVBoxLayout 会把
+        # 多余空间也分给它（实测占了半个窗口高），正文区就被压掉一半。
+        self.review_bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         bar_layout = QHBoxLayout(self.review_bar)
-        bar_layout.setContentsMargins(0, 0, 0, 0)
+        bar_layout.setContentsMargins(6, 2, 6, 4)
         bar_layout.setSpacing(0)
         self.review_plan_label = QLabel("")
-        self.review_plan_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.review_plan_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         bar_layout.addWidget(self.review_plan_label)
         self.review_buttons = []
         for _i in range(4):
@@ -3617,7 +3620,7 @@ class StealthReader(QWidget):
         self.review_bar.setStyleSheet(
             f"QLabel {{ color: {c}; font-size: {size}px; background: transparent; }}"
             f"QPushButton {{ color: {c}; font-size: {size}px; background: transparent;"
-            f" border: none; padding: 1px 5px; }}"
+            f" border: none; padding: 3px 6px; }}"
             f"QPushButton:hover {{ background: rgba(255,255,255,0.12); border-radius: 3px; }}"
             f"QPushButton:disabled {{ color: {dim}; }}")
 
