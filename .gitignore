@@ -1,6 +1,9 @@
 # 本机运行时文件：个人的阅读进度、窗口位置等，不进版本库
 config.json
 
+# 事件日志
+stealthreader.log
+
 # 本机依赖：PyQt5 等 wheel 解包出来的目录（约 140MB）
 libs/
 wheels/

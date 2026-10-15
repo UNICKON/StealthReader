@@ -1,7 +1,12 @@
 import sys
+import os
+
+# 自带依赖目录（PyQt5 / keyboard 都解包在 libs/）：不依赖启动器设置 PYTHONPATH，
+# 任何方式拉起本文件都能活。必须放在 import keyboard 之前。
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs"))
+
 import requests
 import json
-import os
 import re
 import posixpath
 import zipfile
@@ -19,9 +24,9 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QColorDialog, QCheckBox, QHBoxLayout,
                              QFrame, QTextEdit, QShortcut, QListWidget,
                              QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog)
-from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QObject, QThread, QTimer, QEvent
+from PyQt5.QtCore import Qt, QPoint, QRect, QPointF, pyqtSignal, QObject, QThread, QTimer, QEvent
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
-                         QFontMetrics, QTextCursor, QTextBlockFormat)
+                         QFontMetrics, QTextCursor, QTextBlockFormat, QWheelEvent)
 
 # 启用高分屏支持
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -73,6 +78,7 @@ DEFAULT_CONFIG = {
     "paragraph_indent": True,
     # 标题永远不缩进；这个键只作为 txt 猜错标题时的手动开关，不在界面上
     "heading_no_indent": True,
+    "peek_key": "ctrl+e",
     "text_color": "rgba(200, 200, 200, 255)",
     "bg_color": "rgba(30, 30, 30, 200)",
     "boss_key": "Esc",
@@ -444,6 +450,168 @@ def set_window_protection(hwnd, enable=True):
         print(f"防截屏设置失败: {e}")
 
 
+# ================= 轻量事件日志（排查老板键之类"偶尔失灵"的问题）=================
+def log_event(msg):
+    """追加一行到 main.py 旁边的 stealthreader.log，失败静默（日志不能反过来影响功能）。"""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stealthreader.log")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
+
+
+# ================= 低级输入钩子（偷瞄模式：全局滚轮翻页） =================
+# 钩子回调由 Windows 在毫秒级内强拆超时者，所以这里只做判断和转发，
+# 真正的翻页通过 Qt 队列信号回到主线程慢慢做。任何退出路径都必须调用 uninstall，
+# 否则泄漏的钩子会让全系统滚轮发卡。
+WH_KEYBOARD_LL = 13
+WH_MOUSE_LL = 14
+WM_KEYDOWN = 0x0100
+WM_SYSKEYDOWN = 0x0104
+WM_MOUSEWHEEL = 0x020A
+WM_LBUTTONDOWN = 0x0201
+WM_MBUTTONDOWN = 0x0203
+WM_RBUTTONDOWN = 0x0204
+WM_XBUTTONDOWN = 0x020B
+MOUSE_DOWN_MESSAGES = {WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN, WM_XBUTTONDOWN}
+
+VK_MODIFIER_TOKENS = {"ctrl", "control", "alt", "shift", "win", "windows", "cmd", "menu"}
+VK_CODES = {
+    "ctrl": 0x11, "control": 0x11, "alt": 0x12, "menu": 0x12, "shift": 0x10,
+    "win": 0x5B, "windows": 0x5B, "cmd": 0x5B,
+    "esc": 0x1B, "escape": 0x1B, "enter": 0x0D, "return": 0x0D, "tab": 0x09,
+    "space": 0x20, "backspace": 0x08, "delete": 0x2E, "insert": 0x2D,
+    "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
+    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+    "capslock": 0x14, "scrolllock": 0x91, "pause": 0x13, "printscreen": 0x2C,
+}
+VK_CODES.update({f"f{i}": 0x6F + i for i in range(1, 13)})
+
+
+def parse_hotkey_vk(text):
+    """'ctrl+e' -> (主键 VK, {修饰键 VK})。认不出就返回 (None, set())，
+    此时按键一律当"退出输入"放行，不吞键——宁可功能弱一点，不能吞掉用户的键。"""
+    tokens = [t.strip().lower() for t in (text or "").split("+") if t.strip()]
+    if not tokens:
+        return None, set()
+    mods, main = set(), None
+    for token in tokens:
+        vk = VK_CODES.get(token)
+        if vk is None and len(token) == 1:
+            vk = ord(token.upper())
+        if vk is None:
+            return None, set()
+        if token in VK_MODIFIER_TOKENS:
+            mods.add(vk)
+        elif main is None:
+            main = vk
+        else:
+            return None, set()
+    if main is None:
+        return None, set()
+    return main, mods
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("pt", _POINT), ("mouseData", ctypes.c_ulong), ("flags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("vkCode", ctypes.c_ulong), ("scanCode", ctypes.c_ulong),
+                ("flags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+_LRESULT = ctypes.c_ssize_t
+_HOOKPROC = ctypes.WINFUNCTYPE(_LRESULT, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t)  # WPARAM/LPARAM
+_user32 = ctypes.windll.user32
+_user32.SetWindowsHookExW.restype = ctypes.c_void_p
+_user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+_user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
+_user32.CallNextHookEx.restype = _LRESULT
+
+
+class GlobalInputHook:
+    """偷瞄模式的全局输入钩子：滚轮翻页（吞掉，底下应用不滚），按键/点击退出（放行）。
+
+    钩子装在 Qt 主线程上——Qt 的事件循环本来就在取消息，低级钩子的回调正好在其中
+    触发。回调里只发 Qt 队列信号（QueuedConnection），绝不在钩子里直接翻页。"""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self._mouse_hook = None
+        self._keyboard_hook = None
+        self._peek_vk = None
+        self._peek_mods = set()
+        # 回调对象必须一直活着，被 GC 的钩子回调会直接崩掉进程
+        self._mouse_proc = _HOOKPROC(self._on_mouse)
+        self._keyboard_proc = _HOOKPROC(self._on_keyboard)
+
+    def install(self, peek_key_text):
+        self.uninstall()
+        self._peek_vk, self._peek_mods = parse_hotkey_vk(peek_key_text)
+        try:
+            self._mouse_hook = _user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_proc, None, 0)
+            self._keyboard_hook = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._keyboard_proc, None, 0)
+        except Exception as e:
+            print(f"偷瞄模式钩子安装失败: {e}")
+            self.uninstall()
+        if not (self._mouse_hook and self._keyboard_hook):
+            self.uninstall()
+            return False
+        return True
+
+    def uninstall(self):
+        for name in ("_mouse_hook", "_keyboard_hook"):
+            handle = getattr(self, name, None)
+            if handle:
+                _user32.UnhookWindowsHookEx(handle)
+                setattr(self, name, None)
+
+    def _matches_peek_key(self, vk_code):
+        if self._peek_vk is None or vk_code != self._peek_vk:
+            return False
+        for mod in self._peek_mods:
+            if not (_user32.GetAsyncKeyState(mod) & 0x8000):
+                return False
+        return True
+
+    def _on_mouse(self, n_code, w_param, l_param):
+        try:
+            if n_code >= 0 and self.owner.peek_mode:
+                message = int(w_param)
+                if message == WM_MOUSEWHEEL:
+                    info = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                    delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
+                    self.owner.peek_wheel_signal.emit(delta)
+                    return 1  # 吞掉滚轮：底下应用不滚，这里翻页
+                if message in MOUSE_DOWN_MESSAGES:
+                    self.owner.peek_exit_signal.emit("click")
+                    return 0  # 点击放行，用户多半在恢复干活
+        except Exception:
+            pass
+        return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+    def _on_keyboard(self, n_code, w_param, l_param):
+        try:
+            if n_code >= 0 and self.owner.peek_mode and int(w_param) in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                info = ctypes.cast(l_param, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
+                if self._matches_peek_key(int(info.vkCode)):
+                    self.owner.peek_exit_signal.emit("peek_key")
+                    return 1  # 偷瞄期间这个键归我们，别落到当前应用上
+                self.owner.peek_exit_signal.emit("key")
+                return 0  # 其他按键放行
+        except Exception:
+            pass
+        return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+
 # ================= 辅助类：绘制背景和角标 =================
 class CornerFrame(QFrame):
     def __init__(self, parent=None):
@@ -797,6 +965,10 @@ class SettingsDialog(QDialog):
 
         self.boss_key_input = QLineEdit(self.config.get("boss_key", "Esc"))
         layout.addRow("全局老板键:", self.boss_key_input)
+        self.peek_key_input = QLineEdit(self.config.get("peek_key", "ctrl+e"))
+        self.peek_key_input.setToolTip("偷瞄模式：按这个键浮现书页，鼠标滚轮在任何位置都能翻页，\n"
+                                       "敲键盘或点鼠标就退出并藏回去。热键本身不会被发给当前应用。")
+        layout.addRow("偷瞄热键:", self.peek_key_input)
 
         btn_save = QPushButton("💾 保存并应用")
         btn_save.clicked.connect(self.accept)
@@ -854,6 +1026,7 @@ class SettingsDialog(QDialog):
         self.config["first_line_indent"] = self.indent_spin.value()
         self.config["paragraph_indent"] = self.para_indent_check.isChecked()
         self.config["boss_key"] = self.boss_key_input.text().strip()
+        self.config["peek_key"] = self.peek_key_input.text().strip()
         self.config["text_color"] = self.temp_text_color
         self.config["bg_color"] = self.temp_bg_color
         self.config["ghost_mode"] = self.check_ghost_mode.isChecked()
@@ -874,6 +1047,10 @@ class SettingsDialog(QDialog):
 class StealthReader(QWidget):
     update_text_signal = pyqtSignal(str, bool)
     hotkey_signal = pyqtSignal()
+    peek_hotkey_signal = pyqtSignal()
+    # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
+    peek_wheel_signal = pyqtSignal(int)
+    peek_exit_signal = pyqtSignal(str)
     bookshelf_updated_signal = pyqtSignal(list)
 
     def __init__(self):
@@ -897,6 +1074,21 @@ class StealthReader(QWidget):
         self.local_heading_offsets = set()  # 标题行的字符偏移，首行缩进要跳过它们
         self.displaying_local_text = False  # 当前显示的文本是否来自本地书（防止标题表串到网络章节上）
 
+        # --- 偷瞄模式（Ctrl+E 浮现 + 全局滚轮翻页）---
+        self.peek_mode = False
+        self.peek_was_visible = False   # 进入偷瞄前窗口是否可见，退出时照原样恢复
+        self.peek_last_toggle = 0.0     # 和老板键一样防连击
+        self.peek_last_exit = 0.0       # 刚退出的一瞬，Ctrl+E 的余波不再当新指令
+        self.peek_shortcut = None
+        self.peek_input_hook = GlobalInputHook(self)
+
+        # 老板键看门狗：keyboard 库的监听线程偶尔会静默死亡（锁屏/睡眠/钩子被系统强拆），
+        # 每 45 秒查一次，死了就重新注册
+        self.hotkey_watchdog = QTimer(self)
+        self.hotkey_watchdog.setInterval(45000)
+        self.hotkey_watchdog.timeout.connect(self.check_hotkeys_alive)
+        self.hotkey_watchdog.start()
+
         # --- 界面控制 ---
         self.single_line_height = 20
         self.is_mouse_in = False
@@ -917,6 +1109,9 @@ class StealthReader(QWidget):
 
         self.update_text_signal.connect(self.on_update_text_safe)
         self.hotkey_signal.connect(self.toggle_window)
+        self.peek_hotkey_signal.connect(self.toggle_peek)
+        self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
+        self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.bookshelf_updated_signal.connect(self.on_bookshelf_updated)
 
         self.refresh_hotkeys()
@@ -1028,7 +1223,9 @@ class StealthReader(QWidget):
             self.render_local_page()
 
             if safe_pos > 0:
-                self.update_text_signal.emit(f"已恢复进度: {os.path.basename(file_path)}", False)
+                # 不再往书页上打"已恢复进度"消息——那会覆盖正文，让下一次翻页的几何测量
+                # 把消息长度当成页宽，每次恢复后都固定偏移同样多的字
+                log_event(f"恢复阅读进度: {os.path.basename(file_path)} @ {safe_pos}")
 
         except Exception as e:
             traceback.print_exc()
@@ -1203,6 +1400,12 @@ class StealthReader(QWidget):
                 if self.local_start_index >= len(self.local_full_text):
                     return
 
+                # 【防跳页】状态消息（如"已恢复进度"）可能覆盖过正文，让控件内容和当前页
+                # 对不上。不核对的话，几何测量会把消息长度当成页宽，落点从此固定偏移一截
+                expected = self.local_full_text[self.local_start_index: self.local_start_index + 5000]
+                if self.text_edit.toPlainText() != expected:
+                    self.render_local_page()
+
                 # 几何计算本页内容量
                 step = self.calc_next_page_start()
                 if step == 0 and self.local_start_index < len(self.local_full_text):
@@ -1293,11 +1496,14 @@ class StealthReader(QWidget):
 
     def refresh_hotkeys(self):
         hotkey_str = self.config.get("boss_key", "Esc")
+        peek_key_str = self.config.get("peek_key", "ctrl+e")
         try:
             keyboard.unhook_all()
             keyboard.add_hotkey(hotkey_str, self.on_global_hotkey_triggered)
-        except:
-            pass
+            # 注意：unhook_all 只拆 keyboard 库自己的钩子；偷瞄模式的 ctypes 钩子独立管理
+            keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered)
+        except Exception as e:
+            log_event(f"全局热键注册失败: {e}")
         try:
             if self.local_shortcut:
                 self.local_shortcut.setKey(QKeySequence())
@@ -1306,13 +1512,39 @@ class StealthReader(QWidget):
             self.local_shortcut.activated.connect(self.toggle_window)
         except:
             pass
+        try:
+            if self.peek_shortcut:
+                self.peek_shortcut.setKey(QKeySequence())
+                self.peek_shortcut = None
+            self.peek_shortcut = QShortcut(QKeySequence(peek_key_str), self)
+            self.peek_shortcut.activated.connect(self.toggle_peek)
+        except:
+            pass
 
     def on_global_hotkey_triggered(self):
+        log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
         self.hotkey_signal.emit()
+
+    def on_peek_hotkey_triggered(self):
+        self.peek_hotkey_signal.emit()
+
+    def check_hotkeys_alive(self):
+        """老板键看门狗：keyboard 库的监听线程死了就重新注册（锁屏/睡眠/钩子被系统强拆后常见）。"""
+        try:
+            listener = getattr(keyboard, "_listener", None)
+            if listener is None or not listener.listening:
+                return
+            thread = getattr(listener, "listening_thread", None)
+            if thread is not None and not thread.is_alive():
+                log_event("老板键监听线程已死，重新注册全局热键")
+                self.refresh_hotkeys()
+        except Exception:
+            pass
 
     def initUI(self):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)  # 偷瞄模式浮现时不抢焦点；老板键路径仍显式 activateWindow
         self.setMouseTracking(True)
 
         self.main_layout = QVBoxLayout()
@@ -1398,9 +1630,11 @@ class StealthReader(QWidget):
         self.last_toggle_time = current_time
 
         if self.isVisible():
+            log_event("老板键 -> 隐藏窗口")
             self.sync_progress_async()
             self.hide()
         else:
+            log_event("老板键 -> 显示窗口")
             self.showNormal()
             self.apply_style()
             self.activateWindow()
@@ -1410,6 +1644,91 @@ class StealthReader(QWidget):
 
             if self.config.get("antishot_mode", False):
                 set_window_protection(int(self.winId()), True)
+
+    # --- 偷瞄模式：Ctrl+E 浮现，滚轮在任何地方都能翻页，其他输入一律退出 ---
+    def toggle_peek(self):
+        now = time.time()
+        if now - self.peek_last_toggle < 0.3:
+            return
+        self.peek_last_toggle = now
+        if self.peek_mode:
+            self.exit_peek("peek_key")
+            return
+        if now - self.peek_last_exit < 0.35:
+            return  # 刚退出的那一下按键余波，别当成新指令再进去
+        self.enter_peek()
+
+    def enter_peek(self):
+        """浮现但不抢焦点，挂全局滚轮。挂不上钩子就不进——半吊子的偷瞄只会让人困惑。"""
+        if self.peek_mode:
+            return
+        if not self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e")):
+            print("偷瞄模式未启动：全局输入钩子安装失败")
+            return
+        self.peek_was_visible = self.isVisible()
+        self.peek_mode = True
+        if not self.isVisible():
+            self.show()  # WA_ShowWithoutActivating：不夺走工作窗口的焦点
+        self.raise_()
+        self.apply_style()
+        if self.config.get("auto_mode", False):
+            self.chameleon_timer.start()
+            self.adjust_color_to_background()
+        if self.config.get("antishot_mode", False):
+            set_window_protection(int(self.winId()), True)
+
+    def exit_peek(self, reason=""):
+        if not self.peek_mode:
+            return
+        self.peek_mode = False
+        self.peek_last_exit = time.time()
+        self.peek_input_hook.uninstall()  # 先卸钩，后面任何一步出错都不能泄漏钩子
+        if not self.peek_was_visible:
+            # 跟着藏回去：退出即恢复按 Ctrl+E 之前的样子
+            self.sync_progress_async()
+            self.hide()
+        else:
+            self.apply_style()  # 本来就可见：恢复正常样式
+            if self.config.get("ghost_mode", False):
+                # 幽灵模式开着时，按当前光标位置重新评估淡出（leaveEvent 内部自带包含判断）
+                self.leaveEvent(QEvent(QEvent.Leave))
+
+    def on_peek_wheel(self, delta):
+        """偷瞄模式的滚轮 = 窗口内滚动的手感：一格滚几行（事件交给 QTextEdit 默认处理，
+        实测一格约 60px ≈ 3 行），滚到 5000 字缓冲区边沿后自动衔接前后页，不跳字不空页。"""
+        if not self.is_local_mode:
+            # 网络模式与窗口内行为一致：只滚缓冲区
+            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+            return
+        sb = self.text_edit.verticalScrollBar()
+        QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+        if delta < 0 and sb.maximum() > 0 and sb.value() >= sb.maximum() - 2:
+            # 缓冲区到底：下一页从"当前视口顶部"衔接，已看的字不重不漏
+            cursor = self.text_edit.cursorForPosition(QPoint(0, 0))
+            new_start = min(self.local_start_index + cursor.position(),
+                            max(0, len(self.local_full_text) - 1))
+            if new_start > self.local_start_index:
+                self.local_page_history.append(self.local_start_index)
+                self.local_start_index = new_start
+                self.render_local_page()
+        elif delta > 0 and sb.value() <= 2:
+            # 缓冲区到顶：渲染更早的 5000 字并停在其底部，从这里继续往上滚
+            new_start = max(0, self.local_start_index - 5000)
+            if new_start < self.local_start_index:
+                self.local_start_index = new_start
+                self.render_local_page()
+                self.text_edit.verticalScrollBar().setValue(
+                    self.text_edit.verticalScrollBar().maximum())
+
+    def _synth_wheel_event(self, delta):
+        """造一个和真实滚轮等价的事件交给 viewport，走 Qt 默认的逐行滚动路径。"""
+        vp = self.text_edit.viewport()
+        return QWheelEvent(QPointF(vp.rect().center()), QPointF(QCursor.pos()),
+                           QPoint(0, 0), QPoint(0, delta),
+                           Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
+
+    def on_peek_exit(self, reason):
+        self.exit_peek(reason)
 
     def adjust_color_to_background(self):
         if not self.isVisible() or not self.config.get("auto_mode"):
@@ -1502,6 +1821,8 @@ class StealthReader(QWidget):
 
     def leaveEvent(self, event):
         self.is_mouse_in = False
+        if self.peek_mode:
+            return  # 偷瞄期间光标在外面是常态，别把窗口淡到透明
         if self.is_settings_open or self.is_resizing or self.is_moving: return
 
         global_pos = QCursor.pos()
@@ -1788,6 +2109,7 @@ class StealthReader(QWidget):
             self.scroll_page(-1)
 
     def closeEvent(self, event):
+        self.exit_peek("close")  # 窗口关了必须先卸全局钩子，再走保存
         self.sync_progress_async()
         if self.is_local_mode:
             self.config["last_local_pos"] = self.local_start_index
@@ -1800,13 +2122,22 @@ class StealthReader(QWidget):
             self.config["last_local_pos"] = self.local_start_index
             self.save_config()
 
+        self.peek_input_hook.uninstall()  # 钩子泄漏的症状是全系统滚轮发卡，退出必须拆干净
         keyboard.unhook_all()
         QApplication.instance().quit()
 
 
 if __name__ == '__main__':
+    # 单实例：双开会导致两个进程同时响应老板键（看起来像"唤醒不了"），并且互相覆盖
+    # config 里的阅读进度（看起来像"进度跳位"）。用命名互斥体挡住第二个进程。
+    _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "StealthReader_SingleInstance")
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        ctypes.windll.user32.MessageBoxW(None, "StealthReader 已经在运行了（托盘里）", "提示", 0x40)
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     ex = StealthReader()
     ex.show()
+    log_event("应用启动")
     sys.exit(app.exec_())
