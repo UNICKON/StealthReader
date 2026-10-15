@@ -43,8 +43,11 @@ LINE_SPACING_MAX = 250
 LINE_SPACING_DEFAULT = 100
 PARA_SPACING_MIN = 0
 PARA_SPACING_MAX = 200
-PAGE_MARGIN_MIN = 0
-PAGE_MARGIN_MAX = 60
+# 页边距的单位是"字"（1 字 = 一个全角空格宽），随字号字体等比变化：
+# 0~3 字 覆盖原来的 0~60px（14pt 新宋体下 1 字 ≈ 19px）
+PAGE_MARGIN_MIN = 0.0
+PAGE_MARGIN_MAX = 3.0
+PAGE_MARGIN_DEFAULT = 1.0
 # 首行缩进：1 字符 = 一个全角空格的宽度，所以换字号字体会跟着变
 FIRST_LINE_INDENT_MIN = 0.0
 FIRST_LINE_INDENT_MAX = 4.0
@@ -76,7 +79,8 @@ DEFAULT_CONFIG = {
     "font_family": "Microsoft YaHei",
     "line_spacing": LINE_SPACING_DEFAULT,
     "paragraph_spacing": 0,
-    "page_margin": 0,
+    "page_margin": 0,          # 老键：像素值（有它就说明是老配置，载入时换算成下面那个）
+    "page_margin_chars": PAGE_MARGIN_DEFAULT,   # 页边距：单位"字"，四边相同
     "first_line_indent": FIRST_LINE_INDENT_DEFAULT,
     "paragraph_indent": True,
     # 标题永远不缩进；这个键只作为 txt 猜错标题时的手动开关，不在界面上
@@ -85,6 +89,10 @@ DEFAULT_CONFIG = {
     "text_color": "rgba(200, 200, 200, 255)",
     "bg_color": "rgba(30, 30, 30, 200)",
     "boss_key": "Esc",
+    "safe_key": "ctrl+alt+d",            # 安全文档模式（有人看屏幕时应急换文档）
+                                         # 不用 ctrl+shift+d：那键在 VSCode/PyCharm 是"运行与调试"、
+                                         # 在 Chrome 是"收藏所有标签页"，而全局热键不拦截按键
+    "safe_doc_path": "",                 # 留空 = 用内置的安全文档
     "ghost_mode": False,
     "auto_mode": False,
     "antishot_mode": False,
@@ -93,6 +101,47 @@ DEFAULT_CONFIG = {
     "last_local_file": "",
     "last_local_pos": 0
 }
+
+# 内置的安全文档：有人看到屏幕时顶上的那份"工作文档"。
+# 体例要像日常工作产出（周报/复盘这类），内容必须完全无敏感信息，
+# 一旦配置里指的文件读不出来，就回落这一份——任何时候都不能露出书页。
+SAFE_DOC_TEXT = """服务端接口测试周报（第 15 周）
+
+一、本周进展
+1. 完成订单中心 v7 接口的用例补全：新增单接口用例 46 条、场景用例 12 条，接口覆盖率 61% 提升到 78%。
+2. 测试环境治理：把 host、测试账号、密钥统一收敛到团队环境变量，用例里不再写死地址，换环境只需改一处。
+3. 巡检接入执行集：每天 9:30 自动跑一遍核心链路，失败自动拉起群通知，本周拦下 3 次回归问题。
+4. 补齐支付回调的幂等校验用例，覆盖重复通知、乱序通知、签名过期三类异常场景。
+
+二、问题与风险
+1. 灰度环境偶发超时（约 2% 请求），初步定位为下游依赖抖动，已在用例侧加 3 次重试与超时兜底，仍需下游确认。
+2. 部分老接口文档与实现不一致（参数名、错误码），已整理成清单，待各模块负责人确认后统一更新。
+3. 测试账号在下班时段会被风控拦截，导致夜间巡检误报，已申请加入白名单。
+
+三、下周计划
+1. 补齐退款链路的异常分支用例，重点覆盖部分退款、退款失败重试与对账差异。
+2. 把覆盖率采集接进 CI，每次合并自动产出未覆盖接口清单。
+3. 与前端对齐联调环境的 Mock 策略，减少相互等待。
+4. 整理一份新同学上手说明，含环境变量、常用命令与排查手册。
+
+四、需要协调
+1. 退款链路的沙箱账号还缺一个，需要业务侧配合开通。
+2. 下周三下午的环境维护窗口，请各模块提前确认无重要联调安排。
+
+五、关键指标
+接口覆盖率 61% 提升到 78%；场景用例通过率 96%（上周 92%）；
+巡检累计拦下回归问题 3 次；用例平均执行时长 4 分 12 秒（上周 4 分 40 秒）。
+
+六、下周排期
+周一：同步灰度超时定位结论，输出待确认清单。
+周二至周三：退款链路异常分支用例评审，前端 Mock 策略对齐。
+周四：覆盖率接入 CI 联调，产出未覆盖接口清单。
+周五：整理上手说明，汇总本周问题与风险，提交周报。
+
+七、结论
+整体进度符合预期，无阻塞项；灰度超时问题持续跟进，下周一同步进展。
+
+（本页内容为内部工作记录，请勿外传）"""
 
 DARK_STYLESHEET = """
     QDialog, QWidget { background-color: #2b2b2b; color: #cccccc; }
@@ -124,17 +173,17 @@ class _EpubHtmlText(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.lines = []
         self.ids = {}
-        self.heading_lines = set()
+        self.heading_lines = {}     # {行号: 标题级别}，级别取自 h1~h6 的编号
         self._buf = []
         self._skip = 0
-        self._heading_depth = 0
+        self._heading_stack = []    # 正在收集的标题标签（嵌套时取最外层那级）
 
     def _flush(self):
         line = re.sub(r"[ \t\f\v\u00a0\u3000]+", " ", "".join(self._buf)).strip()
         self._buf = []
         if line:
-            if self._heading_depth:
-                self.heading_lines.add(len(self.lines))
+            if self._heading_stack:
+                self.heading_lines.setdefault(len(self.lines), self._heading_stack[0])
             self.lines.append(line)
 
     def _mark(self, attrs):
@@ -149,7 +198,7 @@ class _EpubHtmlText(HTMLParser):
         elif tag in EPUB_BLOCK_TAGS:
             self._flush()
             if tag in EPUB_HEADING_TAGS:
-                self._heading_depth += 1
+                self._heading_stack.append(int(tag[1]))
 
     def handle_startendtag(self, tag, attrs):
         self._mark(attrs)
@@ -162,8 +211,8 @@ class _EpubHtmlText(HTMLParser):
                 self._skip -= 1
         elif tag in EPUB_BLOCK_TAGS:
             self._flush()
-            if tag in EPUB_HEADING_TAGS and self._heading_depth:
-                self._heading_depth -= 1
+            if tag in EPUB_HEADING_TAGS and self._heading_stack:
+                self._heading_stack.pop()
 
     def handle_data(self, data):
         if self._skip:
@@ -175,7 +224,7 @@ class _EpubHtmlText(HTMLParser):
                 self._buf.append(segment)
 
     def finish(self):
-        """返回 (纯文本, {锚点: 字符偏移}, {标题行的字符偏移})。"""
+        """返回 (纯文本, {锚点: 字符偏移}, {标题行字符偏移: 标题级别})。"""
         self._flush()
         text = "\n".join(self.lines)
         offsets = [0]
@@ -183,7 +232,7 @@ class _EpubHtmlText(HTMLParser):
             offsets.append(offsets[-1] + len(line) + 1)
         anchors = {key: offsets[min(idx, len(self.lines))]
                    for key, idx in self.ids.items()}
-        headings = {offsets[idx] for idx in self.heading_lines}
+        headings = {offsets[idx]: level for idx, level in self.heading_lines.items()}
         return text, anchors, headings
 
 
@@ -199,7 +248,7 @@ def _epub_html_to_text(raw_bytes):
         except UnicodeDecodeError:
             source = None
     if source is None:
-        return "", {}, set()
+        return "", {}, {}
     parser = _EpubHtmlText()
     try:
         parser.feed(source)
@@ -227,7 +276,10 @@ def _epub_clean_label(label):
 
 
 def _epub_toc_entries(zf, opf_path, manifest):
-    """按文档顺序返回 [(zip 内路径, 锚点, 标题)]：优先 epub3 的 nav，其次 epub2 的 ncx。"""
+    """按文档顺序返回 [(zip 内路径, 锚点, 标题, 层级)]：优先 epub3 的 nav，其次 epub2 的 ncx。
+
+    层级就是目录自己的嵌套深度（最外层 = 1），多级目录（卷 / 部 / 章 / 节）都收进来，
+    目录页按层级缩进显示。"""
     entries = []
     opf_dir = posixpath.dirname(opf_path)
     nav_href = None
@@ -257,32 +309,49 @@ def _epub_toc_entries(zf, opf_path, manifest):
                             or nav.get("type") or "")
                 if nav_type != "toc":
                     continue
-                for a in nav.iter():
-                    if _epub_local_name(a.tag) != "a":
-                        continue
-                    target, fragment = resolve(a.get("href"))
-                    entries.append((target, fragment, "".join(a.itertext())))
+
+                def walk(node, depth):
+                    """递归走 nav 树：<ol>/<ul> 每嵌套一层，层级 +1；<a> 就是一条目录项。"""
+                    for child in node:
+                        name = _epub_local_name(child.tag)
+                        if name == "a":
+                            target, fragment = resolve(child.get("href"))
+                            entries.append((target, fragment, "".join(child.itertext()), depth))
+                        elif name in ("ol", "ul"):
+                            walk(child, depth + 1)
+                        else:
+                            walk(child, depth)
+
+                for child in nav:
+                    walk(child, 0)
         elif ncx_href:
             root = read_xml(ncx_href)
-            for point in root.iter():
-                if _epub_local_name(point.tag) != "navPoint":
-                    continue
-                href, label = None, ""
-                for child in point.iter():
-                    name = _epub_local_name(child.tag)
-                    if name == "content" and child.get("src"):
-                        href = child.get("src")
-                    elif name == "text" and not label:
-                        label = "".join(child.itertext())
-                target, fragment = resolve(href)
-                entries.append((target, fragment, label))
+
+            def walk_points(node, depth):
+                """递归走 navMap/navPoint：navPoint 每嵌套一层，层级 +1。"""
+                for child in node:
+                    if _epub_local_name(child.tag) != "navPoint":
+                        walk_points(child, depth)   # 中间可能夹着 navMap 之类的壳
+                        continue
+                    href, label = None, ""
+                    for sub in child:   # navPoint 的直接子节点才是自己的 navLabel / content
+                        name = _epub_local_name(sub.tag)
+                        if name == "navLabel" and not label:
+                            label = "".join(sub.itertext())
+                        elif name == "content" and sub.get("src") and href is None:
+                            href = sub.get("src")
+                    target, fragment = resolve(href)
+                    entries.append((target, fragment, label, depth))
+                    walk_points(child, depth + 1)   # 子目录项
+
+            walk_points(root, 1)
     except Exception:
         pass
-    return [(t, f, l) for t, f, l in entries if l and l.strip()]
+    return [(t, f, l, lv) for t, f, l, lv in entries if l and l.strip()]
 
 
 def _load_epub(path):
-    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移), ...], {标题行偏移})。"""
+    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...], {标题行偏移})。"""
     with zipfile.ZipFile(path) as zf:
         opf_path = None
         try:
@@ -336,7 +405,7 @@ def _load_epub(path):
         if not docs:
             raise ValueError("epub 里没有可读文字（可能是纯图片书）")
 
-        has_anchors = any(fragment for _, fragment, _ in toc)
+        has_anchors = any(fragment for _target, fragment, _label, _level in toc)
 
         if toc and has_anchors:
             # 目录指向文件内的锚点：正文原样拼接，不额外插标题行，章节偏移由锚点换算
@@ -354,26 +423,42 @@ def _load_epub(path):
 
             chapters = []
             used_offsets = set()
-            for target, fragment, label in toc:
+            bodies = {target: body for target, body, _a, _h in docs}
+            for target, fragment, label, level in toc:
                 if target not in file_start:
                     continue
                 offset = file_start[target] + doc_anchors.get(target, {}).get(fragment, 0)
                 if offset in used_offsets:
                     continue
                 used_offsets.add(offset)
-                chapters.append((_epub_clean_label(label), offset))
+                chapters.append((_epub_clean_label(label), offset, max(1, int(level or 1))))
+
+            # 目录之外的小标题（h1~h6）也收进目录：级别用标签本身的编号，标题取那一行原文
+            for target, offsets in file_headings.items():
+                body = bodies.get(target, "")
+                for offset, level in offsets.items():
+                    absolute = file_start[target] + offset
+                    if absolute in used_offsets:
+                        continue
+                    title = body[offset:].split("\n", 1)[0].strip()
+                    if not title or len(title) > 80:
+                        continue      # 空行、或者长到不像标题（有些书整段都包在 h3 里）
+                    if len(title) > 60:
+                        title = title[:60] + "…"
+                    used_offsets.add(absolute)
+                    chapters.append((title, absolute, max(1, int(level or 1))))
             chapters.sort(key=lambda item: item[1])
 
             # 标题行 = 原文里的 h1~h6，加上目录标题所在的那一行
             headings = {file_start[target] + offset
                         for target, offsets in file_headings.items()
                         for offset in offsets}
-            headings.update(offset for _label, offset in chapters)
+            headings.update(offset for _label, offset, _level in chapters)
             return "".join(blocks), chapters, headings
 
         # 目录缺失或只到文件级：一个文件一章，需要时补一行标题
         titles = {}
-        for target, _fragment, label in toc:
+        for target, _fragment, label, _level in toc:
             titles.setdefault(target, _epub_clean_label(label))
 
         blocks = []
@@ -390,13 +475,24 @@ def _load_epub(path):
             chunk = f"{title}\n\n{body}" if prepended else body
             piece = chunk.strip("\n") + "\n\n"
 
-            chapters.append((title, cursor))
+            chapters.append((title, cursor, 1))
             headings.add(cursor)  # 标题行本身
             shift = len(title) + 2 if prepended else 0
-            headings.update(cursor + shift + offset for offset in doc_headings)
+            used = {cursor}
+            for offset, level in doc_headings.items():
+                absolute = cursor + shift + offset
+                if absolute in used:
+                    continue      # 这一段的首行本身就是个标题：别和上面那条重名重位
+                title = body[offset:].split("\n", 1)[0].strip()
+                if not title or len(title) > 80:
+                    continue
+                used.add(absolute)
+                chapters.append((title[:60], absolute, max(1, int(level or 1))))
+                headings.add(absolute)
             blocks.append(piece)
             cursor += len(piece)
 
+        chapters.sort(key=lambda item: item[1])
         return "".join(blocks), chapters, headings
 
 
@@ -406,7 +502,7 @@ def load_epub_with_headings(path):
 
 
 def load_epub_text(path):
-    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移), ...])。"""
+    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...])。"""
     text, chapters, _headings = _load_epub(path)
     return text, chapters
 
@@ -422,6 +518,35 @@ TXT_HEADING_PATTERN = re.compile(
     re.IGNORECASE)
 TXT_HEADING_MAX_LEN = 40
 TXT_HEADING_TAIL = "。！？；：，、…—.!?;:,"
+
+
+def normalize_chapter_levels(chapters):
+    """让层级从 1 开始。有的书目录整棵都从第 2 层起（顶层是 h2），不归一化会整体歪一格。"""
+    if not chapters:
+        return chapters
+    base = min(int(c[2]) for c in chapters)
+    if base <= 1:
+        return chapters
+    return [(c[0], c[1], int(c[2]) - base + 1) for c in chapters]
+
+
+def _txt_heading_level(line):
+    """txt 没有层级信息，只能按关键词粗分：卷/部/篇 是上层，章/节/回 是下层。"""
+    if re.match(r"^第\s*[0-9０-９一二三四五六七八九十百千零两]+\s*[卷部篇集]", line):
+        return 1
+    if re.match(r"^第\s*[0-9０-９一二三四五六七八九十百千零两]+\s*[章节節回]", line):
+        return 2
+    return 1
+
+
+def txt_chapters_from_headings(text, offsets):
+    """把猜出来的标题行整理成目录：[(标题, 偏移, 层级)]（层级归一化后从 1 起）。"""
+    chapters = []
+    for offset in sorted(offsets or []):
+        line = text[offset:].split("\n", 1)[0].strip()
+        if line:
+            chapters.append((line[:60], int(offset), _txt_heading_level(line)))
+    return normalize_chapter_levels(chapters)
 
 
 def detect_txt_headings(text):
@@ -732,11 +857,40 @@ WH_MOUSE_LL = 14
 WM_KEYDOWN = 0x0100
 WM_SYSKEYDOWN = 0x0104
 WM_MOUSEWHEEL = 0x020A
+# 鼠标按下类消息。0x0203 是"左键双击"不是中键（中键是 0x0207），这里以前标错了，
+# 结果左键双击会被当成中键按下而退出偷瞄。
 WM_LBUTTONDOWN = 0x0201
-WM_MBUTTONDOWN = 0x0203
+WM_LBUTTONDBLCLK = 0x0203
 WM_RBUTTONDOWN = 0x0204
+WM_RBUTTONDBLCLK = 0x0206
+WM_MBUTTONDOWN = 0x0207
+WM_MBUTTONDBLCLK = 0x0209
+
+# 会话通知（锁屏 / 解锁）：解锁后 WH_KEYBOARD_LL 往往已经被系统悄悄摘掉，
+# 见 check_hotkeys_alive() 的说明——所以把"解锁"当成重挂热键的明确触发点。
+WM_WTSSESSION_CHANGE = 0x02B1
+WTS_SESSION_LOGON = 0x5
+WTS_SESSION_LOCK = 0x7
+WTS_SESSION_UNLOCK = 0x8
+NOTIFY_FOR_THIS_SESSION = 0
+
+
+class _MSG(ctypes.Structure):
+    """Windows MSG（只用到 message / wParam 两个字段，其余照原样排布以对齐）。"""
+    _fields_ = [("hwnd", ctypes.c_void_p), ("message", ctypes.c_uint),
+                ("wParam", ctypes.c_void_p), ("lParam", ctypes.c_void_p),
+                ("time", ctypes.c_uint32), ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long)]
 WM_XBUTTONDOWN = 0x020B
-MOUSE_DOWN_MESSAGES = {WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN, WM_XBUTTONDOWN}
+# 非客户区（标题栏 / 边框 / 滚动条）另有一套消息，之前一个都没接，
+# 所以点别人家窗口的标题栏也退不出偷瞄。
+WM_NCLBUTTONDOWN = 0x00A1
+WM_NCRBUTTONDOWN = 0x00A4
+WM_NCMBUTTONDOWN = 0x00A8
+# 只有右键 / 中键 / 侧键退出偷瞄。左键（含双击、含标题栏上的左键）一律放行且不退出：
+# 偷瞄的时候还要能照常点工作窗口，点一下就被踢出去没法干活。
+MOUSE_EXIT_MESSAGES = {WM_RBUTTONDOWN, WM_RBUTTONDBLCLK, WM_MBUTTONDOWN,
+                       WM_MBUTTONDBLCLK, WM_XBUTTONDOWN,
+                       WM_NCRBUTTONDOWN, WM_NCMBUTTONDOWN}
 
 VK_MODIFIER_TOKENS = {"ctrl", "control", "alt", "shift", "win", "windows", "cmd", "menu"}
 VK_CODES = {
@@ -800,7 +954,8 @@ _user32.CallNextHookEx.restype = _LRESULT
 
 
 class GlobalInputHook:
-    """偷瞄模式的全局输入钩子：滚轮翻页（吞掉，底下应用不滚），按键/点击退出（放行）。
+    """偷瞄模式的全局输入钩子：滚轮翻页（吞掉，底下应用不滚），
+    右键/中键/侧键与按键退出（放行），左键放行且不退出（偷瞄时要能照常点工作窗口）。
 
     钩子装在 Qt 主线程上——Qt 的事件循环本来就在取消息，低级钩子的回调正好在其中
     触发。回调里只发 Qt 队列信号（QueuedConnection），绝不在钩子里直接翻页。"""
@@ -853,9 +1008,10 @@ class GlobalInputHook:
                     delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
                     self.owner.peek_wheel_signal.emit(delta)
                     return 1  # 吞掉滚轮：底下应用不滚，这里翻页
-                if message in MOUSE_DOWN_MESSAGES:
+                if message in MOUSE_EXIT_MESSAGES:
                     self.owner.peek_exit_signal.emit("click")
-                    return 0  # 点击放行，用户多半在恢复干活
+                    return 0  # 右键/中键：退出，并把这次点击放行给下面的应用
+                # 左键（含双击、含点标题栏/边框）：既不退出也不吞，直接放行
         except Exception:
             pass
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
@@ -912,6 +1068,46 @@ class CornerFrame(QFrame):
             painter.drawLine(0, 0, 0, length)
             painter.drawLine(w, h, w - length, h)
             painter.drawLine(w, h, w, h - length)
+
+
+class ReaderTextEdit(QTextEdit):
+    """正文区控件：鼠标能拖选，但光标永远是箭头，不长成"输入框"的样子。
+
+    Qt 只要文本可选中（TextSelectableByMouse）就会在鼠标移动/进入/聚焦时把 viewport 的光标
+    设成 I 形，所以每个可能被它改回来的入口之后都要把想要的形状压回去。
+    想要的形状可临时换：右下角缩放区给缩放光标、中键拖动给移动光标。"""
+
+    _pin_shape = Qt.ArrowCursor
+    _PIN_EVENTS = (QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                   QEvent.MouseButtonDblClick, QEvent.HoverMove, QEvent.Enter, QEvent.FocusIn)
+
+    def set_pinned_cursor(self, shape):
+        self._pin_shape = shape
+        self._pin_cursor()
+
+    def _pin_cursor(self):
+        viewport = self.viewport()
+        if viewport.cursor().shape() != self._pin_shape:
+            viewport.setCursor(self._pin_shape)
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() in self._PIN_EVENTS:
+            self._pin_cursor()
+        return result
+
+    # 换文本、换交互标志、改只读也会让 Qt 重设光标，一并压回去
+    def setPlainText(self, text):
+        super().setPlainText(text)
+        self._pin_cursor()
+
+    def setTextInteractionFlags(self, flags):
+        super().setTextInteractionFlags(flags)
+        self._pin_cursor()
+
+    def setReadOnly(self, read_only):
+        super().setReadOnly(read_only)
+        self._pin_cursor()
 
 
 # ================= 独立窗口：书籍选择器 =================
@@ -1118,9 +1314,15 @@ class ReadingMarksDialog(QDialog):
 
     def refresh(self):
         self.toc_list.clear()
-        for title, offset in (self.win.local_chapters or []):
-            item = QListWidgetItem(str(title).strip())
+        for entry in (self.win.local_chapters or []):
+            title, offset = entry[0], entry[1]
+            level = int(entry[2]) if len(entry) > 2 else 1
+            level = max(1, int(level or 1))
+            # 层级用全角空格缩进（缩进宽度跟着页面边距走，导出时用的是原始标题，不受影响）
+            item = QListWidgetItem("　" * (level - 1) + str(title).strip())
             item.setData(Qt.UserRole, ("jump", int(offset)))
+            item.setData(Qt.UserRole + 2, level)
+            item.setToolTip(str(title).strip() + (f"（第 {level} 级）" if level > 1 else ""))
             self.toc_list.addItem(item)
         if self.toc_list.count() == 0:
             self.toc_list.addItem(QListWidgetItem("（这本书没有章节目录，txt 常见）"))
@@ -1194,6 +1396,12 @@ class SettingsDialog(QDialog):
         self.original_opacity = self.config.get("opacity", 0.9)
         self.temp_text_color = self.config.get("text_color")
         self.temp_bg_color = self.config.get("bg_color")
+        # 排版是"拖动即预览"：先把原值记下来，点取消要能退回去，否则取消等于偷偷保存
+        self.original_typography = {
+            key: self.config.get(key) for key in
+            ("font_size", "font_family", "line_spacing", "paragraph_spacing",
+             "page_margin_chars", "first_line_indent", "paragraph_indent")
+        }
 
         self.setWindowTitle("设置")
         self.resize(350, 560)
@@ -1226,11 +1434,13 @@ class SettingsDialog(QDialog):
         self.font_spin = QSpinBox()
         self.font_spin.setRange(8, 60)
         self.font_spin.setValue(self.config.get("font_size"))
+        self.font_spin.valueChanged.connect(self.on_font_change)
         layout.addRow("字体大小:", self.font_spin)
 
         self.font_combo = QFontComboBox()
         current_font_family = self.config.get("font_family", "Microsoft YaHei")
         self.font_combo.setCurrentFont(QFont(current_font_family))
+        self.font_combo.currentFontChanged.connect(self.on_font_change)
         layout.addRow("字体样式:", self.font_combo)
 
         self.spacing_spin = QSpinBox()
@@ -1254,13 +1464,19 @@ class SettingsDialog(QDialog):
         self.para_spin.valueChanged.connect(self.on_typography_change)
         layout.addRow("段间距:", self.para_spin)
 
-        self.margin_spin = QSpinBox()
+        self.margin_spin = QDoubleSpinBox()
         self.margin_spin.setRange(PAGE_MARGIN_MIN, PAGE_MARGIN_MAX)
-        self.margin_spin.setSingleStep(2)
-        self.margin_spin.setSuffix(" px")
-        self.margin_spin.setValue(clamp_config_int(self.config, "page_margin", 0,
-                                                   PAGE_MARGIN_MIN, PAGE_MARGIN_MAX))
-        self.margin_spin.setToolTip("文字四周的留白（上下左右相同）。窗口很窄时别设太大，会挤掉每行字数。")
+        self.margin_spin.setSingleStep(0.1)
+        self.margin_spin.setDecimals(2)
+        self.margin_spin.setSuffix(" 字")
+        initial_margin = (self.main_window.page_margin_chars() if self.main_window
+                          else clamp_config_number(self.config, "page_margin_chars",
+                                                  PAGE_MARGIN_DEFAULT,
+                                                  PAGE_MARGIN_MIN, PAGE_MARGIN_MAX))
+        self.margin_spin.setValue(initial_margin)
+        self.margin_spin.setToolTip("文字四周的留白（上下左右相同），单位是「字」——1 字 = 一个全角空格宽，\n"
+                                    "随字号字体等比变化（字号调大，留白跟着变宽）。\n"
+                                    "窗口很窄时别设太大，会挤掉每行字数。")
         self.margin_spin.valueChanged.connect(self.on_typography_change)
         layout.addRow("页边距:", self.margin_spin)
 
@@ -1300,8 +1516,28 @@ class SettingsDialog(QDialog):
         layout.addRow("全局老板键:", self.boss_key_input)
         self.peek_key_input = QLineEdit(self.config.get("peek_key", "ctrl+e"))
         self.peek_key_input.setToolTip("偷瞄模式：按这个键浮现书页，鼠标滚轮在任何位置都能翻页，\n"
-                                       "敲键盘或点鼠标就退出并藏回去。热键本身不会被发给当前应用。")
+                                       "敲键盘 / 右键 / 中键则退出并藏回去；\n"
+                                       "左键点击不退出（偷瞄时能照常点工作窗口）。热键本身不会被发给当前应用。")
         layout.addRow("偷瞄热键:", self.peek_key_input)
+
+        self.safe_key_input = QLineEdit(self.config.get("safe_key", "ctrl+alt+d"))
+        self.safe_key_input.setToolTip("安全文档模式：有人凑过来看屏幕时按这个键，书页立刻换成一份预置的工作文档，\n"
+                                       "排版（字体/行距/页边距/窗口大小）和书页完全一致；\n"
+                                       "再按一次换回书，回到原来那一页。划线会一起隐藏。")
+        layout.addRow("安全文档热键:", self.safe_key_input)
+
+        safe_row = QWidget()
+        safe_layout = QHBoxLayout(safe_row)
+        safe_layout.setContentsMargins(0, 0, 0, 0)
+        self.safe_doc_input = QLineEdit(self.config.get("safe_doc_path", ""))
+        self.safe_doc_input.setPlaceholderText("留空 = 用内置的工作周报体例")
+        self.safe_doc_input.setToolTip("可选：指定本机的一份文档当安全文档（TXT / MD / EPUB）。\n"
+                                       "读不出来会自动回落内置版——任何情况下都不会露出书页。")
+        btn_pick_safe = QPushButton("选择…")
+        btn_pick_safe.clicked.connect(self.pick_safe_doc)
+        safe_layout.addWidget(self.safe_doc_input)
+        safe_layout.addWidget(btn_pick_safe)
+        layout.addRow("安全文档文件:", safe_row)
 
         btn_save = QPushButton("💾 保存并应用")
         btn_save.clicked.connect(self.accept)
@@ -1327,15 +1563,29 @@ class SettingsDialog(QDialog):
         if self.main_window:
             self.main_window.apply_style()
 
+    def on_font_change(self, _value=None):
+        """字号 / 字体也是拖动即预览：以前只在「保存并应用」时才读，而那时又不重排，
+        结果就是"改了字号没反应，翻一页才变"。现在和行距/页边距一样即时生效并落盘。"""
+        self.config["font_size"] = self.font_spin.value()
+        self.config["font_family"] = self.font_combo.currentFont().family()
+        if self.main_window:
+            self.main_window.apply_style()
+            self.main_window.save_config()
+
     def on_typography_change(self, _value=None):
-        """行距/段间距/页边距/首行缩进都是拖动即预览。"""
+        """行距/段间距/页边距/首行缩进都是拖动即预览，并且**立刻写盘**。
+
+        以前只改内存不落盘：改完不点「保存并应用」，一次崩溃/被杀/重启（比如我这边
+        为了上新版重启一次）就会悄悄退回文件里旧的那个值——表现出来就是
+        「页边距调整不生效」：调的时候看着对，下次打开又变回去了。"""
         self.config["line_spacing"] = self.spacing_spin.value()
         self.config["paragraph_spacing"] = self.para_spin.value()
-        self.config["page_margin"] = self.margin_spin.value()
+        self.config["page_margin_chars"] = self.margin_spin.value()
         self.config["first_line_indent"] = self.indent_spin.value()
         self.config["paragraph_indent"] = self.para_indent_check.isChecked()
         if self.main_window:
             self.main_window.apply_style()
+            self.main_window.save_config()
 
     def pick_text_color(self):
         color = QColorDialog.getColor()
@@ -1349,29 +1599,51 @@ class SettingsDialog(QDialog):
             self.temp_bg_color = f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
             self.btn_bg_color.setStyleSheet(f"background-color: {self.temp_bg_color};")
 
+    def pick_safe_doc(self):
+        """挑一份本机文档当"安全文档"（有人看屏幕时顶上）。"""
+        options = QFileDialog.Options() | QFileDialog.DontUseNativeDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择安全文档", "",
+            "文档 (*.txt *.md *.epub);;纯文本 (*.txt *.md);;EPUB (*.epub);;All Files (*)",
+            options=options)
+        if path:
+            self.safe_doc_input.setText(path)
+
     def accept(self):
         self.config["ip"] = self.ip_input.text().strip()
         self.config["font_size"] = self.font_spin.value()
         self.config["font_family"] = self.font_combo.currentFont().family()
         self.config["line_spacing"] = self.spacing_spin.value()
         self.config["paragraph_spacing"] = self.para_spin.value()
-        self.config["page_margin"] = self.margin_spin.value()
+        self.config["page_margin_chars"] = self.margin_spin.value()
         self.config["first_line_indent"] = self.indent_spin.value()
         self.config["paragraph_indent"] = self.para_indent_check.isChecked()
         self.config["boss_key"] = self.boss_key_input.text().strip()
         self.config["peek_key"] = self.peek_key_input.text().strip()
+        self.config["safe_key"] = self.safe_key_input.text().strip()
+        self.config["safe_doc_path"] = self.safe_doc_input.text().strip()
         self.config["text_color"] = self.temp_text_color
         self.config["bg_color"] = self.temp_bg_color
         self.config["ghost_mode"] = self.check_ghost_mode.isChecked()
-        self.config["auto_mode"] = self.config["auto_mode"]  # 修复：这里应该是 self.check_auto_mode.isChecked()
         self.config["auto_mode"] = self.check_auto_mode.isChecked()
         self.config["antishot_mode"] = self.check_antishot.isChecked()
+        if self.main_window:
+            # 「保存并应用」= 真的生效、真的落盘（字体这类只在保存时才改的项也在里面）
+            self.main_window.apply_style()
+            self.main_window.save_config()
         super().accept()
 
     def reject(self):
         self.config["opacity"] = self.original_opacity
+        # 排版的实时预览要退回去：点取消就该保持原样，不能偷偷留下预览值
+        for key, value in self.original_typography.items():
+            if value is None:
+                self.config.pop(key, None)
+            else:
+                self.config[key] = value
         if self.main_window:
             self.main_window.apply_style()
+            self.main_window.save_config()
             set_window_protection(int(self.main_window.winId()), self.config.get("antishot_mode", False))
         super().reject()
 
@@ -1381,6 +1653,7 @@ class StealthReader(QWidget):
     update_text_signal = pyqtSignal(str, bool)
     hotkey_signal = pyqtSignal()
     peek_hotkey_signal = pyqtSignal()
+    safe_hotkey_signal = pyqtSignal()
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
     peek_wheel_signal = pyqtSignal(int)
     peek_exit_signal = pyqtSignal(str)
@@ -1403,7 +1676,7 @@ class StealthReader(QWidget):
         self.local_start_index = 0  # 当前页起始字符在全文中的索引 (锚点)
         self.local_page_history = []  # 记录翻页历史，用于"上一页"
         self.local_file_path = ""  # 当前文件路径
-        self.local_chapters = []  # epub 章节目录 [(标题, 起始字符偏移)]，txt 时为空
+        self.local_chapters = []  # 本地书目录 [(标题, 起始偏移, 层级)]；epub 和 txt 都会有
         self.local_heading_offsets = set()  # 标题行的字符偏移，首行缩进要跳过它们
         self.displaying_local_text = False  # 当前显示的文本是否来自本地书（防止标题表串到网络章节上）
 
@@ -1424,12 +1697,18 @@ class StealthReader(QWidget):
         self.peek_shortcut = None
         self.peek_input_hook = GlobalInputHook(self)
 
+        # --- 安全文档模式（有人看屏幕时换成一份预置的工作文档）---
+        self.safe_mode = False
+        self.safe_snapshot = None       # 进模式前的书状态，退出时按它恢复
+        self.safe_shortcut = None
+
         # 老板键看门狗：keyboard 库的监听线程偶尔会静默死亡（锁屏/睡眠/钩子被系统强拆），
         # 每 45 秒查一次，死了就重新注册
         self.hotkey_watchdog = QTimer(self)
         self.hotkey_watchdog.setInterval(45000)
         self.hotkey_watchdog.timeout.connect(self.check_hotkeys_alive)
         self.hotkey_watchdog.start()
+        self.hotkey_reregister_tick = 0   # 看门狗每两拍静默重挂一次，理由见 check_hotkeys_alive
 
         # --- 界面控制 ---
         self.single_line_height = 20
@@ -1446,17 +1725,25 @@ class StealthReader(QWidget):
         self.chameleon_timer.setInterval(500)
         self.chameleon_timer.timeout.connect(self.adjust_color_to_background)
 
+        # 视线滚到哪、进度就记到哪：滚轮会连续触发，攒一会儿再落盘
+        self.progress_save_timer = QTimer(self)
+        self.progress_save_timer.setSingleShot(True)
+        self.progress_save_timer.setInterval(1200)
+        self.progress_save_timer.timeout.connect(self.save_config)
+
         self.initUI()
         self.initTray()
 
         self.update_text_signal.connect(self.on_update_text_safe)
         self.hotkey_signal.connect(self.toggle_window)
         self.peek_hotkey_signal.connect(self.toggle_peek)
+        self.safe_hotkey_signal.connect(self.toggle_safe_mode)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.bookshelf_updated_signal.connect(self.on_bookshelf_updated)
 
         self.refresh_hotkeys()
+        self.register_session_notification()   # 锁屏解锁后靠它主动重挂热键
 
         # 尝试恢复上次打开的本地文件
         if self.config.get("last_local_file") and os.path.exists(self.config["last_local_file"]):
@@ -1539,8 +1826,9 @@ class StealthReader(QWidget):
                     except Exception as e:
                         self.update_text_signal.emit(f"编码无法识别，请转为UTF-8或GBK", False)
                         return
-                # 纯文本没有结构信息，只能按字面规则猜标题行
+                # 纯文本没有结构信息，只能按字面规则猜标题行（顺便当成目录用）
                 headings = detect_txt_headings(content)
+                chapters = txt_chapters_from_headings(content, headings)
 
             if not content:
                 self.update_text_signal.emit("文件为空", False)
@@ -1590,9 +1878,28 @@ class StealthReader(QWidget):
         line_height = QFontMetrics(self.text_edit.font()).lineSpacing()
         return int(line_height * self.paragraph_spacing_percent() / 100)
 
+    def char_width(self):
+        """1 字 = 一个全角空格宽（换字号、换字体跟着变）。"""
+        return QFontMetrics(self.text_edit.font()).horizontalAdvance("\u3000")
+
+    def page_margin_chars(self):
+        """页边距，单位"字"：四边同一个值，字号/字体一变就跟着等比变，不会越看越细。
+
+        老配置里 page_margin 存的是像素（载入时 load_config 会留个换算标记），
+        这里拿到当前字体后换算一次并固化，之后就只认 page_margin_chars 了。"""
+        legacy_px = self.config.pop("_page_margin_legacy_px", None)
+        if legacy_px is not None:
+            try:
+                px = float(legacy_px)
+            except (TypeError, ValueError):
+                px = 0.0
+            self.config["page_margin_chars"] = round(max(0.0, px) / max(1, self.char_width()), 2)
+            self.config.pop("page_margin", None)
+        return clamp_config_number(self.config, "page_margin_chars", PAGE_MARGIN_DEFAULT,
+                                   PAGE_MARGIN_MIN, PAGE_MARGIN_MAX)
+
     def page_margin_px(self):
-        return clamp_config_int(self.config, "page_margin", 0,
-                                PAGE_MARGIN_MIN, PAGE_MARGIN_MAX)
+        return int(round(self.char_width() * self.page_margin_chars()))
 
     def first_line_indent_chars(self):
         return clamp_config_number(self.config, "first_line_indent", FIRST_LINE_INDENT_DEFAULT,
@@ -1610,8 +1917,7 @@ class StealthReader(QWidget):
         """1 字符 = 一个全角空格的宽度，换字号字体时会跟着变。"""
         if not self.paragraph_indent() or self.first_line_indent_chars() <= 0:
             return 0
-        char_width = QFontMetrics(self.text_edit.font()).horizontalAdvance("\u3000")
-        return int(round(char_width * self.first_line_indent_chars()))
+        return int(round(self.char_width() * self.first_line_indent_chars()))
 
     def skip_first_line_indent(self):
         """挑出不该缩进的块：标题行，以及页首落在段落中间时的续行。
@@ -1643,13 +1949,19 @@ class StealthReader(QWidget):
         document = self.text_edit.document()
 
         margin = self.page_margin_px()
-        if abs(document.documentMargin() - margin) > 0.5:
-            document.setDocumentMargin(margin)
+        # 页边距一律用视口留白（viewportMargins）：文档留白会跟着内容滚走，
+        # 偷瞄/滚轮一滚顶部就没边距了；视口留白是固定的框，滚动也吃不掉。
+        if document.documentMargin() != 0:
+            document.setDocumentMargin(0)
 
         block_format = QTextBlockFormat()
         block_format.setLineHeight(self.line_spacing_percent(), QTextBlockFormat.ProportionalHeight)
         block_format.setTopMargin(self.paragraph_spacing_px())
         block_format.setTextIndent(self.first_line_indent_px())
+        # 两端对齐：中文排版本来就该这样。右边缘从"参差"变成一条线，顺带把"放不下一个整字"
+        # 剩下的那几像素（视口宽 mod 字宽）摊进字间，右留白才和左留白对称。
+        # 段末短行不受影响（Qt 不拉伸段落的最后一行），标题是单行块，同样不会被拉伸。
+        block_format.setAlignment(Qt.AlignJustify)
 
         cursor = QTextCursor(document)
         cursor.select(QTextCursor.Document)
@@ -1666,6 +1978,78 @@ class StealthReader(QWidget):
 
         # 排版定稿后重画划线（换页/改字号/换样式都会走到这里）
         self.apply_highlight_selections()
+
+        # 页边距：四边固定留白 + 底部按"最后一行完整"再收一次
+        self.apply_page_margins()
+
+    # --- 页边距（四边留白） ---
+    def page_cut_line(self, limit):
+        """本页正文的收边：返回 (最后一个完整行的行盒下沿, 这一行的行内行距)。
+
+        行盒下沿有两个身份：它是"下一页从哪继续"的分界（翻页探测必须用它，探到更靠上的
+        位置会落回本页最后一行，翻页就重复一行），也是裁切的基准线。
+        行盒下沿比这一行真正的墨迹还低 `lead` 像素（行距在行盒里留下的空隙），裁切时把这
+        `lead` 补回给裁切量，底部"看得见的留白"才不会白多出几像素。
+        判"这一行算不算完整"用的是墨迹下沿（行盒下沿 − lead）：留白可以小到刚好等于设定值，
+        不必为几像素的空隙把整整一行推给下一页。"""
+        doc = self.text_edit.document()
+        layout = doc.documentLayout()
+        cut = None
+        lead = 0
+        block = doc.begin()
+        while block.isValid():
+            bl = block.layout()
+            top = layout.blockBoundingRect(block).top()
+            if top > limit:
+                break
+            if bl is not None:
+                for i in range(bl.lineCount()):
+                    line = bl.lineAt(i)
+                    r = line.rect()
+                    if top + r.bottom() - line.leading() <= limit:
+                        cut = top + r.bottom()
+                        lead = line.leading()
+                    else:
+                        # 这一行越过底线：整行留给下一页
+                        return (cut if cut is not None else top + r.top()), lead
+            block = block.next()
+        return (cut if cut is not None else limit), lead
+
+    def apply_page_margins(self):
+        """页边距（四边）：左右和顶部是固定的视口留白，底部按"本页最后一行完整"再收一次。
+
+        分成两层是有原因的：
+          - 固定框（viewportMargins 的上下左右）：滚动吃不掉，所以偷瞄用滚轮平滑滚动时
+            顶部那条留白照样在（文档留白会被内容滚过去，看着就是"顶部没有页边距"）；
+          - 底部再按行位置收边：正文是按几何切页的，切点落在哪一行就显示到哪，
+            压在窗口下沿的那一行会被切掉半行，所以要退到最后一个完整行的下沿。
+        四边量到的是同一个东西——正文墨迹：顶部/左右是固定留白，底部再多补回最后一行行盒
+        里那几像素行距（见 page_cut_line），于是"看得见的底部留白 ≥ 设定值"且最小就是设定值。"""
+        te = self.text_edit
+        vm = te.viewportMargins()
+        margin = self.page_margin_px()
+        if te.verticalScrollBar().value() != 0:
+            return   # 行矩形是文档坐标，滚动过就不是视口坐标了（翻页时会重算）
+        if margin <= 0:
+            # 页边距为 0：不裁边，页底就是视口下沿（完全回到没有页边距时的行为）
+            self.page_content_bottom = te.viewport().height()
+            if vm.left() or vm.top() or vm.right() or vm.bottom():
+                te.setViewportMargins(0, 0, 0, 0)
+            return
+        base_h = te.viewport().height() + vm.bottom()   # 未按页裁切时的可见高度
+        if base_h <= margin * 3:
+            # 窗口被压到只剩一两行：别留着上一次算出的裁切量把正文区压没
+            self.page_content_bottom = base_h
+            bottom = max(0, base_h - 1) if vm.bottom() >= base_h else vm.bottom()
+            if (vm.left(), vm.top(), vm.right(), vm.bottom()) != (margin, margin, margin, bottom):
+                te.setViewportMargins(margin, margin, margin, bottom)
+            return
+        cut, lead = self.page_cut_line(base_h - margin)
+        # 页底裁到"最后一个完整行的墨迹下沿"（行盒下沿补掉 lead），底部看得见的留白才到位
+        self.page_content_bottom = cut
+        bottom = int(max(0, min(base_h - 1, base_h - cut + lead)))
+        if (vm.left(), vm.top(), vm.right(), vm.bottom()) != (margin, margin, margin, bottom):
+            te.setViewportMargins(margin, margin, margin, bottom)
 
     def set_display_text(self, text):
         """换文本的唯一入口：换完立刻套同一套排版，否则翻页会按旧排版测量。"""
@@ -1689,6 +2073,75 @@ class StealthReader(QWidget):
         # 【关键】强制滚动条回顶，确保 local_start_index 对应的字符永远在第一行
         self.text_edit.verticalScrollBar().setValue(0)
 
+        # 回顶之后再算页底裁切线：这时文档坐标和视口坐标才是一套
+        self.apply_page_margins()
+
+        # 改视口留白时 Qt 有可能顺手调一下滚动位置，再钉一次页首
+        self.text_edit.verticalScrollBar().setValue(0)
+
+    def displayed_is_local_page(self):
+        """正文区里现在显示的，是不是 local_full_text 从 local_start_index 起的那一段。
+
+        进/出安全文档、切网络书的**那一瞬间**，正文区还是上一份内容，而 local_* 已经换成
+        新的了。这时按几何位置算出来的"锚点"是另一份文档里的坐标——拿它当页首就会把进度
+        改坏（实测：翻到 27137 后进安全文档，last_local_pos 被写成 72；在安全文档里按老板
+        键唤出一次，又被写成 0，等于把读到哪儿整段清掉）。"""
+        if not (self.is_local_mode and self.local_full_text):
+            return False
+        shown = self.text_edit.toPlainText()
+        if not shown:
+            return False
+        want = self.local_full_text[self.local_start_index: self.local_start_index + 24]
+        n = min(24, len(shown), len(want))
+        return n > 0 and shown[:n] == want[:n]
+
+    def current_top_offset(self):
+        """当前视口顶那一行第一个字，在全文里的偏移。
+
+        没滚动过时它就是本页页首（= local_start_index）；用滚轮/偷瞄滚过之后，
+        视口顶已经不是页首了——重排（改窗口大小、改字号）要认住的是**这一行**。"""
+        if not (self.is_local_mode and self.local_full_text):
+            return self.local_start_index
+        if not self.displayed_is_local_page():
+            return self.local_start_index   # 屏幕上是上一份内容，几何位置不算数
+        pos = self.text_edit.cursorForPosition(QPoint(0, 0)).position()
+        return max(0, min(self.local_start_index + pos, len(self.local_full_text) - 1))
+
+    def repage_to(self, anchor):
+        """把锚点（某个字符）放到页首重新铺一页。
+
+        改窗口大小 / 改字号之后如果还从原来的 local_start_index 铺，人就被甩回本页最上面
+        （看着就是"阅读进度老是跳回"）。把锚点当成新的页首，视线落点不变，
+        顺带把 last_local_pos 也更新过去——重启后恢复的就是你正在看的那一行。"""
+        if not (self.is_local_mode and self.local_full_text):
+            return
+        if not self.displayed_is_local_page():
+            # 切文档的中间态：锚点属于旧文档，一个字都不许改，只按当前 local_start_index 重铺
+            # （安全文档铺它自己的第 0 字，书铺快照里的原位）
+            self.render_local_page()
+            return
+        anchor = max(0, min(int(anchor), len(self.local_full_text) - 1))
+        self.local_start_index = anchor
+        if not self.safe_mode:
+            # 安全文档模式下 local_* 是那份假文档的坐标，绝不能写进真书的进度
+            self.config["last_local_pos"] = anchor
+        self.render_local_page()
+
+    def record_view_position(self, *_):
+        """视线滚到哪，阅读进度就记到哪。
+
+        本地阅读有两种滚动：翻页会推进 local_start_index，而**页内滚轮 / 偷瞄滚轮只动视口**，
+        local_start_index 原地不动，要滚满 5000 字缓冲区才更新一次。只记 local_start_index
+        的话，在偷瞄里滚了一屏又一屏，存档还停在缓冲区起点——重启/重新打开就"上翻"回那一行
+        （实测：人在 31819 划线，存档停在 29161，差 2700 字）。这里跟着视口顶走，并延迟落盘
+        （滚轮连续触发，不必每个 notch 都写一次文件）。安全文档模式下正文不是书，一个字节不记。"""
+        if self.safe_mode or not (self.is_local_mode and self.local_full_text):
+            return
+        if not self.displayed_is_local_page():
+            return
+        self.config["last_local_pos"] = self.current_top_offset()
+        self.progress_save_timer.start()
+
     # --- 核心：基于几何坐标探测下一页起始位置 ---
     def calc_next_page_start(self):
         """利用视图几何坐标，探测屏幕底部边缘的字符位置"""
@@ -1697,8 +2150,11 @@ class StealthReader(QWidget):
             return 0
 
         viewport_h = self.text_edit.viewport().height()
-        # 探测点：视图左下角再往下一点点 (取下一行的开头)
-        target_y = viewport_h + 2
+        # 探测点：正文下沿（最后一个完整行的行盒下沿）再往下一点点 = 下一行的开头。
+        # 不能拿视口下沿来探：为了把看得见的底部留白收到设定值，视口下沿会比行盒下沿更高
+        # （落在最后一行行盒内部），探到的会是这一行本身，翻页就重复一行。
+        base_y = max(viewport_h, getattr(self, "page_content_bottom", viewport_h))
+        target_y = int(base_y) + 2
 
         cursor = self.text_edit.cursorForPosition(QPoint(0, target_y))
         next_pos_in_buffer = cursor.position()
@@ -1777,9 +2233,10 @@ class StealthReader(QWidget):
 
                 self.render_local_page()
 
-            # 【关键】即时存档
-            self.config["last_local_pos"] = self.local_start_index
-            self.save_config()
+            # 【关键】即时存档（安全文档模式下绝不存档：那不是书，不能污染阅读进度）
+            if not self.safe_mode:
+                self.config["last_local_pos"] = self.local_start_index
+                self.save_config()
 
         else:
             # --- 网络模式 ---
@@ -1810,6 +2267,9 @@ class StealthReader(QWidget):
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     file_config = json.load(f)
+                    if "page_margin_chars" not in file_config and "page_margin" in file_config:
+                        # 老配置：page_margin 是像素，等拿到当前字体再换算成"字"
+                        file_config["_page_margin_legacy_px"] = file_config["page_margin"]
                     self.config = {**DEFAULT_CONFIG, **file_config}
             except:
                 self.config = DEFAULT_CONFIG.copy()
@@ -1845,11 +2305,17 @@ class StealthReader(QWidget):
     def refresh_hotkeys(self):
         hotkey_str = self.config.get("boss_key", "Esc")
         peek_key_str = self.config.get("peek_key", "ctrl+e")
+        safe_key_str = (self.config.get("safe_key", "ctrl+alt+d") or "").strip()
         try:
             keyboard.unhook_all()
             keyboard.add_hotkey(hotkey_str, self.on_global_hotkey_triggered)
             # 注意：unhook_all 只拆 keyboard 库自己的钩子；偷瞄模式的 ctypes 钩子独立管理
             keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered)
+            # 安全文档热键：和上面两个撞车的话只留先注册的那个，免得一次按键触发两个动作
+            if safe_key_str and safe_key_str.lower() not in (hotkey_str.lower(), peek_key_str.lower()):
+                keyboard.add_hotkey(safe_key_str, self.on_safe_hotkey_triggered)
+            elif safe_key_str:
+                log_event(f"安全文档热键与老板键/偷瞄键重复，已跳过: {safe_key_str}")
         except Exception as e:
             log_event(f"全局热键注册失败: {e}")
         try:
@@ -1868,6 +2334,15 @@ class StealthReader(QWidget):
             self.peek_shortcut.activated.connect(self.toggle_peek)
         except:
             pass
+        try:
+            if self.safe_shortcut:
+                self.safe_shortcut.setKey(QKeySequence())
+                self.safe_shortcut = None
+            if safe_key_str:
+                self.safe_shortcut = QShortcut(QKeySequence(safe_key_str), self)
+                self.safe_shortcut.activated.connect(self.toggle_safe_mode)
+        except:
+            pass
 
         # 划线与书签的窗口内快捷键，只注册一次（老板键看门狗会反复调 refresh_hotkeys）
         if getattr(self, "marks_shortcuts", None) is None:
@@ -1881,24 +2356,155 @@ class StealthReader(QWidget):
                 self.marks_shortcuts = []
 
     def on_global_hotkey_triggered(self):
-        log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
-        self.hotkey_signal.emit()
+        # 这三个回调跑在 keyboard 库的分发线程上，那里没有兜底 try：回调抛异常（比如日志
+        # 写盘失败）会把分发线程直接打死，此后线程活着、listening 仍是 True，热键却一个都不响。
+        # 所以自己兜住，绝不把异常抛回库里。
+        try:
+            log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
+            self.hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"老板键回调异常: {e}")
+            except Exception:
+                pass
 
     def on_peek_hotkey_triggered(self):
-        self.peek_hotkey_signal.emit()
+        try:
+            self.peek_hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"偷瞄键回调异常: {e}")
+            except Exception:
+                pass
+
+    def on_safe_hotkey_triggered(self):
+        try:
+            log_event("安全文档热键触发")
+            self.safe_hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"安全文档键回调异常: {e}")
+            except Exception:
+                pass
+
+    def register_session_notification(self):
+        """让窗口收到锁屏/解锁通知（WM_WTSSESSION_CHANGE）——解锁后热键自愈的触发点。"""
+        try:
+            if not ctypes.windll.wtsapi32.WTSRegisterSessionNotification(
+                    int(self.winId()), NOTIFY_FOR_THIS_SESSION):
+                raise ctypes.WinError(ctypes.get_last_error())
+            log_event("已注册会话通知（锁屏解锁后自动重挂全局热键）")
+        except Exception as e:
+            log_event(f"会话通知注册失败（只能靠看门狗定期重挂）: {e}")
+
+    def clear_stuck_keys(self):
+        """擦掉"其实早松开了、库却以为还按着"的键——锁屏后热键全失灵的真凶。
+
+        锁屏（Win+L）那一刻输入进了 Winlogon 的安全桌面，低级钩子收不到 KEY_UP，于是 Win
+        永远留在 keyboard 库的 `_pressed_events` 里。而热键匹配用的是"当前按下键的排序元组"
+        （库内部 `tuple(sorted(_pressed_events))` 去查 `nonblocking_hotkeys`），多一个 Win
+        就永远匹配不上 ctrl+d / ctrl+e / ctrl+alt+d——于是老板键、偷瞄键、安全文档键一起失灵，
+        只剩托盘能用；而线程还活着、listening 仍是 True，看门狗光看状态查不出任何异常。
+        解锁和每次例行重挂时都清一遍（顺手把库里另一份"逻辑按下"表也清了）。"""
+        cleared = []
+        lock = getattr(keyboard, "_pressed_events_lock", None)
+        for name in ("_pressed_events", "_logically_pressed_keys"):
+            state = getattr(keyboard, name, None)
+            if not isinstance(state, dict) or not state:
+                continue
+            cleared.append(f"{name}={sorted(state)}")
+            try:
+                if lock is not None:
+                    with lock:
+                        state.clear()
+                else:
+                    state.clear()
+            except Exception:
+                pass
+        if cleared:
+            log_event("清掉卡住的按键状态（锁屏时松开的键没收到事件）: " + ", ".join(cleared))
+
+    def recover_hotkeys(self, reason=""):
+        """把全局热键整套重挂一遍。
+
+        锁屏解锁、监听线程死掉、钩子被系统摘掉，最后都走这里。两件事：先擦掉卡住的按键
+        状态（见 clear_stuck_keys），再重挂热键。偷瞄模式的 ctypes 钩子是另一套
+        （unhook_all 拆不到它），在偷瞄状态下一并重挂。reason 为空表示这是看门狗的例行
+        静默重挂，不往日志里写——免得日志被心跳刷满。"""
+        try:
+            self.clear_stuck_keys()
+            self.refresh_hotkeys()
+            if self.peek_mode:
+                self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e"))
+            if reason:
+                log_event(f"全局热键已重挂（{reason}）")
+        except Exception as e:
+            log_event(f"重挂全局热键失败: {e}")
 
     def check_hotkeys_alive(self):
-        """老板键看门狗：keyboard 库的监听线程死了就重新注册（锁屏/睡眠/钩子被系统强拆后常见）。"""
+        """老板键看门狗。两种病都得治：
+
+        1. 监听线程死了 / 根本没在监听 → 立刻重挂（老逻辑，锁屏、睡眠、钩子被强拆后常见）。
+        2. **看起来一切正常也要定期重挂**——这才是"锁屏解锁后 cd/ce 全失灵、托盘却还能用"的真凶：
+           Windows 对低级钩子有 LowLevelHooksTimeout（默认 300ms），回调被卡超时就把
+           WH_KEYBOARD_LL **悄悄摘掉**，而 keyboard 库毫不知情（listening 仍是 True、线程
+           还活着），光查状态永远查不出来。所以每两拍（约 90 秒）无条件重挂一次，
+           代价是重挂瞬间几毫秒内的按键可能漏一次热键（按键本身照常进别的程序）。"""
         try:
             listener = getattr(keyboard, "_listener", None)
             if listener is None or not listener.listening:
+                self.recover_hotkeys("监听未在运行")
                 return
             thread = getattr(listener, "listening_thread", None)
             if thread is not None and not thread.is_alive():
-                log_event("老板键监听线程已死，重新注册全局热键")
-                self.refresh_hotkeys()
+                self.recover_hotkeys("监听线程已死")
+                return
+            # 分发线程：真正把事件派给热键回调的是 processing_thread，它里面没有兜底 try，
+            # 回调抛异常就会把它打死——此后线程活着、listening 还是 True，热键却一个都不响。
+            proc = getattr(listener, "processing_thread", None)
+            if proc is not None and not proc.is_alive():
+                log_event("热键分发线程已死，重新拉起")
+                self.restart_dispatch_thread(listener)
+                self.recover_hotkeys("分发线程已死")
+                return
+            self.hotkey_reregister_tick += 1
+            if self.hotkey_reregister_tick >= 2:
+                self.hotkey_reregister_tick = 0
+                self.recover_hotkeys()
+        except Exception as e:
+            log_event(f"热键看门狗异常: {e}")
+
+    def restart_dispatch_thread(self, listener):
+        """processing_thread 死了就补一条（直接改 listening 会让钩子线程也重启，反而装出两个钩子）。"""
+        try:
+            queue = getattr(listener, "queue", None)
+            if queue is not None:      # 先把积压的事件倒掉，免得补上来的线程把旧按键重新触发一遍
+                for _ in range(10000):
+                    try:
+                        queue.get_nowait()
+                    except Exception:
+                        break
+            listener.processing_thread = threading.Thread(target=listener.process, daemon=True)
+            listener.processing_thread.start()
+            log_event("已重新拉起热键分发线程")
+        except Exception as e:
+            log_event(f"重新拉起热键分发线程失败: {e}")
+
+    def nativeEvent(self, eventType, message):
+        """接 Windows 会话通知：解锁/登录后主动重挂全局热键。
+
+        锁屏和解锁那一瞬间，钩子回调会被系统卡住，一旦超过 LowLevelHooksTimeout，
+        WH_KEYBOARD_LL 就被摘掉且不给任何通知（见 check_hotkeys_alive）。解锁是个明确信号，
+        收到后延迟 1.2 秒（等桌面切回来、钩子线程缓过来）无条件重挂一次。"""
+        try:
+            if eventType == b"windows_generic_MSG":
+                msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
+                if msg.message == WM_WTSSESSION_CHANGE and msg.wParam in (WTS_SESSION_UNLOCK, WTS_SESSION_LOGON):
+                    log_event("检测到解锁/登录，稍后重挂全局热键")
+                    QTimer.singleShot(800, lambda: self.recover_hotkeys("解锁/登录后"))
         except Exception:
             pass
+        return super().nativeEvent(eventType, message)
 
     def initUI(self):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -1913,10 +2519,12 @@ class StealthReader(QWidget):
         self.content_frame = CornerFrame()
         self.content_layout = QVBoxLayout(self.content_frame)
 
-        self.content_layout.setContentsMargins(5, 0, 5, 0)
+        # 不再给左右各加 5px 外框留白：那会让左右比上下各多 5px，四边就对不齐了。
+        # （圆角是 5px，但页边距本身至少也有几像素，正文不会贴到圆角上）
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(0)
 
-        self.text_edit = QTextEdit()
+        self.text_edit = ReaderTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setFrameStyle(QFrame.NoFrame)
         self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1925,6 +2533,8 @@ class StealthReader(QWidget):
         # 免得窗口抢走工作窗口的键盘焦点。
         self.text_edit.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.text_edit.setFocusPolicy(Qt.NoFocus)
+        # 正文区不是输入框：光标一律箭头（缩放区/拖动时临时换形状）
+        self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
         # 右键菜单交给我们自己：划到高亮上给划线菜单，正文上给窗口菜单
         self.text_edit.setContextMenuPolicy(Qt.NoContextMenu)
 
@@ -1933,9 +2543,13 @@ class StealthReader(QWidget):
         self.text_edit.document().setDocumentMargin(0)
 
         self.text_edit.installEventFilter(self)
+        # 视口滚一下就记一次阅读进度（页内滚轮/偷瞄滚轮只动视口，local_start_index 不动）
+        self.text_edit.verticalScrollBar().valueChanged.connect(self.record_view_position)
         # 鼠标事件其实都发给 viewport（上次滚轮那个坑），所以划选/单击必须装在 viewport 上
         self.text_edit.viewport().installEventFilter(self)
         self.text_edit.viewport().setMouseTracking(True)
+        # 悬停事件是兜住光标用的：真实鼠标移动时它的处理顺序在最后
+        self.text_edit.viewport().setAttribute(Qt.WA_Hover, True)
 
         self.content_layout.addWidget(self.text_edit)
         self.main_layout.addWidget(self.content_frame)
@@ -1954,9 +2568,31 @@ class StealthReader(QWidget):
 
         self.apply_style()
 
+    def update_viewport_cursor(self, event):
+        """正文区光标：默认箭头（不是输入框的 I 形）；拖动中/右下角缩放区给对应光标。"""
+        if self.filter_drag_origin is not None:
+            want = Qt.SizeAllCursor
+        elif (event.buttons() == Qt.NoButton
+              and self.is_in_resize_area(self.text_edit.viewport().mapTo(self, event.pos()))):
+            want = Qt.SizeFDiagCursor
+        else:
+            want = Qt.ArrowCursor
+        self.text_edit.set_pinned_cursor(want)
+
     def eventFilter(self, source, event):
         # 划选 / 单击划线 / 中键拖窗口都在 viewport 上收（滚轮那个坑：事件不发往 text_edit 本身）
         if source is self.text_edit.viewport():
+            if event.type() == QEvent.MouseMove:
+                self.update_viewport_cursor(event)
+            elif event.type() in (QEvent.Leave, QEvent.HoverLeave):
+                # 指针离开正文区：形状恢复默认，免得缩放光标被带出去
+                self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
+            # 偷瞄模式下这些事件照旧往下走：左键已经不会退出偷瞄了，
+            # 所以正文区要能正常划选、点击（选区/划线面板都按常规流程处理）。
+            if event.type() == QEvent.MouseButtonDblClick and self.peek_mode:
+                # 偷瞄时双击正文 = 换成安全文档（窗口继续亮着，内容无害）
+                self.enter_safe_mode()
+                return True
             if event.type() == QEvent.MouseButtonPress and self.on_viewport_press(event):
                 return True
             if event.type() == QEvent.MouseMove and self.on_viewport_move(event):
@@ -2065,6 +2701,9 @@ class StealthReader(QWidget):
             log_event("老板键 -> 隐藏窗口")
             self.dismiss_action_panel(cancelled=True)   # 连同待确认的划选一起作废
             self.sync_progress_async()
+            if self.is_local_mode and not self.safe_mode:
+                # 收起来 = "先看到这儿"：记视口顶那一行，而不是本页页首（页内滚过会差一屏）
+                self.config["last_local_pos"] = self.current_top_offset()
             self.save_window_pos()
             self.hide()
         else:
@@ -2097,12 +2736,16 @@ class StealthReader(QWidget):
         """浮现但不抢焦点，挂全局滚轮。挂不上钩子就不进——半吊子的偷瞄只会让人困惑。"""
         if self.peek_mode:
             return
+        if self.safe_mode:
+            # 从安全文档进偷瞄：先把真书放回来再看，否则偷瞄到的还是那份假页面
+            self.exit_safe_mode()
         if not self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e")):
             print("偷瞄模式未启动：全局输入钩子安装失败")
             return
-        self.dismiss_action_panel(cancelled=True)   # 偷瞄期间不弹面板（任何输入都会退出偷瞄）
+        self.dismiss_action_panel(cancelled=True)   # 进偷瞄时收掉已经在的面板
         self.peek_was_visible = self.isVisible()
         self.peek_mode = True
+        self.text_edit.set_pinned_cursor(Qt.ArrowCursor)   # 模式切换后光标形状回到默认
         if not self.isVisible():
             self.show()  # WA_ShowWithoutActivating：不夺走工作窗口的焦点
         self.raise_()
@@ -2115,20 +2758,26 @@ class StealthReader(QWidget):
             set_window_protection(int(self.winId()), True)
 
     def exit_peek(self, reason=""):
+        """退出偷瞄 = **把窗口收起来**。
+
+        偷瞄是"临时看一眼"，看完就该让它从屏幕上消失——包括从安全文档进来的那次：
+        退出时不再退回安全文档那副假页面（那样窗口还亮着，等于没走），而是直接隐藏。
+        唯一例外是"交给安全文档"（双击正文 / 按 Ctrl+Alt+D 切过去），那时窗口继续亮着，
+        只是内容换成安全文档。要再叫出来：Ctrl+E 继续偷瞄，或老板键 / 托盘图标显示窗口。"""
         if not self.peek_mode:
             return
         self.peek_mode = False
         self.peek_last_exit = time.time()
+        self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
         self.peek_input_hook.uninstall()  # 先卸钩，后面任何一步出错都不能泄漏钩子
-        if not self.peek_was_visible:
-            # 跟着藏回去：退出即恢复按 Ctrl+E 之前的样子
-            self.sync_progress_async()
-            self.hide()
-        else:
-            self.apply_style()  # 本来就可见：恢复正常样式
-            if self.config.get("ghost_mode", False):
-                # 幽灵模式开着时，按当前光标位置重新评估淡出（leaveEvent 内部自带包含判断）
-                self.leaveEvent(QEvent(QEvent.Leave))
+        self.apply_style()                # 先恢复正常样式，免得偷瞄那套样式留到下次露脸
+        if self.safe_mode:
+            self.exit_safe_mode()         # 从安全文档进来的：真书放回来（窗口马上要藏起来）
+        if reason == "safe_mode":
+            return                        # 交给安全文档：窗口继续亮着，内容换成安全文档
+        self.sync_progress_async()
+        self.hide()
+        log_event(f"偷瞄退出（{reason or '未说明'}）→ 窗口已隐藏")
 
     def on_peek_wheel(self, delta):
         """偷瞄模式的滚轮 = 窗口内滚动的手感：一格滚几行（事件交给 QTextEdit 默认处理，
@@ -2167,6 +2816,123 @@ class StealthReader(QWidget):
     def on_peek_exit(self, reason):
         self.exit_peek(reason)
 
+    # --- 安全文档模式：一键把书页换成一份预置的工作文档（有人凑过来看屏幕时用） ---
+    def safe_doc_text(self):
+        """安全文档正文：设置里指了文件就优先用文件，读不出来一律回落内置版——绝不能露出书页。"""
+        path = (self.config.get("safe_doc_path") or "").strip()
+        if path:
+            try:
+                if not os.path.exists(path):
+                    raise FileNotFoundError(path)
+                if path.lower().endswith(".epub"):
+                    content, _chapters, _headings = load_epub_with_headings(path)
+                else:
+                    try:
+                        with open(path, "r", encoding="utf-8-sig") as f:
+                            content = f.read()
+                    except UnicodeDecodeError:
+                        with open(path, "r", encoding="gb18030") as f:
+                            content = f.read()
+                if content and content.strip():
+                    return content
+                log_event(f"安全文档内容为空，改用内置版: {path}")
+            except Exception as e:
+                log_event(f"安全文档读取失败({e})，改用内置版: {path}")
+        return SAFE_DOC_TEXT
+
+    def update_tray_tooltip(self):
+        try:
+            if not hasattr(self, "tray_icon"):
+                return
+            self.tray_icon.setToolTip("StealthReader（安全文档模式 · 进程运行中）" if self.safe_mode
+                                      else "StealthReader 阅读器（进程运行中）")
+        except Exception:
+            pass
+
+    def toggle_safe_mode(self):
+        if self.safe_mode:
+            self.exit_safe_mode()
+        else:
+            self.enter_safe_mode()
+
+    def enter_safe_mode(self):
+        """切到安全文档：排版沿用当前设置（同一条渲染管线），窗口位置大小不动，
+        划线高亮全部藏起来，书的状态先存快照——退出后原位恢复。"""
+        if self.safe_mode:
+            return
+        self.safe_snapshot = {
+            "is_local_mode": self.is_local_mode,
+            "local_file_path": self.local_file_path,
+            "local_full_text": self.local_full_text,          # 字符串引用，不复制，不占内存
+            "local_start_index": self.local_start_index,
+            # 页内滚到哪一行也要存：只存页首的话，回来会掉回本页最上面（看着就是"上翻"）
+            "local_top_offset": self.current_top_offset(),
+            "local_page_history": list(self.local_page_history),
+            "local_chapters": self.local_chapters,
+            "local_heading_offsets": self.local_heading_offsets,
+            "current_book": self.current_book,
+            "current_chapter_index": self.current_chapter_index,
+            "display_text": self.text_edit.toPlainText(),
+        }
+        self.dismiss_action_panel(cancelled=True)
+        self.exit_peek("safe_mode")
+        self.safe_mode = True
+        # 借用本地渲染管线：字体/字号/行距/段间距/页边距/缩进全都沿用，排版和书页一模一样
+        self.is_local_mode = True
+        self.local_file_path = ""            # 不指向任何书：不存进度、不挂划线
+        self.local_full_text = self.safe_doc_text()
+        self.local_start_index = 0
+        self.local_page_history = []
+        self.local_chapters = []
+        self.local_heading_offsets = detect_txt_headings(self.local_full_text)
+        self.displaying_local_text = True
+        self.ghost_veiled = False
+        self.apply_style()                   # 先刷样式：别让文字停在上一状态的透明态
+        self.render_local_page()
+        self.update_tray_tooltip()
+        log_event("安全文档模式：已切换（书页已隐藏，排版保持不变）")
+
+    def exit_safe_mode(self):
+        if not self.safe_mode:
+            return
+        self.safe_mode = False
+        snap = self.safe_snapshot or {}
+        self.safe_snapshot = None
+        if snap.get("is_local_mode") and snap.get("local_full_text"):
+            # 直接把快照里的全文和偏移放回去重渲：位置精确到字，也不用重读文件
+            self.is_local_mode = True
+            self.local_file_path = snap.get("local_file_path", "")
+            self.local_full_text = snap.get("local_full_text", "")
+            self.local_start_index = int(snap.get("local_start_index", 0))
+            self.local_page_history = list(snap.get("local_page_history", []))
+            self.local_chapters = snap.get("local_chapters", [])
+            self.local_heading_offsets = snap.get("local_heading_offsets", set())
+            self.apply_style()   # 只刷样式：此刻正文区还是安全文档，锚点会被安全阀挡住，不会改进度
+            # 视线也回到原处：页首直接放在"快照里视口顶那一行"，页内滚动一并还原。
+            # 进度只跟着**书自己的**这一行走；安全文档的坐标（0 之类）绝不写进来——
+            # 安全文档模式的承诺是"退出后书页原样回来"，而不是把读到哪儿改成那份假文档的位置。
+            self.local_start_index = max(0, min(int(snap.get("local_top_offset", self.local_start_index)),
+                                                len(self.local_full_text) - 1))
+            self.render_local_page()
+            self.config["last_local_pos"] = self.local_start_index
+        elif snap.get("current_book"):
+            # 网络书：按记住的章节重新拉一次，走原来那条渲染路径
+            self.is_local_mode = False
+            self.displaying_local_text = False
+            self.current_book = snap.get("current_book")
+            self.current_chapter_index = int(snap.get("current_chapter_index", 0))
+            self.apply_style()
+            self.fetch_chapter_content(self.current_book["bookUrl"], self.current_chapter_index, False)
+        else:
+            self.is_local_mode = False
+            self.displaying_local_text = False
+            self.local_full_text = ""
+            self.local_start_index = 0
+            self.apply_style()
+            self.set_display_text(snap.get("display_text", "") or "")
+        self.update_tray_tooltip()
+        log_event("安全文档模式：已退出（书页已恢复）")
+
     def adjust_color_to_background(self):
         if not self.isVisible() or not self.config.get("auto_mode"):
             self.chameleon_timer.stop()
@@ -2202,6 +2968,9 @@ class StealthReader(QWidget):
             """)
 
     def apply_style(self):
+        # 刷样式会重排（字号/行距/页边距都在里面），重排前先认住"现在正看的那一行"，
+        # 重绘时拿它当页首——否则每次刷样式都从本页最上面重铺，看着就是"阅读进度老是跳回"。
+        anchor = self.current_top_offset()
         font_family = self.config.get('font_family', 'Microsoft YaHei')
         font_size = self.config['font_size']
         font = QFont(font_family, font_size)
@@ -2246,9 +3015,11 @@ class StealthReader(QWidget):
             """
             self.text_edit.setStyleSheet(text_style)
 
-            # 本地模式下修改样式需要重绘页面
-            if self.is_local_mode:
-                self.render_local_page()
+        # 本地模式下样式改了就得重排重铺（页边距/字号/行距都在这条路上）。
+        # 这句原来只写在"非自动挡"分支里，自动挡（变色龙）下去改页边距/字号就不重排，
+        # 得等下一次翻页才生效——看着就是"调了没反应"。按锚点重绘，落点不变。
+        if self.is_local_mode:
+            self.repage_to(anchor)
 
     def enterEvent(self, event):
         self.is_mouse_in = True
@@ -2407,7 +3178,7 @@ class StealthReader(QWidget):
             self.update_text_signal.emit(f"网络错误: {str(e)}", False)
 
     def sync_progress_async(self):
-        if not self.current_book or self.is_local_mode: return
+        if not self.current_book or self.is_local_mode or self.safe_mode: return
         threading.Thread(target=self._sync_task, daemon=True).start()
 
     def _sync_task(self):
@@ -2471,6 +3242,8 @@ class StealthReader(QWidget):
 
         if event.buttons() == Qt.LeftButton:
             if self.is_resizing:
+                # 先认住"现在正看的那一行"（用旧排版量），重排后让它仍然停在页首
+                anchor = self.current_top_offset()
                 new_w = max(event.pos().x(), 100)
                 min_h = getattr(self, 'single_line_height', 20)
                 new_h = max(event.pos().y(), min_h)
@@ -2478,7 +3251,7 @@ class StealthReader(QWidget):
 
                 # 【核心逻辑】调整大小时基于锚点重绘
                 if self.is_local_mode:
-                    self.render_local_page()
+                    self.repage_to(anchor)
 
             elif self.is_moving:
                 delta = QPoint(event.globalPos() - self.oldPos)
@@ -2524,12 +3297,14 @@ class StealthReader(QWidget):
     def persist_annotations(self):
         save_annotations(self.annotations)
 
-    def chapter_title_at(self, offset):
-        """这个偏移落在哪一章：epub 用目录，txt 用标题行兜底。"""
-        title = ""
-        for name, off in (self.local_chapters or []):
+    def chapter_at(self, offset):
+        """这个偏移落在哪一章：返回 (标题, 层级)。epub 用目录，txt 用标题行兜底。"""
+        title, level = "", 1
+        for entry in (self.local_chapters or []):
+            name, off = entry[0], entry[1]
             if int(off) <= offset:
                 title = str(name).strip()
+                level = int(entry[2]) if len(entry) > 2 else 1
             else:
                 break
         if not title and self.local_heading_offsets:
@@ -2539,7 +3314,10 @@ class StealthReader(QWidget):
                     best = off
             if best >= 0:
                 title = self.local_full_text[best:best + 40].split("\n")[0].strip()
-        return title
+        return title, max(1, int(level or 1))
+
+    def chapter_title_at(self, offset):
+        return self.chapter_at(offset)[0]
 
     def snippet_at(self, offset, length=60):
         return " ".join(self.local_full_text[offset:offset + length].split())
@@ -2558,7 +3336,8 @@ class StealthReader(QWidget):
     def apply_highlight_selections(self):
         """把落在当前缓冲区里的划线画成 ExtraSelection。
         绝不动正文——正文一变，翻页的几何测量就跟着错（"已恢复进度"覆盖正文那个坑）。"""
-        if not (self.is_local_mode and self.local_full_text) or self.ghost_veiled:
+        if not (self.is_local_mode and self.local_full_text) or self.ghost_veiled or self.safe_mode:
+            # 安全文档模式下一条高亮都不画：页面上那几条彩色横条比书页本身还露馅
             self.text_edit.setExtraSelections([])
             return
         base = self.local_start_index
@@ -2698,7 +3477,7 @@ class StealthReader(QWidget):
         self.persist_annotations()
 
     def toggle_bookmark(self):
-        if not (self.is_local_mode and self.local_full_text):
+        if self.safe_mode or not (self.is_local_mode and self.local_full_text):
             return
         store = self.book_store()
         if not store:
@@ -2770,12 +3549,13 @@ class StealthReader(QWidget):
             return
         self.local_page_history = []
         self.local_start_index = max(0, min(int(offset), max(0, len(self.local_full_text) - 1)))
-        self.config["last_local_pos"] = self.local_start_index
-        self.save_config()
+        if not self.safe_mode:
+            self.config["last_local_pos"] = self.local_start_index
+            self.save_config()
         self.render_local_page()
 
     def open_reading_marks(self, initial_tab=0):
-        if not self.is_local_mode:
+        if self.safe_mode or not self.is_local_mode:
             return
         self.is_popup_open = True
         try:
@@ -2788,6 +3568,8 @@ class StealthReader(QWidget):
 
     def export_annotations(self):
         """导出成 Markdown：按章节分组，划线原文用引用块，笔记跟在后面。"""
+        if self.safe_mode:
+            return None
         if not (self.is_local_mode and self.local_file_path):
             QMessageBox.information(self, "导出", "先打开一本本地书。")
             return None
@@ -2806,9 +3588,11 @@ class StealthReader(QWidget):
             lines += ["## 划线", ""]
             last_chapter = None
             for hl in highlights:
-                chapter = self.chapter_title_at(int(hl.get("start", 0))) or "正文"
+                chapter, level = self.chapter_at(int(hl.get("start", 0)))
+                chapter = chapter or "正文"
                 if chapter != last_chapter:
-                    lines += [f"### {chapter}", ""]
+                    # 目录有几级，导出的标题就有几级（### → #### → #####，最多到 ######）
+                    lines += ["#" * min(6, 2 + max(1, level)) + f" {chapter}", ""]
                     last_chapter = chapter
                 for line in str(hl.get("text", "")).strip().split("\n"):
                     lines.append("> " + line.strip())
@@ -2860,12 +3644,14 @@ class StealthReader(QWidget):
             self.filter_drag_origin = event.globalPos()
             self.filter_drag_window_pos = self.pos()
             self.setCursor(Qt.SizeAllCursor)
+            self.text_edit.set_pinned_cursor(Qt.SizeAllCursor)
             return True
         if event.button() == Qt.LeftButton:
             # 先把上一轮残留的选中清掉，不然它会被当成一次"新划选"再确认一遍（重复划线就是这么来的）
             self.clear_text_selection()
         if event.button() == Qt.RightButton:
-            hit = self.find_highlight_at(self.buffer_offset_at(event.pos()))
+            # 安全文档模式下不认划线：这份文档本来就没有任何标注
+            hit = None if self.safe_mode else self.find_highlight_at(self.buffer_offset_at(event.pos()))
             if hit:
                 self.show_action_panel("existing", hl=hit,
                                        anchor=self.text_edit.viewport().mapToGlobal(event.pos()))
@@ -2883,10 +3669,13 @@ class StealthReader(QWidget):
         if self.filter_drag_origin is not None:
             self.filter_drag_origin = None
             self.setCursor(Qt.ArrowCursor)
+            self.text_edit.set_pinned_cursor(Qt.ArrowCursor)   # 拖动结束，正文区回箭头
             self.save_window_pos()
             return True
         if event.button() != Qt.LeftButton or not (self.is_local_mode and self.local_full_text):
             return False
+        if self.safe_mode:
+            return False   # 安全文档模式下可以选中、可以复制，但不会划线也不会弹面板
         cursor = self.text_edit.textCursor()
         if cursor.hasSelection():
             # 一律用文档位置取偏移和原文，不用 selectedText（Qt 拿 U+2029 当段落分隔符，长度会对不上）
@@ -2917,7 +3706,7 @@ class StealthReader(QWidget):
         panel = HighlightActionPanel(self, mode=mode, current_color=current,
                                      has_note=bool(hl.get("note")))
         panel.chosen.connect(lambda key: self.on_panel_action(key, mode, hl))
-        panel.cancelled.connect(self.on_panel_cancelled)
+        panel.cancelled.connect(lambda: self.on_panel_cancelled(panel))
         panel.wheel_scrolled.connect(self.on_panel_wheel)
         self.action_panel = panel
         self.is_popup_open = True
@@ -2947,9 +3736,14 @@ class StealthReader(QWidget):
         if self.action_panel is None:
             self.is_popup_open = False
 
-    def on_panel_cancelled(self):
+    def on_panel_cancelled(self, panel=None):
         # 点别处 / Esc / 窗口藏起来 → 面板自己 hide，这里负责收尾
         # 注意要真的销毁控件：只清引用的话，弹层窗口会一个个攒下来（实测踩过）
+        # 另外：旧面板 hide 时也会发 cancelled，而且这个 hideEvent 是延迟送达的——等它到的时候
+        # self.action_panel 往往已经换成新面板了（刚拖出来的划选）。只认发信号的那个面板，
+        # 否则会把新选区连新面板一起清掉：表现就是"划线时好时不好"。
+        if panel is not None and panel is not self.action_panel:
+            return
         panel = self.action_panel
         self.action_panel = None
         if panel is not None:
@@ -3008,8 +3802,19 @@ class StealthReader(QWidget):
             self.dismiss_action_panel()
             self.delete_highlight(hl.get("id"))
 
-    def contextMenuEvent(self, event):
+    def build_context_menu(self):
+        """右键菜单。安全文档模式下只给中性项：菜单里的"打开本地书籍/导出划线笔记"这类字眼
+        本身就是破绽，凑过来看屏幕的人一眼就懂了。"""
         cmenu = QMenu(self)
+        if self.safe_mode:
+            copy_action = cmenu.addAction("📋 复制选中文字")
+            copy_action.triggered.connect(self.copy_selection)
+            copy_action.setEnabled(bool(self.text_edit.textCursor().hasSelection()))
+            cmenu.addSeparator()
+            cmenu.addAction("⚙️ 设置").triggered.connect(self.open_settings)
+            cmenu.addSeparator()
+            cmenu.addAction("❌ 退出").triggered.connect(self.quit_app)
+            return cmenu
         cmenu.addAction("📂 打开本地书籍 (TXT/EPUB)").triggered.connect(self.open_local_file_dialog)
         marks_action = cmenu.addAction("📑 目录 / 书签 / 划线 (Ctrl+L)")
         marks_action.triggered.connect(lambda: self.open_reading_marks(0))
@@ -3030,6 +3835,10 @@ class StealthReader(QWidget):
         cmenu.addAction("⚙️ 设置").triggered.connect(self.open_settings)
         cmenu.addSeparator()
         cmenu.addAction("❌ 退出").triggered.connect(self.quit_app)
+        return cmenu
+
+    def contextMenuEvent(self, event):
+        cmenu = self.build_context_menu()
         modernize_menu(cmenu)
         cmenu.exec_(self.mapToGlobal(event.pos()))
         cmenu.deleteLater()   # 菜单挂在窗口上，不销毁会一次右键攒一个
@@ -3080,20 +3889,24 @@ class StealthReader(QWidget):
         self.dismiss_action_panel(cancelled=True)
         self.sync_progress_async()
         self.save_window_pos()
-        if self.is_local_mode:
-            self.config["last_local_pos"] = self.local_start_index
+        if self.is_local_mode and not self.safe_mode:
+            self.config["last_local_pos"] = self.current_top_offset()   # 视口顶那一行，不是页首
             self.save_config()
         super().closeEvent(event)
 
     def quit_app(self):
-        # 退出前强制保存本地进度
-        if self.is_local_mode:
-            self.config["last_local_pos"] = self.local_start_index
+        # 退出前强制保存本地进度（安全文档模式下不存：那份假文档的坐标不是书的进度）
+        if self.is_local_mode and not self.safe_mode:
+            self.config["last_local_pos"] = self.current_top_offset()
             self.save_config()
         self.save_window_pos()
 
         self.peek_input_hook.uninstall()  # 钩子泄漏的症状是全系统滚轮发卡，退出必须拆干净
         keyboard.unhook_all()
+        try:
+            ctypes.windll.wtsapi32.WTSUnRegisterSessionNotification(int(self.winId()))
+        except Exception:
+            pass
         QApplication.instance().quit()
 
 
