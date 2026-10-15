@@ -26,10 +26,26 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog,
                              QInputDialog, QMessageBox, QToolTip, QTabWidget)
 from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject,
-                          QThread, QTimer, QEvent)
+                          QThread, QTimer, QEvent, QUrl)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
                          QFontMetrics, QTextCursor, QTextBlockFormat, QWheelEvent,
                          QPixmap, QIcon, QPainterPath, QTextCharFormat)
+
+# 隐形背诵：AnkiConnect 客户端。缺文件也不能让整个阅读器起不来，所以单独兜一层。
+try:
+    from anki_client import (AnkiClient, AnkiError, AnkiUnavailable, AnkiNotReviewing,
+                             AnkiBusy, AnkiNeedsKey, AnkiCommandError, INSTALL_HINT)
+    ANKI_CLIENT_OK = True
+except Exception as _anki_import_err:      # pragma: no cover
+    ANKI_CLIENT_OK = False
+    INSTALL_HINT = "隐形背诵需要 anki_client.py（本目录下），当前加载失败。"
+    class AnkiError(Exception): pass
+    class AnkiUnavailable(AnkiError): pass
+    class AnkiNotReviewing(AnkiError): pass
+    class AnkiBusy(AnkiError): pass
+    class AnkiNeedsKey(AnkiError): pass
+    class AnkiCommandError(AnkiError): pass
+    AnkiClient = None
 
 # 启用高分屏支持
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -93,6 +109,12 @@ DEFAULT_CONFIG = {
                                          # 不用 ctrl+shift+d：那键在 VSCode/PyCharm 是"运行与调试"、
                                          # 在 Chrome 是"收藏所有标签页"，而全局热键不拦截按键
     "safe_doc_path": "",                 # 留空 = 用内置的安全文档
+    # --- 隐形背诵（把 Anki 卡片当成一份文档来背，见 docs/anki-review-design.md）---
+    "anki_deck": "",                     # 默认牌组；留空 = 每次进模式时让你挑
+    "anki_key": "ctrl+alt+a",            # 进/出隐形背诵
+    "anki_swallow_keys": True,           # 背诵时吞掉 空格/回车/1-4/U/R/Esc（想正常打字就 Ctrl+D 收起）
+    "anki_conceal": True,                # 进背诵时把 Anki 自己的窗口藏起来（SW_HIDE）
+    "anki_api_key": "",                  # AnkiConnect 配了 apiKey 时填这里
     "ghost_mode": False,
     "auto_mode": False,
     "antishot_mode": False,
@@ -638,6 +660,79 @@ ANNOTATION_COLOR_NAMES = [("yellow", "黄色"), ("green", "绿色"), ("blue", "�
                           ("pink", "粉色"), ("purple", "紫色")]
 
 
+# ================= Anki 卡片 → 我们自己的"文档"（隐形背诵） =================
+
+def filter_anki_css(css):
+    """卡片模板的 CSS 里只保留"像文档"的部分。
+
+    保留：颜色、居中、表格、边距（Qt 支持 CSS 2.1 的一个子集）。
+    丢掉：字号/字体（必须由阅读设置说了算，否则调了字号卡片不动，一眼看出不是同一份文档）、
+    定位/flex/grid/宽高/动画（QTextEdit 不是浏览器，照着渲染只会走样，而**走样比空白更可疑**）。
+    """
+    if not css:
+        return ""
+    css = re.sub(r"(?is)/\*.*?\*/", "", css)
+    drop = {"font-size", "font-family", "line-height", "position", "display", "float",
+            "flex", "flex-direction", "justify-content", "align-items", "grid",
+            "width", "height", "max-width", "min-width", "max-height", "min-height",
+            "transform", "animation", "transition", "z-index", "overflow", "white-space",
+            "content", "box-shadow", "filter"}
+
+    def keep(m):
+        selector, body = m.group(1).strip(), m.group(2)
+        props = []
+        for decl in body.split(";"):
+            if ":" not in decl:
+                continue
+            prop = decl.split(":", 1)[0].strip().lower()
+            if prop in drop or prop.startswith("-"):
+                continue
+            props.append(decl.strip())
+        if not props or selector.startswith("@"):
+            return ""
+        return f"{selector} {{ {'; '.join(props)}; }}"
+
+    return re.sub(r"(?is)([^{}]+)\{([^{}]*)\}", keep, css).strip()
+
+
+def _strip_anki_furniture(html):
+    """剥掉卡片模板的 CSS/JS，并清掉内联字号。
+
+    实测：Anki 渲染的卡片 HTML 开头就是一大段 <style>（2000 多字符里大半是 CSS），必须整块拿掉；
+    卡片里还带内联 style="font-size:20px"，不清掉的话"字号设置"对卡片时灵时不灵。
+    """
+    html = re.sub(r"(?is)<style[^>]*>.*?</style>", "", html)
+    html = re.sub(r"(?is)<script[^>]*>.*?</script>", "", html)
+    html = re.sub(r"(?is)<link[^>]*>", "", html)
+
+    def fix_style(m):
+        style = re.sub(r"(?i)(font-size|font-family|line-height|white-space)\s*:[^;\"']*;?", "",
+                       m.group(1))
+        style = style.strip().strip(";").strip()
+        return f'style="{style}"' if style else ""
+
+    html = re.sub(r'(?i)style="([^"]*)"', fix_style, html)
+    html = re.sub(r"(?i)</?font[^>]*>", "", html)
+    return html
+
+
+def simplify_anki_html(html):
+    """卡片 HTML → 能塞进 QTextEdit、并且像一份文档的 HTML。返回 (html, 音频文件名列表)。
+
+    1. 剥掉 <style>/<script> 与内联字号（见 _strip_anki_furniture）；
+    2. `[sound:xxx.mp3]` 从显示文本里删掉，文件名交给调用方——播放走 Anki 自己的
+       `guiPlayAudio`（它懂 [sound:]、{{tts:}} 与自动播放策略，比我们自建播放器准得多）；
+    3. `class="cloze"` 的挖空加粗显示（文本模式下挖空本来就是这个样子）。
+    图片的 <img> 保留，由 QTextDocument 的 baseUrl 去 collection.media 里取。
+    """
+    if not html:
+        return "", []
+    sounds = re.findall(r"\[sound:([^\]]+)\]", html)
+    html = re.sub(r"\[sound:[^\]]+\]", "", html)
+    html = re.sub(r'(?is)<span[^>]*class="[^"]*\bcloze\b[^"]*"[^>]*>(.*?)</span>', r"<b>\1</b>", html)
+    return _strip_anki_furniture(html).strip(), sounds
+
+
 def annotations_file():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "annotations.json")
 
@@ -944,6 +1039,17 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
                 ("dwExtraInfo", ctypes.c_size_t)]
 
 
+# 隐形背诵要吞掉的键（**只有这 9 个**，其余一律放行，免得妨碍人家干活）。
+# 小键盘 1-4 也认（NumLock 开着时才是这几个 vk；关着时发的是 VK_END 之类，认不出来就不吞）。
+REVIEW_KEY_NAMES = {
+    0x20: "space", 0x0D: "enter", 0x1B: "esc", 0x55: "u", 0x52: "r",
+    0x31: "1", 0x32: "2", 0x33: "3", 0x34: "4",
+    0x61: "1", 0x62: "2", 0x63: "3", 0x64: "4",
+}
+# 设置里关掉"连空格/回车也吞"之后，仍然要吞这些（评分与退出必须能收到）
+REVIEW_KEY_NAMES_MIN = {"1", "2", "3", "4", "u", "r", "esc"}
+
+
 _LRESULT = ctypes.c_ssize_t
 _HOOKPROC = ctypes.WINFUNCTYPE(_LRESULT, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t)  # WPARAM/LPARAM
 _user32 = ctypes.windll.user32
@@ -1018,13 +1124,22 @@ class GlobalInputHook:
 
     def _on_keyboard(self, n_code, w_param, l_param):
         try:
-            if n_code >= 0 and self.owner.peek_mode and int(w_param) in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            if n_code >= 0 and int(w_param) in (WM_KEYDOWN, WM_SYSKEYDOWN):
                 info = ctypes.cast(l_param, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
-                if self._matches_peek_key(int(info.vkCode)):
-                    self.owner.peek_exit_signal.emit("peek_key")
-                    return 1  # 偷瞄期间这个键归我们，别落到当前应用上
-                self.owner.peek_exit_signal.emit("key")
-                return 0  # 其他按键放行
+                # 隐形背诵：只吞那 9 个复习键，而且只在"背诵中 + 窗口可见 + 没最小化"时吞
+                # （想正常打字就先 Ctrl+D 把窗口收起来）。其余按键一律放行。
+                if getattr(self.owner, "review_mode", False) and self.owner.review_keys_active():
+                    name = REVIEW_KEY_NAMES.get(int(info.vkCode))
+                    if name and (self.owner.review_swallow_all() or name in REVIEW_KEY_NAMES_MIN):
+                        self.owner.review_key_signal.emit(name)
+                        return 1
+                    return 0
+                if self.owner.peek_mode:
+                    if self._matches_peek_key(int(info.vkCode)):
+                        self.owner.peek_exit_signal.emit("peek_key")
+                        return 1  # 偷瞄期间这个键归我们，别落到当前应用上
+                    self.owner.peek_exit_signal.emit("key")
+                    return 0  # 其他按键放行
         except Exception:
             pass
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
@@ -1658,6 +1773,8 @@ class StealthReader(QWidget):
     peek_wheel_signal = pyqtSignal(int)
     peek_exit_signal = pyqtSignal(str)
     bookshelf_updated_signal = pyqtSignal(list)
+    # 背诵模式的按键也来自钩子线程（那里不能碰界面），一律发信号回主线程处理
+    review_key_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -1702,6 +1819,13 @@ class StealthReader(QWidget):
         self.safe_snapshot = None       # 进模式前的书状态，退出时按它恢复
         self.safe_shortcut = None
 
+        # --- 隐形背诵模式（Anki 卡片当文档看）---
+        self.review_mode = False
+        self.review_session = None      # 牌组 / 当前卡 / 是否翻面 / 本次已背 / 上次提示
+        self.review_snapshot = None     # 进背诵前的书状态（和安全文档共用同一套快照函数）
+        self.review_client = None       # anki_client.AnkiClient，惰性创建
+        self.review_busy_until = 0.0    # Anki 忙时的退避到什么时候
+
         # 老板键看门狗：keyboard 库的监听线程偶尔会静默死亡（锁屏/睡眠/钩子被系统强拆），
         # 每 45 秒查一次，死了就重新注册
         self.hotkey_watchdog = QTimer(self)
@@ -1731,6 +1855,11 @@ class StealthReader(QWidget):
         self.progress_save_timer.setInterval(1200)
         self.progress_save_timer.timeout.connect(self.save_config)
 
+        # 背诵时和 Anki 对账：人可能跑去 Anki 自己的窗口答题，窗口可见时每 2.5 秒核一次
+        self.review_timer = QTimer(self)
+        self.review_timer.setInterval(2500)
+        self.review_timer.timeout.connect(self.review_tick)
+
         self.initUI()
         self.initTray()
 
@@ -1740,6 +1869,7 @@ class StealthReader(QWidget):
         self.safe_hotkey_signal.connect(self.toggle_safe_mode)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
+        self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
         self.bookshelf_updated_signal.connect(self.on_bookshelf_updated)
 
         self.refresh_hotkeys()
@@ -2122,8 +2252,8 @@ class StealthReader(QWidget):
             return
         anchor = max(0, min(int(anchor), len(self.local_full_text) - 1))
         self.local_start_index = anchor
-        if not self.safe_mode:
-            # 安全文档模式下 local_* 是那份假文档的坐标，绝不能写进真书的进度
+        if not self._book_veiled():
+            # 安全文档 / 背诵模式下 local_* 不是书的坐标，绝不能写进真书的进度
             self.config["last_local_pos"] = anchor
         self.render_local_page()
 
@@ -2135,7 +2265,7 @@ class StealthReader(QWidget):
         的话，在偷瞄里滚了一屏又一屏，存档还停在缓冲区起点——重启/重新打开就"上翻"回那一行
         （实测：人在 31819 划线，存档停在 29161，差 2700 字）。这里跟着视口顶走，并延迟落盘
         （滚轮连续触发，不必每个 notch 都写一次文件）。安全文档模式下正文不是书，一个字节不记。"""
-        if self.safe_mode or not (self.is_local_mode and self.local_full_text):
+        if self._book_veiled() or not (self.is_local_mode and self.local_full_text):
             return
         if not self.displayed_is_local_page():
             return
@@ -2233,8 +2363,8 @@ class StealthReader(QWidget):
 
                 self.render_local_page()
 
-            # 【关键】即时存档（安全文档模式下绝不存档：那不是书，不能污染阅读进度）
-            if not self.safe_mode:
+            # 【关键】即时存档（安全文档/背诵模式下绝不存档：那不是书，不能污染阅读进度）
+            if not self._book_veiled():
                 self.config["last_local_pos"] = self.local_start_index
                 self.save_config()
 
@@ -2603,6 +2733,9 @@ class StealthReader(QWidget):
             # 【关键保护】如果既没选书，也不是本地模式，直接拦截滚轮不处理
             if not self.is_local_mode and not self.current_book:
                 return True
+            if self.review_mode:
+                # 背诵时滚轮滚的是卡片（交给 Qt 默认逐行滚动），不翻页、不碰书的进度
+                return False
 
             delta = event.angleDelta().y()
             if self.is_local_mode:
@@ -2701,7 +2834,7 @@ class StealthReader(QWidget):
             log_event("老板键 -> 隐藏窗口")
             self.dismiss_action_panel(cancelled=True)   # 连同待确认的划选一起作废
             self.sync_progress_async()
-            if self.is_local_mode and not self.safe_mode:
+            if self.is_local_mode and not self._book_veiled():
                 # 收起来 = "先看到这儿"：记视口顶那一行，而不是本页页首（页内滚过会差一屏）
                 self.config["last_local_pos"] = self.current_top_offset()
             self.save_window_pos()
@@ -2725,6 +2858,9 @@ class StealthReader(QWidget):
         if now - self.peek_last_toggle < 0.3:
             return
         self.peek_last_toggle = now
+        if self.review_mode:
+            # 背诵中按偷瞄键：按设计先把背诵退掉（书页回来），再照常进偷瞄
+            self.exit_review_mode(reason="peek")
         if self.peek_mode:
             self.exit_peek("peek_key")
             return
@@ -2844,8 +2980,16 @@ class StealthReader(QWidget):
         try:
             if not hasattr(self, "tray_icon"):
                 return
-            self.tray_icon.setToolTip("StealthReader（安全文档模式 · 进程运行中）" if self.safe_mode
-                                      else "StealthReader 阅读器（进程运行中）")
+            if self.review_mode:
+                # 托盘提示里**不放牌组名**：那些名字（背诵::诗句…）本身就是破绽
+                s = self.review_session or {}
+                tail = ""
+                if s.get("remaining") is not None:
+                    tail = f" · 待复习 {s['remaining']}"
+                self.tray_icon.setToolTip(f"StealthReader（进程运行中）{tail}")
+            else:
+                self.tray_icon.setToolTip("StealthReader（安全文档模式 · 进程运行中）" if self.safe_mode
+                                          else "StealthReader 阅读器（进程运行中）")
         except Exception:
             pass
 
@@ -2855,12 +2999,9 @@ class StealthReader(QWidget):
         else:
             self.enter_safe_mode()
 
-    def enter_safe_mode(self):
-        """切到安全文档：排版沿用当前设置（同一条渲染管线），窗口位置大小不动，
-        划线高亮全部藏起来，书的状态先存快照——退出后原位恢复。"""
-        if self.safe_mode:
-            return
-        self.safe_snapshot = {
+    def snapshot_book_state(self):
+        """记下"书现在读到哪儿、正文区显示的是什么"。安全文档与隐形背诵共用这一套。"""
+        return {
             "is_local_mode": self.is_local_mode,
             "local_file_path": self.local_file_path,
             "local_full_text": self.local_full_text,          # 字符串引用，不复制，不占内存
@@ -2874,6 +3015,54 @@ class StealthReader(QWidget):
             "current_chapter_index": self.current_chapter_index,
             "display_text": self.text_edit.toPlainText(),
         }
+
+    def restore_book_state(self, snap, write_progress=True):
+        """按快照把书页放回来。
+
+        `write_progress=False` 时一个字节都不许写：隐形背诵退出时正文区还是卡片，
+        按几何算出来的"锚点"属于卡片，写进 last_local_pos 就把真书的阅读进度改坏了
+        （安全文档那条路要写，因为它恢复的就是书自己的位置）。"""
+        if not snap:
+            return
+        if snap.get("is_local_mode") and snap.get("local_full_text"):
+            # 直接把快照里的全文和偏移放回去重渲：位置精确到字，也不用重读文件
+            self.is_local_mode = True
+            self.local_file_path = snap.get("local_file_path", "")
+            self.local_full_text = snap.get("local_full_text", "")
+            self.local_start_index = int(snap.get("local_start_index", 0))
+            self.local_page_history = list(snap.get("local_page_history", []))
+            self.local_chapters = snap.get("local_chapters", [])
+            self.local_heading_offsets = snap.get("local_heading_offsets", set())
+            self.apply_style()   # 只刷样式：此刻正文区还是上一份内容，锚点会被安全阀挡住，不会改进度
+            # 视线也回到原处：页首直接放在"快照里视口顶那一行"，页内滚动一并还原。
+            # 进度只跟着**书自己的**这一行走；别的文档的坐标（0 之类）绝不写进来。
+            self.local_start_index = max(0, min(int(snap.get("local_top_offset", self.local_start_index)),
+                                                len(self.local_full_text) - 1))
+            self.render_local_page()
+            if write_progress:
+                self.config["last_local_pos"] = self.local_start_index
+        elif snap.get("current_book"):
+            # 网络书：按记住的章节重新拉一次，走原来那条渲染路径
+            self.is_local_mode = False
+            self.displaying_local_text = False
+            self.current_book = snap.get("current_book")
+            self.current_chapter_index = int(snap.get("current_chapter_index", 0))
+            self.apply_style()
+            self.fetch_chapter_content(self.current_book["bookUrl"], self.current_chapter_index, False)
+        else:
+            self.is_local_mode = False
+            self.displaying_local_text = False
+            self.local_full_text = ""
+            self.local_start_index = 0
+            self.apply_style()
+            self.set_display_text(snap.get("display_text", "") or "")
+
+    def enter_safe_mode(self):
+        """切到安全文档：排版沿用当前设置（同一条渲染管线），窗口位置大小不动，
+        划线高亮全部藏起来，书的状态先存快照——退出后原位恢复。"""
+        if self.safe_mode:
+            return
+        self.safe_snapshot = self.snapshot_book_state()
         self.dismiss_action_panel(cancelled=True)
         self.exit_peek("safe_mode")
         self.safe_mode = True
@@ -2898,40 +3087,431 @@ class StealthReader(QWidget):
         self.safe_mode = False
         snap = self.safe_snapshot or {}
         self.safe_snapshot = None
-        if snap.get("is_local_mode") and snap.get("local_full_text"):
-            # 直接把快照里的全文和偏移放回去重渲：位置精确到字，也不用重读文件
-            self.is_local_mode = True
-            self.local_file_path = snap.get("local_file_path", "")
-            self.local_full_text = snap.get("local_full_text", "")
-            self.local_start_index = int(snap.get("local_start_index", 0))
-            self.local_page_history = list(snap.get("local_page_history", []))
-            self.local_chapters = snap.get("local_chapters", [])
-            self.local_heading_offsets = snap.get("local_heading_offsets", set())
-            self.apply_style()   # 只刷样式：此刻正文区还是安全文档，锚点会被安全阀挡住，不会改进度
-            # 视线也回到原处：页首直接放在"快照里视口顶那一行"，页内滚动一并还原。
-            # 进度只跟着**书自己的**这一行走；安全文档的坐标（0 之类）绝不写进来——
-            # 安全文档模式的承诺是"退出后书页原样回来"，而不是把读到哪儿改成那份假文档的位置。
-            self.local_start_index = max(0, min(int(snap.get("local_top_offset", self.local_start_index)),
-                                                len(self.local_full_text) - 1))
-            self.render_local_page()
-            self.config["last_local_pos"] = self.local_start_index
-        elif snap.get("current_book"):
-            # 网络书：按记住的章节重新拉一次，走原来那条渲染路径
-            self.is_local_mode = False
-            self.displaying_local_text = False
-            self.current_book = snap.get("current_book")
-            self.current_chapter_index = int(snap.get("current_chapter_index", 0))
-            self.apply_style()
-            self.fetch_chapter_content(self.current_book["bookUrl"], self.current_chapter_index, False)
-        else:
-            self.is_local_mode = False
-            self.displaying_local_text = False
-            self.local_full_text = ""
-            self.local_start_index = 0
-            self.apply_style()
-            self.set_display_text(snap.get("display_text", "") or "")
+        self.restore_book_state(snap, write_progress=True)
         self.update_tray_tooltip()
         log_event("安全文档模式：已退出（书页已恢复）")
+
+    # ================= 隐形背诵模式（Anki 卡片当成一份文档） =================
+
+    def _book_veiled(self):
+        """正文区此刻显示的是不是"不是书"的东西（安全文档 / Anki 卡片）。
+
+        划线、书签、阅读进度、导出这些**只对真书成立**的操作一律看这个判定。有两处漏判会
+        直接损坏数据，必须走这里：
+          - apply_highlight_selections：书页的彩色高亮会被画到卡片上（一眼露馅）
+          - on_viewport_press / on_viewport_release：在卡片上拖选会把**卡片文字按卡片偏移
+            写进这本书的划线存档**（数据被写坏）
+        """
+        return bool(self.safe_mode or self.review_mode)
+
+    def anki_client(self):
+        """惰性建 AnkiConnect 客户端：不进背诵就完全不碰 Anki。"""
+        if self.review_client is None:
+            if not ANKI_CLIENT_OK:
+                raise AnkiUnavailable(INSTALL_HINT)
+            key = (self.config.get("anki_api_key") or "").strip() or None
+            self.review_client = AnkiClient(api_key=key)
+        return self.review_client
+
+    def review_status_text(self):
+        """状态文案：牌组 · 待复习 N（Anki 每日上限口径） · 今日已复习 M · 本次 K。"""
+        s = self.review_session or {}
+        parts = [str(s.get("deck", "?"))]
+        if s.get("remaining") is not None:
+            parts.append(f"待复习 {s['remaining']}")
+        if s.get("reviewed_today") is not None:
+            parts.append(f"今日已复习 {s['reviewed_today']}")
+        if s.get("counted"):
+            parts.append(f"本次 {s['counted']}")
+        return " · ".join(parts)
+
+    def review_hint(self, text, ms=1800):
+        """提示只走浮动气泡：绝不往正文里写一个字（写正文会毁掉翻页测量，也会盖掉卡片）。"""
+        try:
+            QToolTip.showText(self.mapToGlobal(QPoint(self.width() // 2, 8)), text, self,
+                              QRect(0, 0, 1, 1), ms)
+        except Exception:
+            pass
+
+    @staticmethod
+    def review_err_text(e):
+        """错误文案只留动作名与异常类型——**卡片正文/答案/音频名绝不进日志与提示**。"""
+        return type(e).__name__
+
+    def enter_review_mode(self, deck=None):
+        """进隐形背诵：书页先拍快照，正文区换成 Anki 卡片，排版沿用阅读设置。"""
+        if self.review_mode:
+            return True
+        deck = (deck or self.config.get("anki_deck") or "").strip()
+        try:
+            client = self.anki_client()
+            client.ping()
+        except AnkiUnavailable:
+            self.review_hint(INSTALL_HINT, 6000)
+            log_event("进背诵失败：连不上 AnkiConnect")
+            return False
+        except AnkiError as e:
+            self.review_hint(f"AnkiConnect 异常：{self.review_err_text(e)}", 4000)
+            log_event(f"进背诵失败：{self.review_err_text(e)}")
+            return False
+        if not deck:
+            self.review_hint("还没选牌组：设置 → 隐形背诵 里填一个牌组名", 4000)
+            return False
+        if self.peek_mode:
+            # 从偷瞄进来：只收起偷瞄（不隐藏窗口，马上要显示卡片）
+            self.peek_mode = False
+            self.peek_input_hook.uninstall()
+            self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
+        if self.safe_mode:
+            self.exit_safe_mode()          # 从安全文档进来：先把真书放回来，再拍快照
+        try:
+            client.start_review(deck)
+        except AnkiError as e:
+            self.review_hint(f"打不开牌组「{deck}」：{self.review_err_text(e)}", 4000)
+            log_event(f"进背诵失败：{self.review_err_text(e)}")
+            return False
+        self.dismiss_action_panel(cancelled=True)
+        self.review_snapshot = self.snapshot_book_state()
+        self.review_session = {"deck": deck, "card": None, "card_id": None, "shown": False,
+                               "counted": 0, "remaining": None, "reviewed_today": None,
+                               "sounds": []}
+        self.review_mode = True
+        # 借用本地渲染管线：字体/字号/行距/页边距/缩进全部沿用，卡片看起来就是这份文档。
+        # local_full_text 故意留空 —— "进度跟着视线走"、翻页、划线会因此自动闭嘴
+        # （displayed_is_local_page 返回 False），不必到处打补丁。
+        self.is_local_mode = True
+        self.local_file_path = ""
+        self.local_full_text = ""
+        self.local_start_index = 0
+        self.local_page_history = []
+        self.local_chapters = []
+        self.local_heading_offsets = set()
+        self.displaying_local_text = True
+        self.ghost_veiled = False
+        self.apply_style()
+        if not self.isVisible():
+            self.show()                    # WA_ShowWithoutActivating：不抢工作窗口的焦点
+        self.raise_()
+        self.ensure_on_screen()
+        self.install_review_hook()         # 吞那 9 个复习键（只在背诵中 + 窗口可见时吞）
+        self.review_timer.start()
+        try:
+            if self.config.get("anki_conceal", True):
+                client.conceal_anki()      # 把 Anki 自己的窗口藏起来（不进 Alt+Tab、没有任务栏缩略图）
+            self.review_refresh_counts(client)
+            self.review_load_card(client.current_card())
+        except AnkiError as e:
+            self.review_hint(f"取卡失败：{self.review_err_text(e)}", 4000)
+        self.update_tray_tooltip()
+        log_event(f"隐形背诵：已进入（牌组 {deck}）")
+        return True
+
+    def review_refresh_counts(self, client=None):
+        """刷新"待复习/今日已复习"。计数一律用 Anki 口径（getDeckStats 已按每日上限算好）。"""
+        s = self.review_session
+        if not s:
+            return
+        try:
+            client = client or self.anki_client()
+            s["remaining"] = client.remaining(s["deck"])
+            s["reviewed_today"] = client.reviewed_today()
+        except AnkiError:
+            pass
+
+    def review_load_card(self, card):
+        """换一张卡：只渲染**正面**，并让 Anki 从这一刻开始计时（答题用时才准）。"""
+        s = self.review_session
+        if not s:
+            return
+        if not card:
+            s["card"] = None
+            s["card_id"] = None
+            s["shown"] = False
+            self.review_render_placeholder("这个牌组今天已经清完了")
+            self.update_tray_tooltip()
+            return
+        s["card"] = card
+        s["card_id"] = card.get("cardId")
+        s["shown"] = False                 # 翻面状态自己记：Anki 的 answer 翻面前就渲染好了
+        self.render_card()
+        try:
+            self.anki_client().start_card_timer()
+        except AnkiError:
+            pass
+        self.update_tray_tooltip()
+
+    def review_render_placeholder(self, text):
+        """没卡/出错时的占位：也要像一份文档的正文，不能给一张空白页。"""
+        self.text_edit.document().setDefaultStyleSheet("")
+        self.text_edit.setHtml(f'<div style="color:#999999;">{text}</div>')
+        self.apply_card_style()
+
+    def render_card(self, show_answer=None):
+        """把当前这张卡渲染进正文区。
+
+        **只渲染该显示的那一面**：实测 `guiCurrentCard` 的 `answer` 在没翻面时就已经渲染好了，
+        拿它当"翻面了没"会直接把答案亮在正面——伪装当场报废。
+        """
+        s = self.review_session or {}
+        card = s.get("card")
+        if not card:
+            return
+        show = bool(s.get("shown", False)) if show_answer is None else bool(show_answer)
+        raw = card.get("answer") if show else card.get("question")
+        html, sounds = simplify_anki_html(raw)
+        s["sounds"] = sounds
+        doc = self.text_edit.document()
+        doc.setDefaultStyleSheet(filter_anki_css(card.get("css")))
+        media = None
+        try:
+            media = self.anki_client().media_dir()
+        except AnkiError:
+            media = None
+        base = QUrl.fromLocalFile(str(media) + os.sep) if media else None
+        if base is not None:
+            doc.setBaseUrl(base)
+        self.text_edit.setHtml(html or "(这张卡没有内容)")
+        if base is not None:
+            doc.setBaseUrl(base)           # setHtml 之后再钉一次，图片按 collection.media 解析
+        self.apply_card_style()
+
+    def apply_card_style(self):
+        """卡片自己那套排版：居中、不首行缩进、不两端对齐、正常行距，字号沿用阅读字号。
+
+        书页那套（首行缩进两字 + 两端对齐 + 行距 1.6）放在卡片上会让它一眼不像文档模板，
+        所以按卡片重套一遍块格式；颜色/透明度仍由 apply_style 那套统管。
+        """
+        self.text_edit.setFont(QFont(self.config.get("font_family", "Microsoft YaHei"),
+                                     self.config["font_size"]))
+        block_format = QTextBlockFormat()
+        block_format.setLineHeight(100, QTextBlockFormat.ProportionalHeight)
+        block_format.setAlignment(Qt.AlignHCenter)
+        block_format.setTextIndent(0)
+        block_format.setTopMargin(0)
+        block_format.setBottomMargin(0)
+        cursor = QTextCursor(self.text_edit.document())
+        cursor.select(QTextCursor.Document)
+        cursor.mergeBlockFormat(block_format)
+        self.apply_page_margins()
+        self.text_edit.verticalScrollBar().setValue(0)
+
+    def toggle_review_mode(self):
+        if self.review_mode:
+            self.exit_review_mode(reason="hotkey")
+        else:
+            self.enter_review_mode()
+
+    def exit_review_mode(self, restore=True, reason=""):
+        """退出背诵：书页按快照原样回来，而且**不写阅读进度**（卡片坐标不是书的位置）。"""
+        if not self.review_mode:
+            return
+        session = self.review_session or {}
+        snap = self.review_snapshot
+        self.review_mode = False
+        self.review_session = None
+        self.review_snapshot = None
+        if self.review_client is not None:
+            try:
+                self.review_client.leave_review()
+            except AnkiError:
+                pass
+            try:
+                self.review_client.reveal_anki()   # 还原也不激活：绝不把 Anki 亮到屏幕最前面
+            except Exception:
+                pass
+        if restore and snap:
+            self.restore_book_state(snap, write_progress=False)
+        self.review_timer.stop()
+        if not self.peek_mode:
+            # 卸掉吞键钩子（钩子泄漏的症状是全系统输入发卡）；偷瞄模式下钩子还要用，留着
+            self.peek_input_hook.uninstall()
+        self.update_tray_tooltip()
+        log_event(f"隐形背诵：已退出（{reason or '未说明'}，本次背了 {session.get('counted', 0)} 张）")
+
+    # --- 复习键 ---
+
+    def review_swallow_all(self):
+        """是否连空格/回车也吞（设置项；关掉就只吞 1-4/U/R/Esc，正常打字不受影响）。"""
+        return bool(self.config.get("anki_swallow_keys", True))
+
+    def review_keys_active(self):
+        """吞键的前提：背诵中 + 窗口可见 + 没最小化。
+
+        隐藏（Ctrl+D）时 `isVisible()` 为 False，键立刻全部放行——不必重挂钩子；
+        最小化的窗口 `isVisible()` 仍为 True，所以要单独判一次，否则会把人家的空格吃掉。
+        """
+        return bool(self.review_mode and self.isVisible() and not self.isMinimized())
+
+    def install_review_hook(self):
+        """背诵也要用到那个 ctypes 钩子（和偷瞄共用一套，互不干扰）。"""
+        try:
+            return self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e"))
+        except Exception as e:
+            log_event(f"背诵吞键钩子安装失败（不吞键也能用）: {e}")
+            return False
+
+    def on_review_key(self, name):
+        """复习键回调。信号从钩子线程发过来，QueuedConnection 保证在这里是主线程。"""
+        if not self.review_mode:
+            return
+        s = self.review_session or {}
+        try:
+            if name in ("space", "enter"):
+                if s.get("shown"):
+                    # 翻面之后空格**不评分**：Anki 那边空格=良好，误按一下就把这张卡的
+                    # 排程改了；要评分就明确按 1-4（Anki 给的按钮顺序）
+                    self.review_hint("用 1/2/3/4 评分（按 Anki 给的按钮顺序）")
+                else:
+                    self.review_show_answer()
+            elif name in ("1", "2", "3", "4"):
+                self.review_grade_button(int(name))
+            elif name == "u":
+                self.review_undo()
+            elif name == "r":
+                self.review_play_audio()
+            elif name == "esc":
+                self.exit_review_mode(reason="esc")
+        except Exception as e:
+            log_event(f"复习键处理异常：{type(e).__name__}")   # 只记类型，不记卡片内容
+
+    def review_show_answer(self):
+        """翻面：渲染答案那面，并放这一面的音频。"""
+        s = self.review_session
+        if not s or not s.get("card") or s.get("shown"):
+            return
+        try:
+            self.anki_client().show_answer()
+        except AnkiBusy:
+            self.review_note_busy()
+            return
+        except AnkiError as e:
+            self.review_hint(f"翻面失败：{self.review_err_text(e)}", 2500)
+            self.review_resync(force=True)
+            return
+        s["shown"] = True
+        self.render_card()
+        self.review_play_audio()
+
+    def review_play_audio(self):
+        """放当前这一面的音频。交给 Anki 自己的 guiPlayAudio：它懂 [sound:]、{{tts:}} 与
+        自动播放策略，比我们自己抽标签再找播放器准得多。"""
+        if not self.review_mode:
+            return
+        try:
+            self.anki_client().play_audio()
+        except AnkiError:
+            pass
+
+    def review_grade_button(self, button):
+        """按 Anki 实际给出的按钮评分。
+
+        `buttons` 是唯一真源（通常是 [1,2,3,4]，学习步/FSRS 下可能只有 2 个）；
+        按到没提供的那个 Anki 会**返回 False**，这时当"没评上"处理并提示，
+        绝不假装前进（假装前进会让排程和屏幕上显示的对不上）。
+        """
+        s = self.review_session
+        if not s or not s.get("card"):
+            return
+        buttons = s["card"].get("buttons") or [1, 2, 3, 4]
+        if button not in buttons:
+            self.review_hint(f"这张卡只有这些按钮：{'/'.join(str(b) for b in buttons)}", 2600)
+            return
+        # 先和 Anki 对账：屏幕上这张必须就是 Anki 的当前卡（人可能跑去 Anki 自己窗口答了）
+        if not self.review_resync():
+            return
+        prev_id = s.get("card_id")
+        client = self.anki_client()
+        try:
+            accepted, next_card = client.answer_and_next(button, prev_id)
+        except AnkiBusy:
+            self.review_note_busy(pending=button)
+            return
+        except AnkiError as e:
+            self.review_hint(f"评分失败：{self.review_err_text(e)}", 3000)
+            self.review_resync(force=True)
+            return
+        if not accepted:
+            self.review_hint("Anki 没接受这个评分（按钮变了？已重新对账）", 3000)
+            self.review_resync(force=True)
+            return
+        s["counted"] = int(s.get("counted", 0)) + 1
+        s["busy_retries"] = 0
+        self.review_refresh_counts(client)
+        self.review_load_card(next_card)
+        log_event(f"隐形背诵：评分成功（本次第 {s['counted']} 张）")
+
+    def review_note_busy(self, pending=None):
+        """Anki 正忙（同步 / 媒体检查 / 导入 / 查库）——**绝不把评分悄悄吞掉**。
+
+        退避重试（2 秒起，最多 5 次），并把状态讲清楚；实在评不上就明确提示，
+        让人自己决定是等一下还是回 Anki 里点。
+        """
+        s = self.review_session
+        if s is None:
+            return
+        retries = int(s.get("busy_retries", 0))
+        wait = 2.0
+        self.review_busy_until = time.time() + wait
+        if pending and retries < 5:
+            s["busy_retries"] = retries + 1
+            self.review_hint(f"Anki 正在同步/忙，{int(wait)} 秒后自动重试这次评分", 3000)
+            QTimer.singleShot(int(wait * 1000) + 200, lambda b=pending: self.review_grade_button(b))
+        else:
+            self.review_hint("Anki 一直在忙，这次评分没记上——等它同步完再按一次", 4000)
+        log_event("隐形背诵：Anki 忙（已退避重试）")
+
+    def review_resync(self, force=False):
+        """和 Anki 对账：屏幕上这张是不是 Anki 的当前卡。
+
+        人会跑去 Anki 自己的窗口答题（或插件 veto 掉本次评分），那时我们窗口停在旧卡上，
+        按 1-4 是无效的。返回 True 表示一致（可以评分），False 表示刚重渲过、这一下别评分。
+        """
+        s = self.review_session
+        if not s:
+            return False
+        try:
+            card = self.anki_client().current_card()
+        except AnkiNotReviewing:
+            if s.get("card") is not None:
+                s["card"] = None
+                s["card_id"] = None
+                self.review_render_placeholder("这个牌组今天已经清完了")
+                self.review_refresh_counts()
+                self.update_tray_tooltip()
+            return False
+        except AnkiError:
+            return False
+        if s.get("card_id") != card.get("cardId"):
+            self.review_load_card(card)
+            if force:
+                self.review_hint("这张卡已经变了，已换成 Anki 当前的卡", 2600)
+            return False
+        return True
+
+    def review_undo(self):
+        """撤销。注意 Anki 这个是**全局**撤销栈（collection.undo），不只是撤销上一次评分。"""
+        try:
+            self.anki_client().undo()
+        except AnkiBusy:
+            self.review_note_busy()
+            return
+        except AnkiError as e:
+            self.review_hint(f"撤销失败：{self.review_err_text(e)}", 2500)
+            return
+        s = self.review_session
+        if s and s.get("counted"):
+            s["counted"] = int(s["counted"]) - 1
+        self.review_refresh_counts()
+        self.review_hint("已撤销（Anki 的全局撤销栈）", 2000)
+        QTimer.singleShot(400, lambda: self.review_resync(force=True))
+
+    def review_tick(self):
+        """低频对账：窗口可见时才查，每 2.5 秒一次（Anki 忙的时候直接跳过）。"""
+        if not self.review_mode or not self.isVisible() or self.isMinimized():
+            return
+        if time.time() < self.review_busy_until:
+            return
+        self.review_resync()
 
     def adjust_color_to_background(self):
         if not self.isVisible() or not self.config.get("auto_mode"):
@@ -3018,7 +3598,9 @@ class StealthReader(QWidget):
         # 本地模式下样式改了就得重排重铺（页边距/字号/行距都在这条路上）。
         # 这句原来只写在"非自动挡"分支里，自动挡（变色龙）下去改页边距/字号就不重排，
         # 得等下一次翻页才生效——看着就是"调了没反应"。按锚点重绘，落点不变。
-        if self.is_local_mode:
+        if self.review_mode:
+            self.render_card()     # 背诵中改字号/字体：只重渲当前卡（一个字节的进度都不碰）
+        elif self.is_local_mode:
             self.repage_to(anchor)
 
     def enterEvent(self, event):
@@ -3178,7 +3760,7 @@ class StealthReader(QWidget):
             self.update_text_signal.emit(f"网络错误: {str(e)}", False)
 
     def sync_progress_async(self):
-        if not self.current_book or self.is_local_mode or self.safe_mode: return
+        if not self.current_book or self.is_local_mode or self._book_veiled(): return
         threading.Thread(target=self._sync_task, daemon=True).start()
 
     def _sync_task(self):
@@ -3336,8 +3918,9 @@ class StealthReader(QWidget):
     def apply_highlight_selections(self):
         """把落在当前缓冲区里的划线画成 ExtraSelection。
         绝不动正文——正文一变，翻页的几何测量就跟着错（"已恢复进度"覆盖正文那个坑）。"""
-        if not (self.is_local_mode and self.local_full_text) or self.ghost_veiled or self.safe_mode:
-            # 安全文档模式下一条高亮都不画：页面上那几条彩色横条比书页本身还露馅
+        if not (self.is_local_mode and self.local_full_text) or self.ghost_veiled or self._book_veiled():
+            # 安全文档/背诵模式下一条高亮都不画：页面上那几条彩色横条比书页本身还露馅，
+            # 而且在卡片上按卡的偏移画高亮，等于把书的划线挪到别的内容上
             self.text_edit.setExtraSelections([])
             return
         base = self.local_start_index
@@ -3477,7 +4060,7 @@ class StealthReader(QWidget):
         self.persist_annotations()
 
     def toggle_bookmark(self):
-        if self.safe_mode or not (self.is_local_mode and self.local_full_text):
+        if self._book_veiled() or not (self.is_local_mode and self.local_full_text):
             return
         store = self.book_store()
         if not store:
@@ -3549,13 +4132,13 @@ class StealthReader(QWidget):
             return
         self.local_page_history = []
         self.local_start_index = max(0, min(int(offset), max(0, len(self.local_full_text) - 1)))
-        if not self.safe_mode:
+        if not self._book_veiled():
             self.config["last_local_pos"] = self.local_start_index
             self.save_config()
         self.render_local_page()
 
     def open_reading_marks(self, initial_tab=0):
-        if self.safe_mode or not self.is_local_mode:
+        if self._book_veiled() or not self.is_local_mode:
             return
         self.is_popup_open = True
         try:
@@ -3568,7 +4151,7 @@ class StealthReader(QWidget):
 
     def export_annotations(self):
         """导出成 Markdown：按章节分组，划线原文用引用块，笔记跟在后面。"""
-        if self.safe_mode:
+        if self._book_veiled():
             return None
         if not (self.is_local_mode and self.local_file_path):
             QMessageBox.information(self, "导出", "先打开一本本地书。")
@@ -3650,8 +4233,8 @@ class StealthReader(QWidget):
             # 先把上一轮残留的选中清掉，不然它会被当成一次"新划选"再确认一遍（重复划线就是这么来的）
             self.clear_text_selection()
         if event.button() == Qt.RightButton:
-            # 安全文档模式下不认划线：这份文档本来就没有任何标注
-            hit = None if self.safe_mode else self.find_highlight_at(self.buffer_offset_at(event.pos()))
+            # 安全文档/背诵模式下不认划线：这两份内容本来就没有任何标注
+            hit = None if self._book_veiled() else self.find_highlight_at(self.buffer_offset_at(event.pos()))
             if hit:
                 self.show_action_panel("existing", hl=hit,
                                        anchor=self.text_edit.viewport().mapToGlobal(event.pos()))
@@ -3672,10 +4255,15 @@ class StealthReader(QWidget):
             self.text_edit.set_pinned_cursor(Qt.ArrowCursor)   # 拖动结束，正文区回箭头
             self.save_window_pos()
             return True
+        if self.review_mode:
+            # 背诵时：单击一下（没划到字）＝ 翻面，和 Anki 里点卡片同义；拖选只用来复制
+            if event.button() == Qt.LeftButton and not self.text_edit.textCursor().hasSelection():
+                self.review_show_answer()
+            return False
         if event.button() != Qt.LeftButton or not (self.is_local_mode and self.local_full_text):
             return False
-        if self.safe_mode:
-            return False   # 安全文档模式下可以选中、可以复制，但不会划线也不会弹面板
+        if self._book_veiled():
+            return False   # 安全文档/背诵模式下可以选中、可以复制，但不会划线也不会弹面板
         cursor = self.text_edit.textCursor()
         if cursor.hasSelection():
             # 一律用文档位置取偏移和原文，不用 selectedText（Qt 拿 U+2029 当段落分隔符，长度会对不上）
@@ -3806,7 +4394,7 @@ class StealthReader(QWidget):
         """右键菜单。安全文档模式下只给中性项：菜单里的"打开本地书籍/导出划线笔记"这类字眼
         本身就是破绽，凑过来看屏幕的人一眼就懂了。"""
         cmenu = QMenu(self)
-        if self.safe_mode:
+        if self._book_veiled():
             copy_action = cmenu.addAction("📋 复制选中文字")
             copy_action.triggered.connect(self.copy_selection)
             copy_action.setEnabled(bool(self.text_edit.textCursor().hasSelection()))
@@ -3879,6 +4467,15 @@ class StealthReader(QWidget):
 
     def keyPressEvent(self, event):
         key = event.key()
+        if self.review_mode:
+            # 背诵时正文是卡片：方向键/空格翻的是卡片本身，不翻书页
+            sb = self.text_edit.verticalScrollBar()
+            page = max(1, self.text_edit.viewport().height())
+            if key in [Qt.Key_Right, Qt.Key_Down, Qt.Key_Space, Qt.Key_PageDown]:
+                sb.setValue(min(sb.maximum(), sb.value() + page))
+            elif key in [Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp]:
+                sb.setValue(max(sb.minimum(), sb.value() - page))
+            return
         if key in [Qt.Key_Right, Qt.Key_Down, Qt.Key_Space, Qt.Key_PageDown]:
             self.scroll_page(1)
         elif key in [Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp]:
@@ -3889,14 +4486,14 @@ class StealthReader(QWidget):
         self.dismiss_action_panel(cancelled=True)
         self.sync_progress_async()
         self.save_window_pos()
-        if self.is_local_mode and not self.safe_mode:
+        if self.is_local_mode and not self._book_veiled():
             self.config["last_local_pos"] = self.current_top_offset()   # 视口顶那一行，不是页首
             self.save_config()
         super().closeEvent(event)
 
     def quit_app(self):
-        # 退出前强制保存本地进度（安全文档模式下不存：那份假文档的坐标不是书的进度）
-        if self.is_local_mode and not self.safe_mode:
+        # 退出前强制保存本地进度（安全文档/背诵模式下不存：那些坐标不是书的进度）
+        if self.is_local_mode and not self._book_veiled():
             self.config["last_local_pos"] = self.current_top_offset()
             self.save_config()
         self.save_window_pos()
