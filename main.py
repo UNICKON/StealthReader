@@ -1066,13 +1066,6 @@ _user32.SetWindowsHookExW.restype = ctypes.c_void_p
 _user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
 _user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
 _user32.CallNextHookEx.restype = _LRESULT
-# HWND 是 64 位指针：不声明 restype 的话 ctypes 按 c_int 收，句柄会被截断
-_user32.GetForegroundWindow.restype = ctypes.c_void_p
-_user32.GetForegroundWindow.argtypes = []
-_user32.WindowFromPoint.restype = ctypes.c_void_p
-_user32.WindowFromPoint.argtypes = [_POINT]
-_user32.GetAncestor.restype = ctypes.c_void_p
-_user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 
 
 class AnkiWorker(QThread):
@@ -2623,9 +2616,7 @@ class StealthReader(QWidget):
             keyboard.add_hotkey(hotkey_str, self.on_global_hotkey_triggered)
             # 注意：unhook_all 只拆 keyboard 库自己的钩子；偷瞄/背诵用的 ctypes 钩子是独立管理的，
             # 所以看门狗每 90 秒的例行重挂碰不到它——背诵吞键不需要在重挂后补装。
-            # 偷瞄键 suppress=True：**不放给别的软件**（原来按 Ctrl+E 会同时触发浏览器/编辑器的动作，
-            # 像是"我按了个快捷键"，现在这个组合键只属于这里）。
-            keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered, suppress=True)
+            keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered)
             taken = {hotkey_str.lower(), peek_key_str.lower()}
             # 安全文档热键：和上面两个撞车的话只留先注册的那个，免得一次按键触发两个动作
             if safe_key_str and safe_key_str.lower() not in taken:
@@ -2686,35 +2677,11 @@ class StealthReader(QWidget):
             except Exception:
                 self.marks_shortcuts = []
 
-    def boss_key_actionable(self):
-        """老板键现在只对"我正在看这个窗口"生效。
-
-        Ctrl+D 是极常用的全局快捷键（浏览器收藏、编辑器复制整行…）。原来在任何软件里按
-        Ctrl+D 都会把书窗藏起来，等于把别人的快捷键抢了。窗口是 Tool + 不激活式显示，
-        常常并不持有前台焦点（只看前台窗口会退化成"永远不生效"），所以判定是：
-        窗口就是前台窗口，**或者**鼠标正停在窗口上——两种都说明你在看它。
-        窗口已经藏起来时不套这一条：那时按 Ctrl+D 就是"再叫出来"（托盘单击也一样），
-        而且这个键不吞，浏览器该收藏还收藏，不会拦别人。
-        """
-        try:
-            if not self.isVisible():
-                return True
-            fg = int(_user32.GetForegroundWindow() or 0)
-            me = int(self.winId())
-            if fg and (fg == me or _user32.IsChild(me, fg)):
-                return True
-            return self.frameGeometry().contains(QCursor.pos())
-        except Exception:
-            return True                 # 判不出来就按老行为，宁可能用
-
     def on_global_hotkey_triggered(self):
         # 这三个回调跑在 keyboard 库的分发线程上，那里没有兜底 try：回调抛异常（比如日志
         # 写盘失败）会把分发线程直接打死，此后线程活着、listening 仍是 True，热键却一个都不响。
         # 所以自己兜住，绝不把异常抛回库里。
         try:
-            if not self.boss_key_actionable():
-                log_event("老板键忽略：窗口不在前台、鼠标也不在窗口上")
-                return
             log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
             self.hotkey_signal.emit()
         except Exception as e:
