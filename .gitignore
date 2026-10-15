@@ -1,6 +1,9 @@
 # 本机运行时文件：个人的阅读进度、窗口位置等，不进版本库
 config.json
 
+# 个人的划线 / 笔记 / 书签
+annotations.json
+
 # 事件日志
 stealthreader.log
 

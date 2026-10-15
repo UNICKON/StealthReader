@@ -23,11 +23,13 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QSpinBox, QDoubleSpinBox, QPushButton, QSystemTrayIcon, QStyle,
                              QColorDialog, QCheckBox, QHBoxLayout,
                              QFrame, QTextEdit, QShortcut, QListWidget,
-                             QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog)
-from PyQt5.QtCore import Qt, QPoint, QRect, QPointF, pyqtSignal, QObject, QThread, QTimer, QEvent
+                             QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog,
+                             QInputDialog, QMessageBox, QToolTip, QTabWidget)
+from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject,
+                          QThread, QTimer, QEvent)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
                          QFontMetrics, QTextCursor, QTextBlockFormat, QWheelEvent,
-                         QPixmap, QIcon, QPainterPath)
+                         QPixmap, QIcon, QPainterPath, QTextCharFormat)
 
 # 启用高分屏支持
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -451,6 +453,41 @@ def set_window_protection(hwnd, enable=True):
         print(f"防截屏设置失败: {e}")
 
 
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint),
+                ("rcMonitor", ctypes.c_long * 4),
+                ("rcWork", ctypes.c_long * 4),
+                ("dwFlags", ctypes.c_uint)]
+
+
+def window_on_real_screen(hwnd):
+    """窗口是否落在某块"真实存在"的屏幕上。用 Win32 的 MonitorFromWindow 问系统，
+    不经过 Qt——Qt 会缓存过期屏幕布局，拔过显示器后会把窗口安排到不存在的屏幕坐标里。"""
+    try:
+        user32 = ctypes.windll.user32
+        return bool(user32.MonitorFromWindow(hwnd, 0))  # MONITOR_DEFAULTTONULL
+    except Exception:
+        return True  # 校验失败时别乱动窗口
+
+
+def force_window_to_primary(hwnd, margin=60):
+    """Win32 物理挪回主屏工作区左上角（绕过 Qt 可能过期的坐标映射，挪完 Qt 会自己同步回来）。"""
+    try:
+        user32 = ctypes.windll.user32
+        hmon = user32.MonitorFromWindow(hwnd, 1)  # MONITOR_DEFAULTTOPRIMARY
+        mi = _MONITORINFO()
+        mi.cbSize = ctypes.sizeof(mi)
+        if not hmon or not user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+            return False
+        x, y = mi.rcWork[0] + margin, mi.rcWork[1] + margin
+        SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
+        user32.SetWindowPos(hwnd, 0, x, y, 0, 0,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+        return True
+    except Exception:
+        return False
+
+
 # ================= 轻量事件日志（排查老板键之类"偶尔失灵"的问题）=================
 def log_event(msg):
     """追加一行到 main.py 旁边的 stealthreader.log，失败静默（日志不能反过来影响功能）。"""
@@ -460,6 +497,230 @@ def log_event(msg):
             f.write(f"{time.strftime('%m-%d %H:%M:%S')} {msg}\n")
     except Exception:
         pass
+
+
+# ================= 划线高亮 / 书签数据（按书存放，与设置分开）=================
+# 位置一律用"全文字符偏移"。本地正文就是 local_full_text 的一段纯切片，所以偏移在翻页、
+# 改字号、改窗口大小、重启之后都仍然精确，不会漂。
+ANNOTATION_COLORS = {
+    "yellow": (255, 214, 102),
+    "green": (140, 224, 140),
+    "blue": (130, 190, 255),
+    "pink": (255, 160, 200),
+    "purple": (200, 160, 255),
+}
+ANNOTATION_COLOR_NAMES = [("yellow", "黄色"), ("green", "绿色"), ("blue", "蓝色"),
+                          ("pink", "粉色"), ("purple", "紫色")]
+
+
+def annotations_file():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "annotations.json")
+
+
+def load_annotations():
+    try:
+        with open(annotations_file(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_annotations(data):
+    """整份重写：先写临时文件再替换，避免写一半断电留下坏档。"""
+    try:
+        path = annotations_file()
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        log_event(f"保存划线/书签失败: {e}")
+        return False
+
+
+def highlight_color(name, alpha=95):
+    r, g, b = ANNOTATION_COLORS.get(name, ANNOTATION_COLORS["yellow"])
+    return QColor(r, g, b, alpha)
+
+
+def make_dot_icon(name, checked=False, size=20):
+    """色点：选中的当前色外加一圈白环。"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    c = size / 2.0
+    if checked:
+        p.setPen(QPen(QColor(255, 255, 255, 235), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(c, c), c - 1.5, c - 1.5)
+    p.setPen(Qt.NoPen)
+    p.setBrush(highlight_color(name, 255))
+    p.drawEllipse(QPointF(c, c), c - 4.0, c - 4.0)
+    p.end()
+    return QIcon(pm)
+
+
+def make_pen_icon(color_name, active, size=20):
+    """划线 / 取消划线共用同一支笔，只靠状态区分：
+    没划线时笔是灰的、下面那一道是虚线；已划线时笔提亮、那一道变成该划线的实色。"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    body = QColor(232, 234, 237) if active else QColor(174, 180, 189)
+    # 笔杆（斜的圆头粗线）+ 笔尖
+    p.setPen(QPen(body, 4.0, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(QPointF(7.0, 12.0), QPointF(12.6, 5.6))
+    p.setPen(QPen(body, 2.2, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(QPointF(5.6, 13.6), QPointF(7.4, 11.8))
+    # 笔底下那一道就是"划线"本身
+    if active:
+        r, g, b = ANNOTATION_COLORS.get(color_name, ANNOTATION_COLORS["yellow"])
+        p.setPen(QPen(QColor(r, g, b, 255), 3.2, Qt.SolidLine, Qt.RoundCap))
+    else:
+        p.setPen(QPen(QColor(174, 180, 189, 200), 2.0, Qt.DashLine, Qt.RoundCap))
+    p.drawLine(QPointF(3.6, 17.2), QPointF(16.4, 17.2))
+    p.end()
+    return QIcon(pm)
+
+
+# 现代感的深色弹出菜单（原生 QMenu 那套灰白边框太出戏）
+MODERN_MENU_QSS = """
+QMenu {
+    background-color: rgba(30, 33, 38, 246);
+    border: 1px solid rgba(255, 255, 255, 30);
+    border-radius: 10px;
+    padding: 6px;
+}
+QMenu::item {
+    padding: 7px 18px 7px 14px;
+    border-radius: 7px;
+    color: #e8eaed;
+    font-size: 13px;
+}
+QMenu::item:selected { background-color: rgba(255, 255, 255, 34); color: #ffffff; }
+QMenu::item:disabled { color: rgba(232, 234, 237, 90); }
+QMenu::separator { height: 1px; background: rgba(255, 255, 255, 28); margin: 5px 10px; }
+"""
+
+PANEL_QSS = """
+#card {
+    background-color: rgba(32, 35, 40, 242);
+    border: 1px solid rgba(255, 255, 255, 26);
+    border-radius: 8px;
+}
+#card QPushButton {
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #e6e9ed;
+    font-size: 13px;
+    padding: 5px 9px;
+}
+#card QPushButton:hover { background-color: rgba(255, 255, 255, 32); }
+#card QPushButton:pressed { background-color: rgba(255, 255, 255, 50); }
+#card QFrame[sep="1"] { background-color: rgba(255, 255, 255, 26); max-width: 1px; border: none; }
+"""
+
+
+def modernize_menu(menu):
+    """给 QMenu 套上圆角深色皮（原生外观太"系统设置"了）。"""
+    try:
+        menu.setAttribute(Qt.WA_TranslucentBackground)
+        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        menu.setStyleSheet(MODERN_MENU_QSS)
+    except Exception:
+        pass
+    return menu
+
+
+class HighlightActionPanel(QWidget):
+    """划选或点中划线后浮出的小面板（非模态）。
+
+    它本身就是"确认"这一步：点了色点才算划线。滚轮、点别处、按键盘、Esc 关掉都算
+    不确认（hideEvent 里报 cancelled），这样手上多带一下不会被误当成划线。
+    """
+
+    chosen = pyqtSignal(str)        # "default" / "color:xxx" / "note" / "copy" / "delete"
+    cancelled = pyqtSignal()
+    wheel_scrolled = pyqtSignal(int)
+
+    def __init__(self, parent=None, mode="new", current_color="yellow", has_note=False):
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint
+                         | Qt.NoDropShadowWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.mode = mode
+        self._acted = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(1, 1, 1, 1)   # 扁平：不留投影空间
+        card = QFrame()
+        card.setObjectName("card")
+
+        row = QHBoxLayout(card)
+        row.setContentsMargins(6, 4, 6, 4)
+        row.setSpacing(2)
+
+        def add_text_btn(label, key, tip, icon=None):
+            b = QPushButton(label)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip)
+            if icon is not None:
+                b.setIcon(icon)
+                b.setIconSize(QSize(16, 16))
+            b.clicked.connect(lambda _=False, k=key: self._fire(k))
+            row.addWidget(b)
+            return b
+
+        # 划线 / 取消划线：同一个位置、同一支笔，只靠图标状态区分，不做成最右边另一个按钮
+        marked = mode == "existing"
+        add_text_btn("取消划线" if marked else "划线",
+                     "delete" if marked else "default",
+                     "取消这条划线（带笔记会再问一次）" if marked else "用上次的颜色划线",
+                     icon=make_pen_icon(current_color, marked))
+        for name, label in ANNOTATION_COLOR_NAMES:
+            b = QPushButton()
+            b.setFixedSize(26, 26)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(f"划成{label}" if mode == "new" else f"改成{label}")
+            b.setIcon(make_dot_icon(name, name == current_color))
+            b.setIconSize(QSize(18, 18))
+            b.clicked.connect(lambda _=False, n=name: self._fire("color:" + n))
+            row.addWidget(b)
+        row.addWidget(self._separator())
+        add_text_btn("编辑想法" if has_note else "想法", "note",
+                     "编辑这条划线的笔记" if has_note else "划线并写点想法")
+        add_text_btn("复制", "copy", "复制原文")
+        outer.addWidget(card)
+        self.setStyleSheet(PANEL_QSS)
+
+    def _separator(self):
+        sep = QFrame()
+        sep.setProperty("sep", "1")
+        sep.setFixedWidth(1)
+        return sep
+
+    def _fire(self, key):
+        self._acted = True
+        self.chosen.emit(key)
+
+    def hideEvent(self, event):
+        if not self._acted:
+            self.cancelled.emit()
+        super().hideEvent(event)
+
+    def wheelEvent(self, event):
+        # 滚轮 = 不确认，但滚轮本身照常翻页（交给窗口去补这一下）
+        self.wheel_scrolled.emit(event.angleDelta().y())
+        event.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.hide()          # Esc 关掉 = 不确认
+        event.accept()
 
 
 # ================= 低级输入钩子（偷瞄模式：全局滚轮翻页） =================
@@ -815,42 +1076,113 @@ class TocSelector(QDialog):
 
 
 # ================= 独立窗口：本地书籍目录（epub） =================
-class LocalTocSelector(QDialog):
-    def __init__(self, chapters, current_offset, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"📑 目录 (共 {len(chapters)} 章)")
-        self.resize(420, 600)
+class ReadingMarksDialog(QDialog):
+    """目录 / 书签 / 划线 三合一：双击跳转、右键删除、划线页可导出。"""
+
+    def __init__(self, window, initial_tab=0):
+        super().__init__(window)
+        self.win = window
+        self.jump_offset = None
+        self.setWindowTitle("📑 目录 / 书签 / 划线")
+        self.resize(540, 640)
         self.setStyleSheet(DARK_STYLESHEET)
-        self.chapters = chapters
-        self.selected_offset = None
 
         layout = QVBoxLayout()
-        self.list_widget = QListWidget()
-        self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
-        layout.addWidget(self.list_widget)
+        self.tabs = QTabWidget()
+        self.toc_list = self._make_list()
+        self.bookmark_list = self._make_list()
+        self.highlight_list = self._make_list()
+        self.tabs.addTab(self.toc_list, "目录")
+        self.tabs.addTab(self.bookmark_list, "书签")
+        self.tabs.addTab(self.highlight_list, "划线")
+        self.tabs.setCurrentIndex(max(0, min(2, int(initial_tab))))
+        layout.addWidget(self.tabs)
 
-        hint = QLabel("双击章节跳转（当前章节已选中）")
-        hint.setAlignment(Qt.AlignCenter)
-        layout.addWidget(hint)
+        bottom = QHBoxLayout()
+        export_btn = QPushButton("📤 导出划线笔记 (Markdown)")
+        export_btn.clicked.connect(self.on_export)
+        bottom.addWidget(export_btn)
+        hint = QLabel("双击跳转 · 右键删除")
+        hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bottom.addWidget(hint)
+        layout.addLayout(bottom)
         self.setLayout(layout)
+        self.refresh()
 
-        for title, offset in chapters:
-            item = QListWidgetItem(str(title))
-            item.setData(Qt.UserRole, offset)
-            self.list_widget.addItem(item)
+    def _make_list(self):
+        lst = QListWidget()
+        lst.itemDoubleClicked.connect(self.on_item_double_clicked)
+        lst.setContextMenuPolicy(Qt.CustomContextMenu)
+        lst.customContextMenuRequested.connect(self.on_context_menu)
+        return lst
 
-        current = 0
-        for i, (_, offset) in enumerate(chapters):
-            if offset <= current_offset:
-                current = i
-        item = self.list_widget.item(current)
-        if item:
-            item.setSelected(True)
-            self.list_widget.scrollToItem(item, QListWidget.PositionAtCenter)
+    def refresh(self):
+        self.toc_list.clear()
+        for title, offset in (self.win.local_chapters or []):
+            item = QListWidgetItem(str(title).strip())
+            item.setData(Qt.UserRole, ("jump", int(offset)))
+            self.toc_list.addItem(item)
+        if self.toc_list.count() == 0:
+            self.toc_list.addItem(QListWidgetItem("（这本书没有章节目录，txt 常见）"))
+
+        self.bookmark_list.clear()
+        for bm in self.win.bookmarks_for_book():
+            item = QListWidgetItem(f"🔖 {bm.get('chapter') or '正文'} · {bm.get('snippet', '')}")
+            item.setData(Qt.UserRole, ("jump", int(bm.get("pos", 0))))
+            item.setData(Qt.UserRole + 1, ("bookmark", bm.get("id")))
+            item.setToolTip(f"{bm.get('created', '')}\n{bm.get('snippet', '')}")
+            self.bookmark_list.addItem(item)
+        if self.bookmark_list.count() == 0:
+            self.bookmark_list.addItem(QListWidgetItem("（还没有书签：窗口里按 Ctrl+B 收藏本页）"))
+
+        self.highlight_list.clear()
+        for hl in self.win.highlights_for_book():
+            text = " ".join(str(hl.get("text", "")).split())
+            if len(text) > 42:
+                text = text[:42] + "…"
+            note = hl.get("note") or ""
+            label = ("📝 " if note else "") + text + ("　（已失效）" if hl.get("orphan") else "")
+            item = QListWidgetItem(label)
+            item.setIcon(self.win.color_icon(hl.get("color", "yellow")))
+            item.setData(Qt.UserRole, ("jump", int(hl.get("start", 0))))
+            item.setData(Qt.UserRole + 1, ("highlight", hl.get("id")))
+            item.setToolTip((f"笔记：{note}\n" if note else "") + str(hl.get("text", "")))
+            self.highlight_list.addItem(item)
+        if self.highlight_list.count() == 0:
+            self.highlight_list.addItem(QListWidgetItem("（还没有划线：窗口里拖选文字，松手即成高亮）"))
 
     def on_item_double_clicked(self, item):
-        self.selected_offset = item.data(Qt.UserRole)
-        self.accept()
+        data = item.data(Qt.UserRole)
+        if not data:
+            return
+        kind, value = data
+        if kind == "jump":
+            self.jump_offset = int(value)
+            self.accept()
+
+    def on_context_menu(self, pos):
+        lst = self.sender()
+        item = lst.itemAt(pos)
+        if not item:
+            return
+        tag = item.data(Qt.UserRole + 1)
+        if not tag:
+            return
+        kind, ident = tag
+        menu = QMenu(self)
+        menu.addAction("📍 跳转到这里").triggered.connect(lambda: self.on_item_double_clicked(item))
+        if kind == "bookmark":
+            menu.addAction("🗑 删除书签").triggered.connect(
+                lambda: (self.win.delete_bookmark(ident), self.refresh()))
+        else:
+            menu.addAction("🗑 删除划线").triggered.connect(
+                lambda: (self.win.delete_highlight(ident), self.refresh()))
+        modernize_menu(menu)
+        menu.exec_(lst.mapToGlobal(pos))
+        menu.deleteLater()
+
+    def on_export(self):
+        self.win.export_annotations()
 
 
 # ================= 设置窗口 =================
@@ -1075,6 +1407,15 @@ class StealthReader(QWidget):
         self.local_heading_offsets = set()  # 标题行的字符偏移，首行缩进要跳过它们
         self.displaying_local_text = False  # 当前显示的文本是否来自本地书（防止标题表串到网络章节上）
 
+        # --- 划线 / 书签 ---
+        self.annotations = load_annotations()   # {书key: {"highlights": [...], "bookmarks": [...]}}
+        self.highlight_default_color = "yellow"  # 上次用过的颜色即下次默认
+        self.is_popup_open = False               # 弹菜单/对话框时别让幽灵模式把字淡掉
+        self.ghost_veiled = False                # 幽灵态下连高亮一起藏，别让彩色条露馅
+        self.filter_drag_origin = None           # 中键/Alt+左键拖动窗口用
+        self.action_panel = None                 # 划线确认面板（同一时刻只有一个）
+        self.pending_selection = None            # 待确认的划选 (start, end, text)
+
         # --- 偷瞄模式（Ctrl+E 浮现 + 全局滚轮翻页）---
         self.peek_mode = False
         self.peek_was_visible = False   # 进入偷瞄前窗口是否可见，退出时照原样恢复
@@ -1221,6 +1562,9 @@ class StealthReader(QWidget):
             self.config["last_local_pos"] = safe_pos
             self.save_config()
 
+            # 划线/书签的偏移按原文校正一次（书换了文件时靠它救回来）
+            self.validate_annotations()
+
             self.render_local_page()
 
             if safe_pos > 0:
@@ -1319,6 +1663,9 @@ class StealthReader(QWidget):
 
         # 标题与页首续行不缩进，必须在整体套用之后再逐块修正
         self.skip_first_line_indent()
+
+        # 排版定稿后重画划线（换页/改字号/换样式都会走到这里）
+        self.apply_highlight_selections()
 
     def set_display_text(self, text):
         """换文本的唯一入口：换完立刻套同一套排版，否则翻页会按旧排版测量。"""
@@ -1522,6 +1869,17 @@ class StealthReader(QWidget):
         except:
             pass
 
+        # 划线与书签的窗口内快捷键，只注册一次（老板键看门狗会反复调 refresh_hotkeys）
+        if getattr(self, "marks_shortcuts", None) is None:
+            try:
+                self.marks_shortcuts = [
+                    QShortcut(QKeySequence("Ctrl+B"), self, activated=self.toggle_bookmark),
+                    QShortcut(QKeySequence("Ctrl+L"), self,
+                              activated=lambda: self.open_reading_marks(1)),
+                ]
+            except Exception:
+                self.marks_shortcuts = []
+
     def on_global_hotkey_triggered(self):
         log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
         self.hotkey_signal.emit()
@@ -1563,14 +1921,21 @@ class StealthReader(QWidget):
         self.text_edit.setFrameStyle(QFrame.NoFrame)
         self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.text_edit.setTextInteractionFlags(Qt.NoTextInteraction)
+        # 要能拖选才能划线；选中不改正文，只用来算Range。焦点策略保持 NoFocus，
+        # 免得窗口抢走工作窗口的键盘焦点。
+        self.text_edit.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.text_edit.setFocusPolicy(Qt.NoFocus)
+        # 右键菜单交给我们自己：划到高亮上给划线菜单，正文上给窗口菜单
+        self.text_edit.setContextMenuPolicy(Qt.NoContextMenu)
 
         self.text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         self.text_edit.setMinimumHeight(0)
         self.text_edit.document().setDocumentMargin(0)
 
         self.text_edit.installEventFilter(self)
+        # 鼠标事件其实都发给 viewport（上次滚轮那个坑），所以划选/单击必须装在 viewport 上
+        self.text_edit.viewport().installEventFilter(self)
+        self.text_edit.viewport().setMouseTracking(True)
 
         self.content_layout.addWidget(self.text_edit)
         self.main_layout.addWidget(self.content_frame)
@@ -1590,6 +1955,14 @@ class StealthReader(QWidget):
         self.apply_style()
 
     def eventFilter(self, source, event):
+        # 划选 / 单击划线 / 中键拖窗口都在 viewport 上收（滚轮那个坑：事件不发往 text_edit 本身）
+        if source is self.text_edit.viewport():
+            if event.type() == QEvent.MouseButtonPress and self.on_viewport_press(event):
+                return True
+            if event.type() == QEvent.MouseMove and self.on_viewport_move(event):
+                return True
+            if event.type() == QEvent.MouseButtonRelease and self.on_viewport_release(event):
+                return True
         if source == self.text_edit and event.type() == QEvent.Wheel:
             # 【关键保护】如果既没选书，也不是本地模式，直接拦截滚轮不处理
             if not self.is_local_mode and not self.current_book:
@@ -1630,6 +2003,20 @@ class StealthReader(QWidget):
         except Exception:
             pass
 
+    def ensure_on_screen(self):
+        """召唤/启动后确保窗口真的在屏幕上。Qt 缓存过期屏幕布局（拔过显示器的机器）
+        会把窗口安排到不存在的屏幕坐标里，看起来就是"唤不出来"。用 Win32 真实布局校验。"""
+        try:
+            hwnd = int(self.winId())
+            if window_on_real_screen(hwnd):
+                return
+            if force_window_to_primary(hwnd):
+                log_event("窗口不在任何真实屏幕上，已强制挪回主屏")
+            else:
+                log_event("窗口不在任何真实屏幕上，但挪回主屏失败")
+        except Exception as e:
+            log_event(f"屏幕校验异常: {e}")
+
     def initTray(self):
         self.tray_icon = QSystemTrayIcon(self)
         # 极简图标：一枚白色书签（圆角条 + 底部三角缺口），透明底，别再放字和色块
@@ -1656,6 +2043,7 @@ class StealthReader(QWidget):
         tray_menu.addAction("设置…").triggered.connect(self.open_settings)
         tray_menu.addSeparator()
         tray_menu.addAction("退出").triggered.connect(self.quit_app)
+        modernize_menu(tray_menu)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_activated)
         self.tray_icon.show()
@@ -1675,6 +2063,7 @@ class StealthReader(QWidget):
 
         if self.isVisible():
             log_event("老板键 -> 隐藏窗口")
+            self.dismiss_action_panel(cancelled=True)   # 连同待确认的划选一起作废
             self.sync_progress_async()
             self.save_window_pos()
             self.hide()
@@ -1683,6 +2072,7 @@ class StealthReader(QWidget):
             self.showNormal()
             self.apply_style()
             self.activateWindow()
+            self.ensure_on_screen()
             if self.config.get("auto_mode", False):
                 self.chameleon_timer.start()
                 self.adjust_color_to_background()
@@ -1710,12 +2100,14 @@ class StealthReader(QWidget):
         if not self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e")):
             print("偷瞄模式未启动：全局输入钩子安装失败")
             return
+        self.dismiss_action_panel(cancelled=True)   # 偷瞄期间不弹面板（任何输入都会退出偷瞄）
         self.peek_was_visible = self.isVisible()
         self.peek_mode = True
         if not self.isVisible():
             self.show()  # WA_ShowWithoutActivating：不夺走工作窗口的焦点
         self.raise_()
         self.apply_style()
+        self.ensure_on_screen()
         if self.config.get("auto_mode", False):
             self.chameleon_timer.start()
             self.adjust_color_to_background()
@@ -1860,6 +2252,7 @@ class StealthReader(QWidget):
 
     def enterEvent(self, event):
         self.is_mouse_in = True
+        self.ghost_veiled = False  # 回来就把划线一起显示出来
         if self.config.get("ghost_mode", False):
             self.apply_style()
         super().enterEvent(event)
@@ -1868,13 +2261,18 @@ class StealthReader(QWidget):
         self.is_mouse_in = False
         if self.peek_mode:
             return  # 偷瞄期间光标在外面是常态，别把窗口淡到透明
-        if self.is_settings_open or self.is_resizing or self.is_moving: return
+        if self.is_settings_open or self.is_popup_open or self.is_resizing or self.is_moving:
+            return
 
         global_pos = QCursor.pos()
         local_pos = self.mapFromGlobal(global_pos)
         if self.rect().contains(local_pos): return
 
         if self.config.get("ghost_mode", False):
+            # 幽灵态下正文会变透明，高亮色块必须一起藏起来，
+            # 否则"透明窗口上浮着几条彩色带子"，一眼就露馅
+            self.ghost_veiled = True
+            self.text_edit.setExtraSelections([])
             if self.config.get("auto_mode", False):
                 self.chameleon_timer.stop()
                 self.content_frame.set_draw_corners(False)
@@ -2096,12 +2494,535 @@ class StealthReader(QWidget):
         self.setCursor(Qt.ArrowCursor)
         self.save_config()
 
+    # ================= 划线高亮 / 书签 =================
+    def book_key(self):
+        """当前书的存储键。网络书这轮不启用（正文会重新拉取，锚点不稳，不做半吊子）。"""
+        if self.is_local_mode and self.local_file_path:
+            return os.path.normcase(os.path.abspath(self.local_file_path))
+        return None
+
+    def book_store(self):
+        key = self.book_key()
+        if not key:
+            return None
+        store = self.annotations.get(key)
+        if not isinstance(store, dict):
+            store = {}
+            self.annotations[key] = store
+        store.setdefault("highlights", [])
+        store.setdefault("bookmarks", [])
+        return store
+
+    def highlights_for_book(self):
+        store = self.book_store()
+        return sorted(store["highlights"], key=lambda h: int(h.get("start", 0))) if store else []
+
+    def bookmarks_for_book(self):
+        store = self.book_store()
+        return sorted(store["bookmarks"], key=lambda b: int(b.get("pos", 0))) if store else []
+
+    def persist_annotations(self):
+        save_annotations(self.annotations)
+
+    def chapter_title_at(self, offset):
+        """这个偏移落在哪一章：epub 用目录，txt 用标题行兜底。"""
+        title = ""
+        for name, off in (self.local_chapters or []):
+            if int(off) <= offset:
+                title = str(name).strip()
+            else:
+                break
+        if not title and self.local_heading_offsets:
+            best = -1
+            for off in self.local_heading_offsets:
+                if off <= offset and off > best:
+                    best = off
+            if best >= 0:
+                title = self.local_full_text[best:best + 40].split("\n")[0].strip()
+        return title
+
+    def snippet_at(self, offset, length=60):
+        return " ".join(self.local_full_text[offset:offset + length].split())
+
+    def color_icon(self, name):
+        pm = QPixmap(14, 14)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(highlight_color(name, 255))
+        p.drawRoundedRect(1, 1, 12, 12, 3, 3)
+        p.end()
+        return QIcon(pm)
+
+    def apply_highlight_selections(self):
+        """把落在当前缓冲区里的划线画成 ExtraSelection。
+        绝不动正文——正文一变，翻页的几何测量就跟着错（"已恢复进度"覆盖正文那个坑）。"""
+        if not (self.is_local_mode and self.local_full_text) or self.ghost_veiled:
+            self.text_edit.setExtraSelections([])
+            return
+        base = self.local_start_index
+        buf_len = len(self.text_edit.toPlainText())
+        buf_end = base + buf_len
+        selections = []
+        for hl in self.highlights_for_book():
+            if hl.get("orphan"):
+                continue
+            try:
+                s, e = int(hl["start"]), int(hl["end"])
+            except Exception:
+                continue
+            if e <= base or s >= buf_end or e <= s:
+                continue
+            ls = max(s, base) - base
+            le = min(min(e, buf_end) - base, buf_len)
+            if le <= ls:
+                continue
+            cursor = QTextCursor(self.text_edit.document())
+            cursor.setPosition(ls)
+            cursor.setPosition(le, QTextCursor.KeepAnchor)
+            fmt = QTextCharFormat()
+            fmt.setBackground(highlight_color(hl.get("color", "yellow")))
+            if hl.get("note"):
+                # 有笔记的划线加一条虚线，作为"这里写着东西"的标记
+                r, g, b = ANNOTATION_COLORS.get(hl.get("color", "yellow"), (255, 214, 102))
+                fmt.setUnderlineStyle(QTextCharFormat.DashUnderline)
+                fmt.setUnderlineColor(QColor(r, g, b, 255))
+            sel = QTextEdit.ExtraSelection()
+            sel.cursor = cursor
+            sel.format = fmt
+            selections.append(sel)
+        self.text_edit.setExtraSelections(selections)
+
+    def find_highlight_at(self, offset):
+        """包含该偏移的划线；重叠时取最短的（最贴近点击意图）。"""
+        if offset is None:
+            return None
+        hits = []
+        for hl in self.highlights_for_book():
+            if hl.get("orphan"):
+                continue
+            try:
+                if int(hl["start"]) <= offset < int(hl["end"]):
+                    hits.append(hl)
+            except Exception:
+                continue
+        if not hits:
+            return None
+        return min(hits, key=lambda h: int(h["end"]) - int(h["start"]))
+
+    def find_highlight_by_id(self, hid):
+        for hl in self.highlights_for_book():
+            if hl.get("id") == hid:
+                return hl
+        return None
+
+    def create_highlight(self, start, end, text, color=None):
+        store = self.book_store()
+        if not store:
+            return None
+        color = color or self.highlight_default_color
+        # 同一段文字重复确认只留一条：之前"点一下又划一次"就是这么冒出来的
+        for hl in store["highlights"]:
+            try:
+                if int(hl.get("start", -1)) == int(start) and int(hl.get("end", -1)) == int(end):
+                    hl["color"] = color
+                    self.persist_annotations()
+                    self.apply_highlight_selections()
+                    return hl
+            except Exception:
+                continue
+        hl = {"id": f"h{int(time.time() * 1000)}", "start": int(start), "end": int(end),
+              "text": text, "color": color, "note": "",
+              "created": time.strftime("%Y-%m-%d %H:%M")}
+        store["highlights"].append(hl)
+        self.persist_annotations()
+        self.apply_highlight_selections()
+        log_event(f"划线 +{end - start}字 @ {start}（{os.path.basename(self.local_file_path)}）")
+        return hl
+
+    def set_highlight_color(self, hid, color):
+        hl = self.find_highlight_by_id(hid)
+        if not hl:
+            return
+        hl["color"] = color
+        self.highlight_default_color = color  # 用过的颜色就是下次默认
+        self.persist_annotations()
+        self.apply_highlight_selections()
+
+    def edit_highlight_note(self, hid):
+        hl = self.find_highlight_by_id(hid)
+        if not hl:
+            return
+        self.is_popup_open = True
+        try:
+            text, ok = QInputDialog.getMultiLineText(self, "笔记", "为这条划线写点什么：",
+                                                     hl.get("note", ""))
+        finally:
+            self.is_popup_open = False
+        if ok:
+            hl["note"] = text.strip()
+            self.persist_annotations()
+            self.apply_highlight_selections()
+
+    def copy_highlight_text(self, hl):
+        QApplication.clipboard().setText(hl.get("text", ""))
+        QToolTip.showText(QCursor.pos(), "已复制划线原文", self)
+
+    def delete_highlight(self, hid):
+        store = self.book_store()
+        hl = self.find_highlight_by_id(hid)
+        if not (store and hl):
+            return
+        if hl.get("note"):
+            # 带笔记的要二次确认，笔记删了找不回来
+            self.is_popup_open = True
+            try:
+                ret = QMessageBox.question(
+                    self, "取消划线",
+                    "这条划线带笔记，一起删除吗？\n\n笔记：" + hl["note"][:200],
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            finally:
+                self.is_popup_open = False
+            if ret != QMessageBox.Yes:
+                return
+        store["highlights"] = [h for h in store["highlights"] if h.get("id") != hid]
+        self.persist_annotations()
+        self.apply_highlight_selections()
+
+    def delete_bookmark(self, bid):
+        store = self.book_store()
+        if not store:
+            return
+        store["bookmarks"] = [b for b in store["bookmarks"] if b.get("id") != bid]
+        self.persist_annotations()
+
+    def toggle_bookmark(self):
+        if not (self.is_local_mode and self.local_full_text):
+            return
+        store = self.book_store()
+        if not store:
+            return
+        pos = int(self.local_start_index)
+        exist = next((b for b in store["bookmarks"] if int(b.get("pos", -1)) == pos), None)
+        if exist:
+            store["bookmarks"] = [b for b in store["bookmarks"] if b.get("id") != exist.get("id")]
+            message = "已取消本页书签"
+        else:
+            store["bookmarks"].append({
+                "id": f"b{int(time.time() * 1000)}", "pos": pos,
+                "snippet": self.snippet_at(pos), "chapter": self.chapter_title_at(pos),
+                "created": time.strftime("%Y-%m-%d %H:%M")})
+            message = "已收藏本页（Ctrl+L 看书签）"
+        self.persist_annotations()
+        # 提示用浮动气泡，绝不往正文里写消息（写正文会毁掉翻页测量）
+        QToolTip.showText(self.mapToGlobal(QPoint(self.width() // 2, 6)), message, self,
+                          QRect(0, 0, 1, 1), 1600)
+        log_event("书签: " + message)
+
+    def validate_annotations(self):
+        """换过书本文件时偏移会错位：按原文片段在 ±3000 字内找回，找不回的标记失效但不删。"""
+        store = self.book_store()
+        if not (store and self.local_full_text):
+            return
+        text = self.local_full_text
+        changed = False
+        for hl in store["highlights"]:
+            snip = hl.get("text", "")
+            try:
+                s, e = int(hl["start"]), int(hl["end"])
+            except Exception:
+                hl["orphan"] = True
+                changed = True
+                continue
+            if not snip or text[s:e] == snip:
+                hl.pop("orphan", None)
+                continue
+            found = text.find(snip, max(0, s - 3000), s + 3000 + len(snip))
+            if found < 0:
+                found = text.find(snip)
+            if found >= 0:
+                hl["start"], hl["end"] = found, found + len(snip)
+                hl.pop("orphan", None)
+            else:
+                hl["orphan"] = True
+            changed = True
+        for bm in store["bookmarks"]:
+            snip = bm.get("snippet", "")
+            try:
+                pos = int(bm["pos"])
+            except Exception:
+                continue
+            if not snip or " ".join(text[pos:pos + len(snip)].split()) == snip:
+                continue
+            found = text.find(snip, max(0, pos - 3000), pos + 3000 + len(snip))
+            if found < 0:
+                found = text.find(snip)
+            if found >= 0:
+                bm["pos"] = found
+                changed = True
+        if changed:
+            self.persist_annotations()
+            log_event("划线/书签位置已按原文校正")
+
+    def jump_to_offset(self, offset):
+        if not self.local_full_text:
+            return
+        self.local_page_history = []
+        self.local_start_index = max(0, min(int(offset), max(0, len(self.local_full_text) - 1)))
+        self.config["last_local_pos"] = self.local_start_index
+        self.save_config()
+        self.render_local_page()
+
+    def open_reading_marks(self, initial_tab=0):
+        if not self.is_local_mode:
+            return
+        self.is_popup_open = True
+        try:
+            dialog = ReadingMarksDialog(self, initial_tab)
+            if dialog.exec_() == QDialog.Accepted and dialog.jump_offset is not None:
+                self.jump_to_offset(dialog.jump_offset)
+            dialog.deleteLater()
+        finally:
+            self.is_popup_open = False
+
+    def export_annotations(self):
+        """导出成 Markdown：按章节分组，划线原文用引用块，笔记跟在后面。"""
+        if not (self.is_local_mode and self.local_file_path):
+            QMessageBox.information(self, "导出", "先打开一本本地书。")
+            return None
+        highlights = self.highlights_for_book()
+        bookmarks = self.bookmarks_for_book()
+        if not highlights and not bookmarks:
+            QMessageBox.information(self, "导出", "这本书还没有划线和书签。")
+            return None
+        book_name = os.path.splitext(os.path.basename(self.local_file_path))[0]
+        out_path = os.path.join(os.path.dirname(self.local_file_path), f"{book_name}.划线笔记.md")
+        noted = sum(1 for h in highlights if h.get("note"))
+        lines = [f"# {book_name} · 划线笔记", "",
+                 f"导出时间：{time.strftime('%Y-%m-%d %H:%M')}　"
+                 f"划线 {len(highlights)} 条（带笔记 {noted} 条）、书签 {len(bookmarks)} 个", ""]
+        if highlights:
+            lines += ["## 划线", ""]
+            last_chapter = None
+            for hl in highlights:
+                chapter = self.chapter_title_at(int(hl.get("start", 0))) or "正文"
+                if chapter != last_chapter:
+                    lines += [f"### {chapter}", ""]
+                    last_chapter = chapter
+                for line in str(hl.get("text", "")).strip().split("\n"):
+                    lines.append("> " + line.strip())
+                lines += [">", f"> —— {hl.get('created', '')}", ""]
+                if hl.get("note"):
+                    lines += [f"**笔记**：{hl['note']}", ""]
+        if bookmarks:
+            lines += ["## 书签", ""]
+            for bm in bookmarks:
+                lines.append(f"- {bm.get('chapter') or '正文'} · {bm.get('snippet', '')}"
+                             f"　（{bm.get('created', '')}）")
+            lines.append("")
+        try:
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+            return None
+        log_event(f"导出划线笔记: {out_path}")
+        QMessageBox.information(self, "导出完成", f"已导出到：\n{out_path}")
+        return out_path
+
+    # --- viewport 鼠标交互：划选后浮面板确认 / 点划线出面板 / 中键或 Alt+左键拖窗口 ---
+    def buffer_offset_at(self, viewport_pos):
+        """viewport 坐标 → 全文字符偏移。"""
+        if not (self.is_local_mode and self.local_full_text):
+            return None
+        return self.local_start_index + self.text_edit.cursorForPosition(viewport_pos).position()
+
+    def clear_text_selection(self):
+        cursor = self.text_edit.textCursor()
+        if cursor.hasSelection():
+            cursor.clearSelection()
+            self.text_edit.setTextCursor(cursor)
+
+    def selection_anchor_global(self):
+        """划选末端下方一点，作为面板的出场位置。"""
+        cursor = self.text_edit.textCursor()
+        pos = cursor.selectionEnd() if cursor.hasSelection() else cursor.position()
+        probe = QTextCursor(self.text_edit.document())
+        probe.setPosition(pos)
+        rect = self.text_edit.cursorRect(probe)
+        return self.text_edit.viewport().mapToGlobal(QPoint(rect.left(), rect.bottom()))
+
+    def on_viewport_press(self, event):
+        if event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton
+                                                 and event.modifiers() & Qt.AltModifier):
+            # 正文区已经让给划选了，移动窗口改到这里：中键拖动，或 Alt+左键拖动
+            self.filter_drag_origin = event.globalPos()
+            self.filter_drag_window_pos = self.pos()
+            self.setCursor(Qt.SizeAllCursor)
+            return True
+        if event.button() == Qt.LeftButton:
+            # 先把上一轮残留的选中清掉，不然它会被当成一次"新划选"再确认一遍（重复划线就是这么来的）
+            self.clear_text_selection()
+        if event.button() == Qt.RightButton:
+            hit = self.find_highlight_at(self.buffer_offset_at(event.pos()))
+            if hit:
+                self.show_action_panel("existing", hl=hit,
+                                       anchor=self.text_edit.viewport().mapToGlobal(event.pos()))
+                return True
+        return False
+
+    def on_viewport_move(self, event):
+        if self.filter_drag_origin is not None:
+            delta = event.globalPos() - self.filter_drag_origin
+            self.move(self.filter_drag_window_pos + delta)
+            return True
+        return False
+
+    def on_viewport_release(self, event):
+        if self.filter_drag_origin is not None:
+            self.filter_drag_origin = None
+            self.setCursor(Qt.ArrowCursor)
+            self.save_window_pos()
+            return True
+        if event.button() != Qt.LeftButton or not (self.is_local_mode and self.local_full_text):
+            return False
+        cursor = self.text_edit.textCursor()
+        if cursor.hasSelection():
+            # 一律用文档位置取偏移和原文，不用 selectedText（Qt 拿 U+2029 当段落分隔符，长度会对不上）
+            ls, le = cursor.selectionStart(), cursor.selectionEnd()
+            snippet = self.text_edit.toPlainText()[ls:le]
+            if len(snippet.strip()) >= 2:
+                # 不直接划线：先浮出面板等确认；滚轮/点别处/按键都不算确认
+                self.pending_selection = (self.local_start_index + ls,
+                                          self.local_start_index + le, snippet)
+                self.show_action_panel("new", anchor=self.selection_anchor_global())
+                return False
+        # 没选到东西、或只带出一个字/一块空白：都按"单击"办
+        # （点的时候手指抖一下会留下一个字的残留选中，不能因此把菜单吞了）
+        hit = self.find_highlight_at(self.buffer_offset_at(event.pos()))
+        if hit:
+            pos = QPoint(event.pos())
+            QTimer.singleShot(0, lambda h=hit, p=pos: self.show_action_panel(
+                "existing", hl=h, anchor=self.text_edit.viewport().mapToGlobal(p)))
+        return False
+
+    def show_action_panel(self, mode, hl=None, anchor=None):
+        # 换新面板时不能作废 pending——"新划选"的 pending 是刚设好的（这个坑踩过一次）
+        self.dismiss_action_panel(cancelled=False)
+        if mode == "existing":
+            self.pending_selection = None
+        hl = hl or {}
+        current = hl.get("color") or self.highlight_default_color
+        panel = HighlightActionPanel(self, mode=mode, current_color=current,
+                                     has_note=bool(hl.get("note")))
+        panel.chosen.connect(lambda key: self.on_panel_action(key, mode, hl))
+        panel.cancelled.connect(self.on_panel_cancelled)
+        panel.wheel_scrolled.connect(self.on_panel_wheel)
+        self.action_panel = panel
+        self.is_popup_open = True
+
+        panel.adjustSize()
+        gpos = anchor or QCursor.pos()
+        screen = QApplication.screenAt(gpos) or QApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        x = min(max(gpos.x(), avail.left() + 4), avail.right() - panel.width() - 4)
+        y = gpos.y() + 6
+        if y + panel.height() > avail.bottom() - 4:
+            y = gpos.y() - panel.height() - 10   # 下面放不下就翻到上方
+        panel.move(max(avail.left() + 4, x), max(avail.top() + 4, y))
+        # 弹层要求窗口是激活的，不然 Qt 会把 popup 立刻收掉（用户刚在这里点过，激活是安全的）
+        self.activateWindow()
+        panel.show()
+
+    def dismiss_action_panel(self, cancelled=False):
+        panel, self.action_panel = self.action_panel, None
+        if panel is not None:
+            panel.hide()
+            panel.deleteLater()
+        if cancelled:
+            # 不确认：连选中一起清掉，免得那个残留选中下次被当成新划选
+            self.pending_selection = None
+            self.clear_text_selection()
+        if self.action_panel is None:
+            self.is_popup_open = False
+
+    def on_panel_cancelled(self):
+        # 点别处 / Esc / 窗口藏起来 → 面板自己 hide，这里负责收尾
+        # 注意要真的销毁控件：只清引用的话，弹层窗口会一个个攒下来（实测踩过）
+        panel = self.action_panel
+        self.action_panel = None
+        if panel is not None:
+            panel.hide()
+            panel.deleteLater()
+        self.pending_selection = None
+        self.clear_text_selection()
+        self.is_popup_open = False
+
+    def on_panel_wheel(self, delta):
+        """滚轮：视为不确认，但滚轮本身照样翻页（手动把这一下补回去）。"""
+        self.dismiss_action_panel(cancelled=True)
+        try:
+            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+        except Exception:
+            pass
+
+    def confirm_pending_highlight(self, color):
+        if not self.pending_selection:
+            return None
+        start, end, text = self.pending_selection
+        self.pending_selection = None
+        hl = self.create_highlight(start, end, text, color)
+        self.highlight_default_color = color
+        self.clear_text_selection()
+        return hl
+
+    def on_panel_action(self, key, mode, hl):
+        if key == "default":
+            self.confirm_pending_highlight(self.highlight_default_color)
+            self.dismiss_action_panel()
+        elif key.startswith("color:"):
+            color = key.split(":", 1)[1]
+            if mode == "new":
+                self.confirm_pending_highlight(color)
+                self.dismiss_action_panel()
+            else:
+                self.set_highlight_color(hl.get("id"), color)
+                self.dismiss_action_panel()
+        elif key == "note":
+            if mode == "new":
+                created = self.confirm_pending_highlight(self.highlight_default_color)
+                self.dismiss_action_panel()
+                if created:
+                    self.edit_highlight_note(created["id"])
+            else:
+                self.dismiss_action_panel()
+                self.edit_highlight_note(hl.get("id"))
+        elif key == "copy":
+            text = (self.pending_selection[2] if (mode == "new" and self.pending_selection)
+                    else hl.get("text", ""))
+            QApplication.clipboard().setText(text)
+            QToolTip.showText(QCursor.pos(), "已复制原文", self)
+            self.dismiss_action_panel(cancelled=(mode == "new"))
+        elif key == "delete":
+            self.dismiss_action_panel()
+            self.delete_highlight(hl.get("id"))
+
     def contextMenuEvent(self, event):
         cmenu = QMenu(self)
         cmenu.addAction("📂 打开本地书籍 (TXT/EPUB)").triggered.connect(self.open_local_file_dialog)
-        toc_action = cmenu.addAction("📑 本地目录")
-        toc_action.triggered.connect(self.open_local_toc)
-        toc_action.setEnabled(bool(self.is_local_mode and self.local_chapters))
+        marks_action = cmenu.addAction("📑 目录 / 书签 / 划线 (Ctrl+L)")
+        marks_action.triggered.connect(lambda: self.open_reading_marks(0))
+        marks_action.setEnabled(bool(self.is_local_mode))
+        mark_here = cmenu.addAction("🔖 收藏本页 / 取消书签 (Ctrl+B)")
+        mark_here.triggered.connect(self.toggle_bookmark)
+        mark_here.setEnabled(bool(self.is_local_mode))
+        export_action = cmenu.addAction("📤 导出划线笔记 (Markdown)")
+        export_action.triggered.connect(self.export_annotations)
+        export_action.setEnabled(bool(self.is_local_mode))
+        copy_action = cmenu.addAction("📋 复制选中文字")
+        copy_action.triggered.connect(self.copy_selection)
+        copy_action.setEnabled(bool(self.text_edit.textCursor().hasSelection()))
         cmenu.addSeparator()
         cmenu.addAction("📚 网络书架 (搜索)").triggered.connect(self.open_book_selector)
         cmenu.addAction("📖 章节目录 (网络)").triggered.connect(self.open_toc_selector)
@@ -2109,18 +3030,19 @@ class StealthReader(QWidget):
         cmenu.addAction("⚙️ 设置").triggered.connect(self.open_settings)
         cmenu.addSeparator()
         cmenu.addAction("❌ 退出").triggered.connect(self.quit_app)
+        modernize_menu(cmenu)
         cmenu.exec_(self.mapToGlobal(event.pos()))
+        cmenu.deleteLater()   # 菜单挂在窗口上，不销毁会一次右键攒一个
+
+    def copy_selection(self):
+        cursor = self.text_edit.textCursor()
+        if cursor.hasSelection():
+            QApplication.clipboard().setText(cursor.selectedText().replace("\u2029", "\n"))
+            QToolTip.showText(QCursor.pos(), "已复制选中文字", self)
 
     def open_local_toc(self):
-        if not self.local_chapters:
-            return
-        dialog = LocalTocSelector(self.local_chapters, self.local_start_index, self)
-        if dialog.exec_() == QDialog.Accepted and dialog.selected_offset is not None:
-            self.local_page_history = []
-            self.local_start_index = max(0, int(dialog.selected_offset))
-            self.config["last_local_pos"] = self.local_start_index
-            self.save_config()
-            self.render_local_page()
+        # 老入口保留，直接开三合一的目录页
+        self.open_reading_marks(0)
 
     def open_settings(self):
         self.is_settings_open = True
@@ -2155,6 +3077,7 @@ class StealthReader(QWidget):
 
     def closeEvent(self, event):
         self.exit_peek("close")  # 窗口关了必须先卸全局钩子，再走保存
+        self.dismiss_action_panel(cancelled=True)
         self.sync_progress_async()
         self.save_window_pos()
         if self.is_local_mode:
@@ -2196,5 +3119,7 @@ if __name__ == '__main__':
     app.setQuitOnLastWindowClosed(False)
     ex = StealthReader()
     ex.show()
+    # 启动恢复位置后校验一次：窗口可能被存到了已经不存在的显示器坐标上
+    QTimer.singleShot(400, ex.ensure_on_screen)
     log_event("应用启动")
     sys.exit(app.exec_())
