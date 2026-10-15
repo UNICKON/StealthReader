@@ -9,6 +9,7 @@ import requests
 import json
 import re
 import posixpath
+import queue
 import zipfile
 import threading
 import time
@@ -1049,6 +1050,14 @@ REVIEW_KEY_NAMES = {
 # 设置里关掉"连空格/回车也吞"之后，仍然要吞这些（评分与退出必须能收到）
 REVIEW_KEY_NAMES_MIN = {"1", "2", "3", "4", "u", "r", "esc"}
 
+# 评分按钮的名字：Anki 按张数变（学习步/FSRS 下可能只有 2 个按钮）
+REVIEW_BUTTON_LABELS = {
+    1: ["重来"],
+    2: ["重来", "良好"],
+    3: ["重来", "良好", "容易"],
+    4: ["重来", "困难", "良好", "容易"],
+}
+
 
 _LRESULT = ctypes.c_ssize_t
 _HOOKPROC = ctypes.WINFUNCTYPE(_LRESULT, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t)  # WPARAM/LPARAM
@@ -1057,6 +1066,57 @@ _user32.SetWindowsHookExW.restype = ctypes.c_void_p
 _user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
 _user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
 _user32.CallNextHookEx.restype = _LRESULT
+# HWND 是 64 位指针：不声明 restype 的话 ctypes 按 c_int 收，句柄会被截断
+_user32.GetForegroundWindow.restype = ctypes.c_void_p
+_user32.GetForegroundWindow.argtypes = []
+_user32.WindowFromPoint.restype = ctypes.c_void_p
+_user32.WindowFromPoint.argtypes = [_POINT]
+_user32.GetAncestor.restype = ctypes.c_void_p
+_user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+
+
+class AnkiWorker(QThread):
+    """AnkiConnect 调用的私有线程（常驻 + 队列串行）。
+
+    实测：每个 `gui*` 动作固定 ~60ms——AnkiConnect 必须把它丢回 Anki 自己的主线程执行。
+    放在主线程上做就是一卡一卡：2.5 秒对一次账＝每 2.5 秒冻 60ms，进牌组那一串调用
+    更是一口气堵 0.7 秒。这里换成一条常驻线程串行执行（**串行**是为了保证评分顺序：
+    绝不并发去答两张卡），结果用队列信号送回主线程，界面一个字节都不用等。
+    """
+
+    done = pyqtSignal(int, object)
+    failed = pyqtSignal(int, object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._queue = queue.Queue()
+        self._stopping = False
+        self.setObjectName("anki-worker")
+
+    def submit(self, task_id, fn):
+        self._queue.put((task_id, fn))
+
+    def stop(self):
+        self._stopping = True
+        self._queue.put((None, None))
+
+    def run(self):
+        while not self._stopping:
+            task_id, fn = self._queue.get()
+            if task_id is None:
+                break
+            try:
+                result = fn()
+            except Exception as e:                      # 异常类型（AnkiBusy 等）原样送回主线程判定
+                try:
+                    self.failed.emit(task_id, e)
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.done.emit(task_id, result)
+                except Exception:
+                    pass
 
 
 class GlobalInputHook:
@@ -1928,6 +1988,14 @@ class StealthReader(QWidget):
         self.review_snapshot = None     # 进背诵前的书状态（和安全文档共用同一套快照函数）
         self.review_client = None       # anki_client.AnkiClient，惰性创建
         self.review_busy_until = 0.0    # Anki 忙时的退避到什么时候
+        self.review_entering = False    # 正在后台打开牌组（这期间再按热键不重复进）
+        self.review_media_dir = ""      # collection.media：进牌组时取一次就缓存（每次取要 60ms）
+        self.review_poll_tick = 0       # 对账节拍：计数不用每拍都拉
+        # AnkiConnect 一律在这个后台线程里跑（每个 gui* 调用固定 ~60ms，不能放主线程）
+        self.anki_worker = None
+        self.anki_tasks = {}            # task_id -> {ok, err, key}
+        self.anki_inflight = set()      # 排队/执行中的任务 key（去重：对账不许堆队）
+        self.anki_task_seq = 0
 
         # 老板键看门狗：keyboard 库的监听线程偶尔会静默死亡（锁屏/睡眠/钩子被系统强拆），
         # 每 45 秒查一次，死了就重新注册
@@ -1975,6 +2043,12 @@ class StealthReader(QWidget):
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
         self.bookshelf_updated_signal.connect(self.on_bookshelf_updated)
+        # 最后一道保险：任何退出路径（托盘退出、右键退出、关窗、异常退出）都要停掉 Anki
+        # 后台线程。QThread 还在跑就被析构，PyQt 会直接崩，而且 Anki 可能停在"藏起来"的状态。
+        try:
+            QApplication.instance().aboutToQuit.connect(self.stop_anki_worker)
+        except Exception:
+            pass
 
         self.refresh_hotkeys()
         self.register_session_notification()   # 锁屏解锁后靠它主动重挂热键
@@ -2549,7 +2623,9 @@ class StealthReader(QWidget):
             keyboard.add_hotkey(hotkey_str, self.on_global_hotkey_triggered)
             # 注意：unhook_all 只拆 keyboard 库自己的钩子；偷瞄/背诵用的 ctypes 钩子是独立管理的，
             # 所以看门狗每 90 秒的例行重挂碰不到它——背诵吞键不需要在重挂后补装。
-            keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered)
+            # 偷瞄键 suppress=True：**不放给别的软件**（原来按 Ctrl+E 会同时触发浏览器/编辑器的动作，
+            # 像是"我按了个快捷键"，现在这个组合键只属于这里）。
+            keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered, suppress=True)
             taken = {hotkey_str.lower(), peek_key_str.lower()}
             # 安全文档热键：和上面两个撞车的话只留先注册的那个，免得一次按键触发两个动作
             if safe_key_str and safe_key_str.lower() not in taken:
@@ -2610,11 +2686,35 @@ class StealthReader(QWidget):
             except Exception:
                 self.marks_shortcuts = []
 
+    def boss_key_actionable(self):
+        """老板键现在只对"我正在看这个窗口"生效。
+
+        Ctrl+D 是极常用的全局快捷键（浏览器收藏、编辑器复制整行…）。原来在任何软件里按
+        Ctrl+D 都会把书窗藏起来，等于把别人的快捷键抢了。窗口是 Tool + 不激活式显示，
+        常常并不持有前台焦点（只看前台窗口会退化成"永远不生效"），所以判定是：
+        窗口就是前台窗口，**或者**鼠标正停在窗口上——两种都说明你在看它。
+        窗口已经藏起来时不套这一条：那时按 Ctrl+D 就是"再叫出来"（托盘单击也一样），
+        而且这个键不吞，浏览器该收藏还收藏，不会拦别人。
+        """
+        try:
+            if not self.isVisible():
+                return True
+            fg = int(_user32.GetForegroundWindow() or 0)
+            me = int(self.winId())
+            if fg and (fg == me or _user32.IsChild(me, fg)):
+                return True
+            return self.frameGeometry().contains(QCursor.pos())
+        except Exception:
+            return True                 # 判不出来就按老行为，宁可能用
+
     def on_global_hotkey_triggered(self):
         # 这三个回调跑在 keyboard 库的分发线程上，那里没有兜底 try：回调抛异常（比如日志
         # 写盘失败）会把分发线程直接打死，此后线程活着、listening 仍是 True，热键却一个都不响。
         # 所以自己兜住，绝不把异常抛回库里。
         try:
+            if not self.boss_key_actionable():
+                log_event("老板键忽略：窗口不在前台、鼠标也不在窗口上")
+                return
             log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
             self.hotkey_signal.emit()
         except Exception as e:
@@ -2819,6 +2919,28 @@ class StealthReader(QWidget):
         self.text_edit.viewport().setAttribute(Qt.WA_Hover, True)
 
         self.content_layout.addWidget(self.text_edit)
+
+        # 背诵专用页脚：一行"学习计划 + 今日/本次 + 四个评分按钮（各自带下次复习间隔）"。
+        # 平时整条藏着；安全文档盖上来时也藏着——周报底下挂一排评分按钮，一眼就露馅。
+        self.review_bar = QWidget()
+        bar_layout = QHBoxLayout(self.review_bar)
+        bar_layout.setContentsMargins(0, 0, 0, 0)
+        bar_layout.setSpacing(0)
+        self.review_plan_label = QLabel("")
+        self.review_plan_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        bar_layout.addWidget(self.review_plan_label)
+        self.review_buttons = []
+        for _i in range(4):
+            _btn = QPushButton("")
+            _btn.setFlat(True)
+            _btn.setFocusPolicy(Qt.NoFocus)
+            _btn.setCursor(Qt.ArrowCursor)
+            _btn.clicked.connect(lambda _=False, n=_i + 1: self.review_grade_button(n))
+            bar_layout.addWidget(_btn)
+            self.review_buttons.append(_btn)
+        self.review_bar.setVisible(False)
+        self.content_layout.addWidget(self.review_bar)
+
         self.main_layout.addWidget(self.content_frame)
         self.setLayout(self.main_layout)
 
@@ -3286,6 +3408,85 @@ class StealthReader(QWidget):
             self.review_client = AnkiClient(api_key=key)
         return self.review_client
 
+    # --- 后台执行（界面绝不等待 AnkiConnect）---
+
+    def anki_worker_thread(self):
+        if self.anki_worker is None:
+            self.anki_worker = AnkiWorker(self)
+            self.anki_worker.done.connect(self.on_anki_done)
+            self.anki_worker.failed.connect(self.on_anki_failed)
+            self.anki_worker.start()
+        return self.anki_worker
+
+    def anki_call(self, fn, on_ok=None, on_err=None, key=None):
+        """把一次 AnkiConnect 调用丢给后台线程；同一个 key 没跑完就不再排第二个。
+
+        去重很要紧：Anki 一忙（同步中）对账会一次比一次慢，不去重就会堆一队 60ms 的调用，
+        界面反而更卡。评分用 key='grade'，所以连按两下也不会答两张卡。
+        """
+        if key and key in self.anki_inflight:
+            return False
+        self.anki_task_seq += 1
+        task_id = self.anki_task_seq
+        if key:
+            self.anki_inflight.add(key)
+        self.anki_tasks[task_id] = {"ok": on_ok, "err": on_err, "key": key}
+        self.anki_worker_thread().submit(task_id, fn)
+        return True
+
+    def _finish_anki_task(self, task_id):
+        task = self.anki_tasks.pop(task_id, None)
+        if task and task.get("key"):
+            self.anki_inflight.discard(task["key"])
+        return task
+
+    def on_anki_done(self, task_id, result):
+        task = self._finish_anki_task(task_id)
+        if not task or not task.get("ok"):
+            return
+        try:
+            task["ok"](result)
+        except Exception as e:
+            log_event(f"Anki 回调异常：{type(e).__name__}")
+
+    def on_anki_failed(self, task_id, exc):
+        task = self._finish_anki_task(task_id)
+        if not task or not task.get("err"):
+            log_event(f"Anki 调用失败：{type(exc).__name__}")
+            return
+        try:
+            task["err"](exc)
+        except Exception as e:
+            log_event(f"Anki 错误回调异常：{type(e).__name__}")
+
+    def stop_anki_worker(self):
+        if self.anki_worker is not None:
+            try:
+                self.anki_worker.stop()
+                self.anki_worker.wait(1500)
+            except Exception:
+                pass
+            self.anki_worker = None
+
+    def shutdown_anki(self):
+        """退出程序前的收尾：把 Anki 从"复习器 + 藏起来的窗口"里放出来，再停后台线程。
+
+        顺序要紧：`exit_review_mode` 里的离开/还原是异步排队的，紧接着就停线程会把那个任务
+        丢掉，Anki 窗口就会一直留在藏起来的状态（任务栏里找不着、Alt+Tab 也没有）。
+        这里同步兜一次，然后才停线程——否则 QThread 还在跑就被析构，PyQt 会直接崩。
+        """
+        if self.review_client is not None:
+            try:
+                self.review_client.leave_review()
+            except Exception:
+                pass
+            try:
+                self.review_client.reveal_anki()   # 还原也不激活：绝不把 Anki 亮到最前面
+            except Exception:
+                pass
+        self.stop_anki_worker()
+
+
     def review_status_text(self):
         """状态文案：牌组 · 待复习 N（Anki 每日上限口径） · 今日已复习 M · 本次 K。"""
         s = self.review_session or {}
@@ -3312,25 +3513,21 @@ class StealthReader(QWidget):
         return type(e).__name__
 
     def enter_review_mode(self, deck=None):
-        """进隐形背诵：书页先拍快照，正文区换成 Anki 卡片，排版沿用阅读设置。"""
-        if self.review_mode:
+        """进隐形背诵。真正的 Anki 往返全丢给后台线程——实测那一串（连 Anki + 开牌组 +
+        取卡 + 取计数 + 取媒体目录）要 0.7 秒，放主线程就是"按下去先僵一下"。"""
+        if self.review_mode or self.review_entering:
             return True
         deck = (deck or self.config.get("anki_deck") or "").strip()
-        try:
-            client = self.anki_client()
-            client.ping()
-        except AnkiUnavailable:
-            self.review_hint(INSTALL_HINT, 6000)
-            log_event("进背诵失败：连不上 AnkiConnect")
-            return False
-        except AnkiError as e:
-            self.review_hint(f"AnkiConnect 异常：{self.review_err_text(e)}", 4000)
-            log_event(f"进背诵失败：{self.review_err_text(e)}")
-            return False
         if not deck:
             # 第一次用还没选牌组：把设置打开（那里有牌组列表，能直接读 Anki 的实际牌组）
             self.review_hint("还没选牌组：在设置里挑一个（可以点「列出牌组…」）", 4000)
             QTimer.singleShot(0, self.open_settings)
+            return False
+        try:
+            client = self.anki_client()        # 只建对象，没有网络往返，秒回
+        except AnkiError as e:
+            self.review_hint(INSTALL_HINT, 6000)
+            log_event(f"进背诵失败：{self.review_err_text(e)}")
             return False
         if self.peek_mode:
             # 从偷瞄进来：只收起偷瞄（不隐藏窗口，马上要显示卡片）
@@ -3338,18 +3535,44 @@ class StealthReader(QWidget):
             self.peek_input_hook.uninstall()
             self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
         if self.safe_mode:
-            self.exit_safe_mode()          # 从安全文档进来：先把真书放回来，再拍快照
-        try:
+            self.exit_safe_mode()              # 从安全文档进来：先把真书放回来，再拍快照
+        self.review_entering = True
+        self.review_hint(f"正在打开牌组「{deck}」…", 1500)
+
+        def job():
+            client.ping()
             client.start_review(deck)
-        except AnkiError as e:
-            self.review_hint(f"打不开牌组「{deck}」：{self.review_err_text(e)}", 4000)
-            log_event(f"进背诵失败：{self.review_err_text(e)}")
-            return False
+            return {"card": client.current_card(),
+                    "stats": client.deck_stats([deck]),
+                    "reviewed": client.reviewed_today(),
+                    "media": client.media_dir() or ""}
+
+        self.anki_call(job, on_ok=lambda r, d=deck: self.finish_enter_review(d, r),
+                       on_err=self.fail_enter_review, key="enter")
+        return True
+
+    def fail_enter_review(self, exc):
+        self.review_entering = False
+        if isinstance(exc, AnkiUnavailable):
+            self.review_hint(INSTALL_HINT, 6000)
+        elif isinstance(exc, AnkiBusy):
+            self.review_hint("Anki 正在同步/忙，稍等一下再按一次", 4000)
+        else:
+            self.review_hint(f"进背诵失败：{self.review_err_text(exc)}", 4000)
+        log_event(f"进背诵失败：{self.review_err_text(exc)}")
+
+    def finish_enter_review(self, deck, r):
+        """后台已经把牌组打开好了：切内容、装钩子、铺第一张卡（这一段没有任何网络往返）。"""
+        self.review_entering = False
+        if self.review_mode:
+            return
+        self.review_media_dir = r.get("media") or ""
+        self.review_poll_tick = 0
         self.dismiss_action_panel(cancelled=True)
         self.review_snapshot = self.snapshot_book_state()
         self.review_session = {"deck": deck, "card": None, "card_id": None, "shown": False,
                                "counted": 0, "remaining": None, "reviewed_today": None,
-                               "sounds": []}
+                               "sounds": [], "busy_retries": 0}
         self.review_mode = True
         # 借用本地渲染管线：字体/字号/行距/页边距/缩进全部沿用，卡片看起来就是这份文档。
         # local_full_text 故意留空 —— "进度跟着视线走"、翻页、划线会因此自动闭嘴
@@ -3370,31 +3593,105 @@ class StealthReader(QWidget):
         self.ensure_on_screen()
         self.install_review_hook()         # 吞那 9 个复习键（只在背诵中 + 窗口可见时吞）
         self.review_timer.start()
-        try:
-            if self.config.get("anki_conceal", True):
-                client.conceal_anki()      # 把 Anki 自己的窗口藏起来（不进 Alt+Tab、没有任务栏缩略图）
-            self.review_refresh_counts(client)
-            self.review_load_card(client.current_card())
-        except AnkiError as e:
-            self.review_hint(f"取卡失败：{self.review_err_text(e)}", 4000)
-        self.update_tray_tooltip()
+        if self.config.get("anki_conceal", True):
+            try:
+                self.anki_client().conceal_anki()   # 纯 win32 调用，不排 Anki 的队
+            except Exception:
+                pass
+        self.apply_counts(r.get("stats"), r.get("reviewed"))
+        self.review_load_card(r.get("card"))
         log_event(f"隐形背诵：已进入（牌组 {deck}）")
-        return True
 
-    def review_refresh_counts(self, client=None):
-        """刷新"待复习/今日已复习"。计数一律用 Anki 口径（getDeckStats 已按每日上限算好）。"""
+    def apply_review_bar_style(self):
+        """页脚的字号/颜色跟着阅读设置走，只是小一号、淡一点——像文档底下的一行小字。"""
+        size = max(8, int(self.config.get("font_size", 14)) - 3)
+        color = QColor(200, 200, 200)
+        try:
+            base = QColor(str(self.config.get("text_color") or ""))
+            if base.isValid():
+                color = base
+        except Exception:
+            pass
+        c = f"rgba({color.red()},{color.green()},{color.blue()},155)"
+        dim = f"rgba({color.red()},{color.green()},{color.blue()},75)"
+        self.review_bar.setStyleSheet(
+            f"QLabel {{ color: {c}; font-size: {size}px; background: transparent; }}"
+            f"QPushButton {{ color: {c}; font-size: {size}px; background: transparent;"
+            f" border: none; padding: 1px 5px; }}"
+            f"QPushButton:hover {{ background: rgba(255,255,255,0.12); border-radius: 3px; }}"
+            f"QPushButton:disabled {{ color: {dim}; }}")
+
+    def update_review_bar(self):
+        """页脚内容：学习计划（新/学/复）+ 今日与本次张数 + 四个评分按钮。
+
+        按钮文字带 Anki 给的 `nextReviews`（"重来 <10 分 / 良好 3 天"），这就是按下去
+        **会对这张卡产生的结果**；翻面前按钮是灰的（Anki 也不让你没看答案就评分），
+        翻面后按 `buttons` 逐个启用——学习步/FSRS 下按钮可能只有 2 个，多的藏起来。
+        """
+        if not hasattr(self, "review_bar"):
+            return
+        visible = bool(self.review_mode and not self.safe_mode)
+        self.review_bar.setVisible(visible)
+        if not visible:
+            return
+        self.apply_review_bar_style()
+        s = self.review_session or {}
+        card = s.get("card") or {}
+        buttons = list(card.get("buttons") or [1, 2, 3, 4])
+        times = list(card.get("nextReviews") or [])
+        labels = REVIEW_BUTTON_LABELS.get(len(buttons))
+        if labels is None:
+            labels = ["重来", "困难", "良好", "容易"][:len(buttons)]
+        for i, btn in enumerate(self.review_buttons):
+            if i < len(buttons):
+                name = labels[i] if i < len(labels) else str(buttons[i])
+                when = times[i] if i < len(times) else ""
+                btn.setText(f"{buttons[i]} {name}" + (f" {when}" if when else ""))
+                btn.setVisible(True)
+                btn.setEnabled(bool(s.get("shown")))
+            else:
+                btn.setText("")
+                btn.setEnabled(False)
+                btn.setVisible(False)
+        plan = ""
+        if s.get("new_count") is not None:
+            plan = f"新 {s.get('new_count')} · 学 {s.get('learn_count')} · 复 {s.get('review_count')}"
+        tail = []
+        if s.get("reviewed_today") is not None:
+            tail.append(f"今日已 {s['reviewed_today']}")
+        if s.get("counted"):
+            tail.append(f"本次 {s['counted']}")
+        if not card:
+            hint = "今天清完了"
+        elif s.get("shown"):
+            hint = "评分"
+        else:
+            hint = "空格 / 点一下卡片 翻面"
+        self.review_plan_label.setText("　".join(x for x in [plan, " · ".join(tail), hint] if x))
+
+    def apply_counts(self, stats, reviewed):
+        """把 Anki 给的计数装进会话（数据都由后台线程取来，这里一次网都不连）。
+
+        计数一律用 Anki 口径：`getDeckStats` 已经把每日上限算进去了，
+        `getNumCardsReviewedToday` 是 Anki 自己记的"今日已复习"。
+        """
         s = self.review_session
         if not s:
             return
-        try:
-            client = client or self.anki_client()
-            s["remaining"] = client.remaining(s["deck"])
-            s["reviewed_today"] = client.reviewed_today()
-        except AnkiError:
-            pass
+        if isinstance(stats, dict):
+            info = stats.get(s.get("deck")) or {}
+            if info:
+                s["new_count"] = int(info.get("new", 0))
+                s["learn_count"] = int(info.get("learn", 0))
+                s["review_count"] = int(info.get("review", 0))
+                s["remaining"] = s["new_count"] + s["learn_count"] + s["review_count"]
+        if reviewed is not None:
+            s["reviewed_today"] = int(reviewed)
+        self.update_review_bar()
+        self.update_tray_tooltip()
 
     def review_load_card(self, card):
-        """换一张卡：只渲染**正面**，并让 Anki 从这一刻开始计时（答题用时才准）。"""
+        """换一张卡：只渲染**正面**；计时交给后台线程（一个 60ms 的调用不该卡住换卡）。"""
         s = self.review_session
         if not s:
             return
@@ -3403,16 +3700,17 @@ class StealthReader(QWidget):
             s["card_id"] = None
             s["shown"] = False
             self.review_render_placeholder("这个牌组今天已经清完了")
+            self.update_review_bar()
             self.update_tray_tooltip()
             return
         s["card"] = card
         s["card_id"] = card.get("cardId")
         s["shown"] = False                 # 翻面状态自己记：Anki 的 answer 翻面前就渲染好了
         self.render_card()
-        try:
-            self.anki_client().start_card_timer()
-        except AnkiError:
-            pass
+        client = self.anki_client() if ANKI_CLIENT_OK else None
+        if client is not None:
+            self.anki_call(lambda: client.start_card_timer(), key="timer")   # 让它自己回去，不等
+        self.update_review_bar()
         self.update_tray_tooltip()
 
     def review_render_placeholder(self, text):
@@ -3439,11 +3737,7 @@ class StealthReader(QWidget):
         s["sounds"] = sounds
         doc = self.text_edit.document()
         doc.setDefaultStyleSheet(filter_anki_css(card.get("css")))
-        media = None
-        try:
-            media = self.anki_client().media_dir()
-        except AnkiError:
-            media = None
+        media = self.review_media_dir or ""      # 进牌组时缓存好的，换卡不再连 Anki
         base = QUrl.fromLocalFile(str(media) + os.sep) if media else None
         if base is not None:
             doc.setBaseUrl(base)
@@ -3451,6 +3745,7 @@ class StealthReader(QWidget):
         if base is not None:
             doc.setBaseUrl(base)           # setHtml 之后再钉一次，图片按 collection.media 解析
         self.apply_card_style()
+        self.update_review_bar()           # 翻面后页脚按钮要跟着启用（翻面前是灰的）
 
     def apply_card_style(self):
         """卡片自己那套排版：居中、不首行缩进、不两端对齐、正常行距，字号沿用阅读字号。
@@ -3485,17 +3780,16 @@ class StealthReader(QWidget):
         session = self.review_session or {}
         snap = self.review_snapshot
         self.review_mode = False
+        self.review_entering = False
         self.review_session = None
         self.review_snapshot = None
+        self.update_review_bar()   # 评分按钮立刻收掉，别留在书页上
         if self.review_client is not None:
-            try:
-                self.review_client.leave_review()
-            except AnkiError:
-                pass
-            try:
-                self.review_client.reveal_anki()   # 还原也不激活：绝不把 Anki 亮到屏幕最前面
-            except Exception:
-                pass
+            client = self.review_client
+            if self.anki_worker is not None:
+                # 也走后台：退出的那 60ms 不该卡住界面。退出程序时 quit_app 会再同步兜一次，
+                # 保证 Anki 窗口绝对不会留在"藏起来"的状态。
+                self.anki_call(lambda: (client.leave_review(), client.reveal_anki()), key="leave")
         if restore and snap:
             # 安全文档正盖在卡片上（而且就是从背诵切过来的）：一起收掉，直接回到书。
             # 否则会走进"从安全文档退出→回到卡片"的分支，而背诵这时已经退出了，留下一屏卡片残影。
@@ -3559,39 +3853,52 @@ class StealthReader(QWidget):
             log_event(f"复习键处理异常：{type(e).__name__}")   # 只记类型，不记卡片内容
 
     def review_show_answer(self):
-        """翻面：渲染答案那面，并放这一面的音频。"""
+        """翻面：让 Anki 翻（后台线程），拿到回执再渲染答案那面并放这一面的音频。"""
         s = self.review_session
         if not s or not s.get("card") or s.get("shown"):
             return
-        try:
-            self.anki_client().show_answer()
-        except AnkiBusy:
-            self.review_note_busy()
+        if "reveal" in self.anki_inflight:
             return
-        except AnkiError as e:
-            self.review_hint(f"翻面失败：{self.review_err_text(e)}", 2500)
-            self.review_resync(force=True)
-            return
-        s["shown"] = True
-        self.render_card()
-        self.review_play_audio()
+        client = self.anki_client()
+        prev_id = s.get("card_id")
+
+        def job():
+            client.show_answer()
+            client.play_audio()          # 翻面自动放这一面（Anki 自己的语义）
+            return client.current_card()
+
+        def done(card):
+            s2 = self.review_session
+            if not s2 or s2.get("card_id") != prev_id:
+                return                   # 这中间已经翻页/退出了：结果作废，别盖回来
+            s2["shown"] = True
+            if card:
+                s2["card"] = card
+            self.render_card()
+
+        def failed(exc):
+            if isinstance(exc, AnkiBusy):
+                self.review_note_busy()
+            else:
+                self.review_hint(f"翻面失败：{self.review_err_text(exc)}", 2500)
+                self.review_poll(force=True)
+
+        self.anki_call(job, on_ok=done, on_err=failed, key="reveal")
 
     def review_play_audio(self):
         """放当前这一面的音频。交给 Anki 自己的 guiPlayAudio：它懂 [sound:]、{{tts:}} 与
         自动播放策略，比我们自己抽标签再找播放器准得多。"""
-        if not self.review_mode:
+        if not self.review_mode or not ANKI_CLIENT_OK:
             return
-        try:
-            self.anki_client().play_audio()
-        except AnkiError:
-            pass
+        client = self.anki_client()
+        self.anki_call(lambda: client.play_audio(), key="audio")
 
     def review_grade_button(self, button):
-        """按 Anki 实际给出的按钮评分。
+        """按 Anki 实际给出的按钮评分（全程在后台线程，界面不等）。
 
-        `buttons` 是唯一真源（通常是 [1,2,3,4]，学习步/FSRS 下可能只有 2 个）；
-        按到没提供的那个 Anki 会**返回 False**，这时当"没评上"处理并提示，
-        绝不假装前进（假装前进会让排程和屏幕上显示的对不上）。
+        `buttons` 是唯一真源（通常 [1,2,3,4]，学习步/FSRS 下可能只有 2 个）；按到没提供的
+        那个 Anki 会**返回 False**，这时当"没评上"处理，绝不假装前进。
+        对账也在后台做：屏幕上的 cardId 和 Anki 的当前卡不一致就只重渲、这一下不评分。
         """
         s = self.review_session
         if not s or not s.get("card"):
@@ -3600,29 +3907,50 @@ class StealthReader(QWidget):
         if button not in buttons:
             self.review_hint(f"这张卡只有这些按钮：{'/'.join(str(b) for b in buttons)}", 2600)
             return
-        # 先和 Anki 对账：屏幕上这张必须就是 Anki 的当前卡（人可能跑去 Anki 自己窗口答了）
-        if not self.review_resync():
+        if "grade" in self.anki_inflight:
+            self.review_hint("上一张还在处理…", 1200)   # 连按两下也绝不会答两张卡
             return
         prev_id = s.get("card_id")
+        deck = s.get("deck")
         client = self.anki_client()
-        try:
-            accepted, next_card = client.answer_and_next(button, prev_id)
-        except AnkiBusy:
-            self.review_note_busy(pending=button)
+
+        def job():
+            cur = client.current_card()
+            if (cur or {}).get("cardId") != prev_id:
+                return {"stale": True, "card": cur}
+            accepted, nxt = client.answer_and_next(button, prev_id)
+            if not accepted:
+                return {"accepted": False, "card": cur}
+            return {"accepted": True, "card": nxt,
+                    "stats": client.deck_stats([deck]), "reviewed": client.reviewed_today()}
+
+        self.anki_call(job, on_ok=lambda r: self.finish_grade(r),
+                       on_err=lambda e, b=button: self.fail_grade(b, e), key="grade")
+
+    def finish_grade(self, r):
+        s = self.review_session
+        if not s:
             return
-        except AnkiError as e:
-            self.review_hint(f"评分失败：{self.review_err_text(e)}", 3000)
-            self.review_resync(force=True)
+        if r.get("stale"):
+            self.review_load_card(r.get("card"))
+            self.review_hint("这张卡已经变了，已换成 Anki 当前的卡", 2600)
             return
-        if not accepted:
+        if not r.get("accepted"):
+            self.review_load_card(r.get("card"))
             self.review_hint("Anki 没接受这个评分（按钮变了？已重新对账）", 3000)
-            self.review_resync(force=True)
             return
         s["counted"] = int(s.get("counted", 0)) + 1
         s["busy_retries"] = 0
-        self.review_refresh_counts(client)
-        self.review_load_card(next_card)
+        self.apply_counts(r.get("stats"), r.get("reviewed"))
+        self.review_load_card(r.get("card"))
         log_event(f"隐形背诵：评分成功（本次第 {s['counted']} 张）")
+
+    def fail_grade(self, button, exc):
+        if isinstance(exc, AnkiBusy):
+            self.review_note_busy(pending=button)
+        else:
+            self.review_hint(f"评分失败：{self.review_err_text(exc)}", 3000)
+            self.review_poll(force=True)
 
     def review_note_busy(self, pending=None):
         """Anki 正忙（同步 / 媒体检查 / 导入 / 查库）——**绝不把评分悄悄吞掉**。
@@ -3644,58 +3972,92 @@ class StealthReader(QWidget):
             self.review_hint("Anki 一直在忙，这次评分没记上——等它同步完再按一次", 4000)
         log_event("隐形背诵：Anki 忙（已退避重试）")
 
-    def review_resync(self, force=False):
-        """和 Anki 对账：屏幕上这张是不是 Anki 的当前卡。
+    def review_poll(self, force=False, with_counts=False):
+        """取一次 Anki 的当前卡，和屏幕上的对账（后台线程，界面不等）。
 
-        人会跑去 Anki 自己的窗口答题（或插件 veto 掉本次评分），那时我们窗口停在旧卡上，
-        按 1-4 是无效的。返回 True 表示一致（可以评分），False 表示刚重渲过、这一下别评分。
+        计数那两趟（getDeckStats 也是 60ms）不必每拍都拉，默认每 4 拍一次。
         """
         s = self.review_session
+        if not s or not ANKI_CLIENT_OK:
+            return
+        if "poll" in self.anki_inflight:
+            return
+        deck = s.get("deck")
+        client = self.anki_client()
+        self.review_poll_tick += 1
+        want_counts = bool(with_counts or force or self.review_poll_tick % 4 == 0)
+
+        def job():
+            out = {"card": client.current_card()}
+            if want_counts:
+                out["stats"] = client.deck_stats([deck])
+                out["reviewed"] = client.reviewed_today()
+            return out
+
+        self.anki_call(job, on_ok=lambda r, f=force: self.finish_poll(r, f),
+                       on_err=self.fail_poll, key="poll")
+
+    def finish_poll(self, r, force=False):
+        s = self.review_session
         if not s:
-            return False
-        try:
-            card = self.anki_client().current_card()
-        except AnkiNotReviewing:
+            return
+        if "stats" in r:
+            self.apply_counts(r.get("stats"), r.get("reviewed"))
+        card = r.get("card")
+        if not card:
             if s.get("card") is not None:
                 s["card"] = None
                 s["card_id"] = None
+                s["shown"] = False
                 self.review_render_placeholder("这个牌组今天已经清完了")
-                self.review_refresh_counts()
-                self.update_tray_tooltip()
-            return False
-        except AnkiError:
-            return False
+                self.update_review_bar()
+            return
         if s.get("card_id") != card.get("cardId"):
             self.review_load_card(card)
             if force:
                 self.review_hint("这张卡已经变了，已换成 Anki 当前的卡", 2600)
-            return False
-        return True
+
+    def fail_poll(self, exc):
+        if isinstance(exc, AnkiBusy):
+            self.review_busy_until = time.time() + 3.0    # 它在忙就别催，安静等
+            return
+        log_event(f"对账失败：{self.review_err_text(exc)}")
 
     def review_undo(self):
         """撤销。注意 Anki 这个是**全局**撤销栈（collection.undo），不只是撤销上一次评分。"""
-        try:
-            self.anki_client().undo()
-        except AnkiBusy:
-            self.review_note_busy()
+        if not self.review_mode:
             return
-        except AnkiError as e:
-            self.review_hint(f"撤销失败：{self.review_err_text(e)}", 2500)
-            return
-        s = self.review_session
-        if s and s.get("counted"):
-            s["counted"] = int(s["counted"]) - 1
-        self.review_refresh_counts()
-        self.review_hint("已撤销（Anki 的全局撤销栈）", 2000)
-        QTimer.singleShot(400, lambda: self.review_resync(force=True))
+        client = self.anki_client()
+        deck = (self.review_session or {}).get("deck")
+
+        def job():
+            client.undo()
+            return (client.current_card(), client.deck_stats([deck]) if deck else None)
+
+        def done(res):
+            card, stats = res
+            s = self.review_session
+            if s and s.get("counted"):
+                s["counted"] = int(s["counted"]) - 1
+            self.apply_counts(stats, None)
+            self.review_load_card(card)
+            self.review_hint("已撤销（Anki 的全局撤销栈）", 2000)
+
+        def failed(exc):
+            if isinstance(exc, AnkiBusy):
+                self.review_note_busy()
+            else:
+                self.review_hint(f"撤销失败：{self.review_err_text(exc)}", 2500)
+
+        self.anki_call(job, on_ok=done, on_err=failed, key="undo")
 
     def review_tick(self):
-        """低频对账：窗口可见时才查，每 2.5 秒一次（Anki 忙的时候直接跳过）。"""
+        """低频对账的节拍：窗口可见时才查（实际查询在后台线程）。"""
         if not self.review_mode or not self.isVisible() or self.isMinimized():
             return
         if time.time() < self.review_busy_until:
             return
-        self.review_resync()
+        self.review_poll()
 
     def adjust_color_to_background(self):
         if not self.isVisible() or not self.config.get("auto_mode"):
@@ -3786,6 +4148,7 @@ class StealthReader(QWidget):
             self.render_card()     # 背诵中改字号/字体：只重渲当前卡（一个字节的进度都不碰）
         elif self.is_local_mode:
             self.repage_to(anchor)
+        self.update_review_bar()   # 页脚（学习计划 + 评分按钮）跟着字号/颜色与模式走
 
     def enterEvent(self, event):
         self.is_mouse_in = True
@@ -4694,6 +5057,7 @@ class StealthReader(QWidget):
         self.exit_peek("close")  # 窗口关了必须先卸全局钩子，再走保存
         if self.review_mode:
             self.exit_review_mode(reason="close")   # 关窗口＝整套收起（只想藏卡片用 Ctrl+D）
+        self.shutdown_anki()     # X 关窗是最常用的退出方式：这里也必须把后台线程停干净
         self.dismiss_action_panel(cancelled=True)
         self.sync_progress_async()
         self.save_window_pos()
@@ -4711,6 +5075,7 @@ class StealthReader(QWidget):
 
         self.peek_input_hook.uninstall()  # 钩子泄漏的症状是全系统滚轮发卡，退出必须拆干净
         keyboard.unhook_all()
+        self.shutdown_anki()              # 放 Anki 出来 + 停后台线程（线程没停就退会崩）
         try:
             ctypes.windll.wtsapi32.WTSUnRegisterSessionNotification(int(self.winId()))
         except Exception:
