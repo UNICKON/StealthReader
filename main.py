@@ -1654,6 +1654,57 @@ class SettingsDialog(QDialog):
         safe_layout.addWidget(btn_pick_safe)
         layout.addRow("安全文档文件:", safe_row)
 
+        # --- 隐形背诵（Anki）：只是把 Anki 的卡片借这本书的排版显示出来 ---
+        section = QLabel("── 隐形背诵（Anki 卡片）──")
+        section.setStyleSheet("color: #8ab4f8;")
+        layout.addRow(section)
+
+        self.anki_key_input = QLineEdit(self.config.get("anki_key", "ctrl+alt+a"))
+        self.anki_key_input.setToolTip("按这个键：书页换成 Anki 卡片（还是这本书的字体/字号/行距/页边距）。\n"
+                                       "再按一次退出，书回到原来那一页，阅读进度一个字节都不变。")
+        layout.addRow("背诵热键:", self.anki_key_input)
+
+        deck_row = QWidget()
+        deck_layout = QHBoxLayout(deck_row)
+        deck_layout.setContentsMargins(0, 0, 0, 0)
+        self.anki_deck_input = QLineEdit(self.config.get("anki_deck", ""))
+        self.anki_deck_input.setPlaceholderText("牌组名，例如 背诵")
+        self.anki_deck_input.setToolTip("要背哪个牌组（子牌组会自动包含在内）。\n"
+                                        "点「列出牌组…」可以从正在运行的 Anki 里读出来（带今日待复习张数）。")
+        btn_pick_deck = QPushButton("列出牌组…")
+        btn_pick_deck.clicked.connect(self.pick_anki_deck)
+        deck_layout.addWidget(self.anki_deck_input)
+        deck_layout.addWidget(btn_pick_deck)
+        layout.addRow("牌组:", deck_row)
+
+        self.anki_swallow_check = QCheckBox("吞掉空格/回车（评分键 1-4 一定吞）")
+        self.anki_swallow_check.setChecked(bool(self.config.get("anki_swallow_keys", True)))
+        self.anki_swallow_check.setToolTip("背诵时这两个键归卡片（翻面/继续）。\n"
+                                           "关掉后空格/回车还给系统，正常打字不受影响——\n"
+                                           "翻面改用鼠标点一下卡片（和 Anki 一样），评分仍用 1/2/3/4。\n"
+                                           "不想被打字打扰时，随时 Ctrl+D 把窗口收起来即可（收起来就一个键都不吞）。")
+        layout.addRow(self.anki_swallow_check)
+
+        self.anki_conceal_check = QCheckBox("背诵时把 Anki 自己的窗口藏起来")
+        self.anki_conceal_check.setChecked(bool(self.config.get("anki_conceal", True)))
+        self.anki_conceal_check.setToolTip("Anki 自己的界面会从屏幕、Alt+Tab 和任务栏缩略图里消失，\n"
+                                           "答题全在这个窗口里完成；退出背诵时它会回到原处（不激活）。\n"
+                                           "注意：藏起来≠隐身，别把两个窗口摆在同一块屏幕上。")
+        layout.addRow(self.anki_conceal_check)
+
+        key_row = QWidget()
+        key_layout = QHBoxLayout(key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        self.anki_api_key_input = QLineEdit(self.config.get("anki_api_key", ""))
+        self.anki_api_key_input.setPlaceholderText("留空 = AnkiConnect 没设 apiKey")
+        self.anki_api_key_input.setEchoMode(QLineEdit.Password)
+        self.anki_api_key_input.setToolTip("AnkiConnect 配置里若设了 apiKey，填在这里；没设就留空。")
+        btn_test_anki = QPushButton("测试连接")
+        btn_test_anki.clicked.connect(self.test_anki_connection)
+        key_layout.addWidget(self.anki_api_key_input)
+        key_layout.addWidget(btn_test_anki)
+        layout.addRow("AnkiConnect Key:", key_row)
+
         btn_save = QPushButton("💾 保存并应用")
         btn_save.clicked.connect(self.accept)
         layout.addRow(btn_save)
@@ -1714,6 +1765,51 @@ class SettingsDialog(QDialog):
             self.temp_bg_color = f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
             self.btn_bg_color.setStyleSheet(f"background-color: {self.temp_bg_color};")
 
+    def pick_anki_deck(self):
+        """从正在运行的 Anki 里列出牌组（带今日待复习张数）供选择。
+
+        Anki 没开 / 没装 AnkiConnect 时**照实说**，不静默给个空列表——
+        否则人会以为"我没有牌组"，而其实是插件没连上。
+        """
+        if not self.main_window:
+            return
+        try:
+            client = self.main_window.anki_client()
+            client.ping()
+            names = list(client.deck_names() or [])
+            stats = client.deck_stats(names)
+        except Exception as e:
+            QMessageBox.warning(self, "读不到牌组", f"{type(e).__name__}\n\n{INSTALL_HINT}")
+            return
+        if not names:
+            QMessageBox.information(self, "没有牌组", "Anki 里一个牌组都没有。")
+            return
+        labels = []
+        for name in names:
+            info = stats.get(name) or {}
+            due = int(info.get("new", 0)) + int(info.get("learn", 0)) + int(info.get("review", 0))
+            labels.append(f"{name}　（待复习 {due}）")
+        current = self.anki_deck_input.text().strip()
+        index = names.index(current) if current in names else 0
+        choice, ok = QInputDialog.getItem(self, "选择牌组", "隐形背诵用哪个牌组：",
+                                          labels, index, False)
+        if ok and choice:
+            self.anki_deck_input.setText(names[labels.index(choice)])
+
+    def test_anki_connection(self):
+        """只在人主动点的时候连一次 Anki（打开设置不该被 Anki 拖住）。"""
+        if not self.main_window:
+            return
+        try:
+            client = self.main_window.anki_client()
+            version = client.ping()
+            cards = client.reviewed_today()
+        except Exception as e:
+            QMessageBox.warning(self, "连不上 AnkiConnect", f"{type(e).__name__}\n\n{INSTALL_HINT}")
+            return
+        QMessageBox.information(self, "连上了",
+                               f"AnkiConnect 版本 {version}\n今日已复习 {cards} 张")
+
     def pick_safe_doc(self):
         """挑一份本机文档当"安全文档"（有人看屏幕时顶上）。"""
         options = QFileDialog.Options() | QFileDialog.DontUseNativeDialog
@@ -1737,6 +1833,11 @@ class SettingsDialog(QDialog):
         self.config["peek_key"] = self.peek_key_input.text().strip()
         self.config["safe_key"] = self.safe_key_input.text().strip()
         self.config["safe_doc_path"] = self.safe_doc_input.text().strip()
+        self.config["anki_key"] = self.anki_key_input.text().strip() or "ctrl+alt+a"
+        self.config["anki_deck"] = self.anki_deck_input.text().strip()
+        self.config["anki_swallow_keys"] = self.anki_swallow_check.isChecked()
+        self.config["anki_conceal"] = self.anki_conceal_check.isChecked()
+        self.config["anki_api_key"] = self.anki_api_key_input.text().strip()
         self.config["text_color"] = self.temp_text_color
         self.config["bg_color"] = self.temp_bg_color
         self.config["ghost_mode"] = self.check_ghost_mode.isChecked()
@@ -1769,6 +1870,7 @@ class StealthReader(QWidget):
     hotkey_signal = pyqtSignal()
     peek_hotkey_signal = pyqtSignal()
     safe_hotkey_signal = pyqtSignal()
+    review_hotkey_signal = pyqtSignal()
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
     peek_wheel_signal = pyqtSignal(int)
     peek_exit_signal = pyqtSignal(str)
@@ -1818,6 +1920,7 @@ class StealthReader(QWidget):
         self.safe_mode = False
         self.safe_snapshot = None       # 进模式前的书状态，退出时按它恢复
         self.safe_shortcut = None
+        self.review_shortcut = None
 
         # --- 隐形背诵模式（Anki 卡片当文档看）---
         self.review_mode = False
@@ -1867,6 +1970,7 @@ class StealthReader(QWidget):
         self.hotkey_signal.connect(self.toggle_window)
         self.peek_hotkey_signal.connect(self.toggle_peek)
         self.safe_hotkey_signal.connect(self.toggle_safe_mode)
+        self.review_hotkey_signal.connect(self.toggle_review_mode)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
@@ -1895,6 +1999,9 @@ class StealthReader(QWidget):
 
     # --- 打开本地文件 (防止 0xC0000409 崩溃) ---
     def open_local_file_dialog(self):
+        if self.review_mode:
+            # 要换书了：先把背诵退掉，免得卡片和书混在一起
+            self.exit_review_mode(reason="open_book")
         options = QFileDialog.Options()
         # 【关键】禁用 Windows 原生对话框，改用 Qt 内置对话框
         options |= QFileDialog.DontUseNativeDialog
@@ -2436,16 +2543,25 @@ class StealthReader(QWidget):
         hotkey_str = self.config.get("boss_key", "Esc")
         peek_key_str = self.config.get("peek_key", "ctrl+e")
         safe_key_str = (self.config.get("safe_key", "ctrl+alt+d") or "").strip()
+        review_key_str = (self.config.get("anki_key", "ctrl+alt+a") or "").strip()
         try:
             keyboard.unhook_all()
             keyboard.add_hotkey(hotkey_str, self.on_global_hotkey_triggered)
-            # 注意：unhook_all 只拆 keyboard 库自己的钩子；偷瞄模式的 ctypes 钩子独立管理
+            # 注意：unhook_all 只拆 keyboard 库自己的钩子；偷瞄/背诵用的 ctypes 钩子是独立管理的，
+            # 所以看门狗每 90 秒的例行重挂碰不到它——背诵吞键不需要在重挂后补装。
             keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered)
+            taken = {hotkey_str.lower(), peek_key_str.lower()}
             # 安全文档热键：和上面两个撞车的话只留先注册的那个，免得一次按键触发两个动作
-            if safe_key_str and safe_key_str.lower() not in (hotkey_str.lower(), peek_key_str.lower()):
+            if safe_key_str and safe_key_str.lower() not in taken:
                 keyboard.add_hotkey(safe_key_str, self.on_safe_hotkey_triggered)
+                taken.add(safe_key_str.lower())
             elif safe_key_str:
                 log_event(f"安全文档热键与老板键/偷瞄键重复，已跳过: {safe_key_str}")
+            # 隐形背诵热键：同样避免一次按键触发两个动作
+            if review_key_str and review_key_str.lower() not in taken:
+                keyboard.add_hotkey(review_key_str, self.on_review_hotkey_triggered)
+            elif review_key_str:
+                log_event(f"背诵热键与已有热键重复，已跳过: {review_key_str}")
         except Exception as e:
             log_event(f"全局热键注册失败: {e}")
         try:
@@ -2471,6 +2587,15 @@ class StealthReader(QWidget):
             if safe_key_str:
                 self.safe_shortcut = QShortcut(QKeySequence(safe_key_str), self)
                 self.safe_shortcut.activated.connect(self.toggle_safe_mode)
+        except:
+            pass
+        try:
+            if self.review_shortcut:
+                self.review_shortcut.setKey(QKeySequence())
+                self.review_shortcut = None
+            if review_key_str:
+                self.review_shortcut = QShortcut(QKeySequence(review_key_str), self)
+                self.review_shortcut.activated.connect(self.toggle_review_mode)
         except:
             pass
 
@@ -2514,6 +2639,16 @@ class StealthReader(QWidget):
         except Exception as e:
             try:
                 log_event(f"安全文档键回调异常: {e}")
+            except Exception:
+                pass
+
+    def on_review_hotkey_triggered(self):
+        try:
+            log_event("隐形背诵热键触发")
+            self.review_hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"背诵键回调异常: {e}")
             except Exception:
                 pass
 
@@ -2566,6 +2701,8 @@ class StealthReader(QWidget):
             self.refresh_hotkeys()
             if self.peek_mode:
                 self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e"))
+            if self.review_mode:
+                self.install_review_hook()      # 钩子万一被系统摘掉，这里补回来
             if reason:
                 log_event(f"全局热键已重挂（{reason}）")
         except Exception as e:
@@ -2808,6 +2945,7 @@ class StealthReader(QWidget):
         self.tray_icon.setToolTip("StealthReader 阅读器（进程运行中）")
         tray_menu = QMenu()
         tray_menu.addAction("显示/隐藏（老板键）").triggered.connect(self.toggle_window)
+        tray_menu.addAction("隐形背诵（Anki 卡片）").triggered.connect(self.toggle_review_mode)
         tray_menu.addAction("打开本地书籍…").triggered.connect(self.open_local_file_dialog)
         tray_menu.addAction("设置…").triggered.connect(self.open_settings)
         tray_menu.addSeparator()
@@ -2861,6 +2999,9 @@ class StealthReader(QWidget):
         if self.review_mode:
             # 背诵中按偷瞄键：按设计先把背诵退掉（书页回来），再照常进偷瞄
             self.exit_review_mode(reason="peek")
+        if self.safe_mode:
+            # 安全文档下按偷瞄键也一样：先回到书，再浮现书页（偷瞄的永远是书）
+            self.exit_safe_mode()
         if self.peek_mode:
             self.exit_peek("peek_key")
             return
@@ -3062,6 +3203,25 @@ class StealthReader(QWidget):
         划线高亮全部藏起来，书的状态先存快照——退出后原位恢复。"""
         if self.safe_mode:
             return
+        if self.review_mode:
+            # 从背诵里切过来：**不能拍书的快照**——此刻正文区是卡片，拍下来的是卡片的坐标，
+            # 退出安全文档时会拿它去恢复书页，把书的位置弄坏。只记一个"我是从卡片来的"。
+            self.safe_snapshot = {"from_review": True}
+            self.dismiss_action_panel(cancelled=True)
+            self.exit_peek("safe_mode")
+            self.safe_mode = True
+            self.local_full_text = self.safe_doc_text()
+            self.local_start_index = 0
+            self.local_page_history = []
+            self.local_chapters = []
+            self.local_heading_offsets = detect_txt_headings(self.local_full_text)
+            self.displaying_local_text = True
+            self.ghost_veiled = False
+            self.apply_style()
+            self.render_local_page()
+            self.update_tray_tooltip()
+            log_event("安全文档模式：已进入（从背诵切过来，卡片先收着）")
+            return
         self.safe_snapshot = self.snapshot_book_state()
         self.dismiss_action_panel(cancelled=True)
         self.exit_peek("safe_mode")
@@ -3087,9 +3247,22 @@ class StealthReader(QWidget):
         self.safe_mode = False
         snap = self.safe_snapshot or {}
         self.safe_snapshot = None
-        self.restore_book_state(snap, write_progress=True)
+        if snap.get("from_review"):
+            # 进来时是从背诵切的：退出去要回到**那张卡**，而不是书（书的快照还在 review_snapshot 里）
+            self.restore_review_view()
+        else:
+            self.restore_book_state(snap, write_progress=True)
         self.update_tray_tooltip()
-        log_event("安全文档模式：已退出（书页已恢复）")
+        log_event("安全文档模式：已退出（内容已恢复）")
+
+    def restore_review_view(self):
+        """把正文区换回那张卡（背诵状态一直没动过，重渲即可）。"""
+        self.is_local_mode = True
+        self.local_file_path = ""
+        self.local_full_text = ""          # 仍然不是书：守卫照旧生效
+        self.displaying_local_text = True
+        self.apply_style()                 # review_mode 还是 True → 会重渲当前卡
+        self.review_timer.start()
 
     # ================= 隐形背诵模式（Anki 卡片当成一份文档） =================
 
@@ -3155,7 +3328,9 @@ class StealthReader(QWidget):
             log_event(f"进背诵失败：{self.review_err_text(e)}")
             return False
         if not deck:
-            self.review_hint("还没选牌组：设置 → 隐形背诵 里填一个牌组名", 4000)
+            # 第一次用还没选牌组：把设置打开（那里有牌组列表，能直接读 Anki 的实际牌组）
+            self.review_hint("还没选牌组：在设置里挑一个（可以点「列出牌组…」）", 4000)
+            QTimer.singleShot(0, self.open_settings)
             return False
         if self.peek_mode:
             # 从偷瞄进来：只收起偷瞄（不隐藏窗口，马上要显示卡片）
@@ -3252,6 +3427,8 @@ class StealthReader(QWidget):
         **只渲染该显示的那一面**：实测 `guiCurrentCard` 的 `answer` 在没翻面时就已经渲染好了，
         拿它当"翻面了没"会直接把答案亮在正面——伪装当场报废。
         """
+        if self.safe_mode:
+            return      # 安全文档正盖在上面：不许重渲卡片，否则那张假周报会被卡片顶掉
         s = self.review_session or {}
         card = s.get("card")
         if not card:
@@ -3320,6 +3497,11 @@ class StealthReader(QWidget):
             except Exception:
                 pass
         if restore and snap:
+            # 安全文档正盖在卡片上（而且就是从背诵切过来的）：一起收掉，直接回到书。
+            # 否则会走进"从安全文档退出→回到卡片"的分支，而背诵这时已经退出了，留下一屏卡片残影。
+            if self.safe_mode and (self.safe_snapshot or {}).get("from_review"):
+                self.safe_mode = False
+                self.safe_snapshot = None
             self.restore_book_state(snap, write_progress=False)
         self.review_timer.stop()
         if not self.peek_mode:
@@ -3335,12 +3517,14 @@ class StealthReader(QWidget):
         return bool(self.config.get("anki_swallow_keys", True))
 
     def review_keys_active(self):
-        """吞键的前提：背诵中 + 窗口可见 + 没最小化。
+        """吞键的前提：背诵中 + 窗口可见 + 没最小化 + **没被安全文档盖住**。
 
         隐藏（Ctrl+D）时 `isVisible()` 为 False，键立刻全部放行——不必重挂钩子；
-        最小化的窗口 `isVisible()` 仍为 True，所以要单独判一次，否则会把人家的空格吃掉。
+        最小化的窗口 `isVisible()` 仍为 True，所以要单独判一次，否则会把人家的空格吃掉；
+        安全文档模式下更要一个键都不吞：那会儿屏幕上是"工作周报"，敲不出空格立刻露馅。
         """
-        return bool(self.review_mode and self.isVisible() and not self.isMinimized())
+        return bool(self.review_mode and not self.safe_mode
+                    and self.isVisible() and not self.isMinimized())
 
     def install_review_hook(self):
         """背诵也要用到那个 ctypes 钩子（和偷瞄共用一套，互不干扰）。"""
@@ -3598,7 +3782,7 @@ class StealthReader(QWidget):
         # 本地模式下样式改了就得重排重铺（页边距/字号/行距都在这条路上）。
         # 这句原来只写在"非自动挡"分支里，自动挡（变色龙）下去改页边距/字号就不重排，
         # 得等下一次翻页才生效——看着就是"调了没反应"。按锚点重绘，落点不变。
-        if self.review_mode:
+        if self.review_mode and not self.safe_mode:
             self.render_card()     # 背诵中改字号/字体：只重渲当前卡（一个字节的进度都不碰）
         elif self.is_local_mode:
             self.repage_to(anchor)
@@ -4394,6 +4578,30 @@ class StealthReader(QWidget):
         """右键菜单。安全文档模式下只给中性项：菜单里的"打开本地书籍/导出划线笔记"这类字眼
         本身就是破绽，凑过来看屏幕的人一眼就懂了。"""
         cmenu = QMenu(self)
+        if self.review_mode:
+            # 背诵菜单：也要中性（不出现 "Anki/牌组/评分" 这类字眼），但鼠标路径必须完整——
+            # 万一设置里关掉了吞键，或者有人习惯只用鼠标，也能翻面、评分、退出。
+            s = self.review_session or {}
+            if s.get("shown"):
+                for btn in (s.get("card") or {}).get("buttons") or [1, 2, 3, 4]:
+                    cmenu.addAction(f"　{btn}　").triggered.connect(
+                        lambda _=False, b=btn: self.review_grade_button(b))
+            else:
+                cmenu.addAction("　翻面　").triggered.connect(self.review_show_answer)
+            cmenu.addSeparator()
+            cmenu.addAction("　重放音频　").triggered.connect(self.review_play_audio)
+            cmenu.addAction("　撤销　").triggered.connect(self.review_undo)
+            cmenu.addSeparator()
+            copy_action = cmenu.addAction("📋 复制选中文字")
+            copy_action.triggered.connect(self.copy_selection)
+            copy_action.setEnabled(bool(self.text_edit.textCursor().hasSelection()))
+            cmenu.addSeparator()
+            cmenu.addAction("　收起卡片　").triggered.connect(
+                lambda: self.exit_review_mode(reason="menu"))
+            cmenu.addAction("⚙️ 设置").triggered.connect(self.open_settings)
+            cmenu.addSeparator()
+            cmenu.addAction("❌ 退出").triggered.connect(self.quit_app)
+            return cmenu
         if self._book_veiled():
             copy_action = cmenu.addAction("📋 复制选中文字")
             copy_action.triggered.connect(self.copy_selection)
@@ -4404,6 +4612,7 @@ class StealthReader(QWidget):
             cmenu.addAction("❌ 退出").triggered.connect(self.quit_app)
             return cmenu
         cmenu.addAction("📂 打开本地书籍 (TXT/EPUB)").triggered.connect(self.open_local_file_dialog)
+        cmenu.addAction("🃏 隐形背诵（Anki 卡片）").triggered.connect(self.toggle_review_mode)
         marks_action = cmenu.addAction("📑 目录 / 书签 / 划线 (Ctrl+L)")
         marks_action.triggered.connect(lambda: self.open_reading_marks(0))
         marks_action.setEnabled(bool(self.is_local_mode))
@@ -4483,6 +4692,8 @@ class StealthReader(QWidget):
 
     def closeEvent(self, event):
         self.exit_peek("close")  # 窗口关了必须先卸全局钩子，再走保存
+        if self.review_mode:
+            self.exit_review_mode(reason="close")   # 关窗口＝整套收起（只想藏卡片用 Ctrl+D）
         self.dismiss_action_panel(cancelled=True)
         self.sync_progress_async()
         self.save_window_pos()
