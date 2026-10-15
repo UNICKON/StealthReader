@@ -1047,8 +1047,20 @@ REVIEW_KEY_NAMES = {
     0x31: "1", 0x32: "2", 0x33: "3", 0x34: "4",
     0x61: "1", 0x62: "2", 0x63: "3", 0x64: "4",
 }
-# 设置里关掉"连空格/回车也吞"之后，仍然要吞这些（评分与退出必须能收到）
+# 设置里关掉"偷瞄时也捕获空格/回车"之后，全局层仍然要收这些（评分与退出必须能收到）
 REVIEW_KEY_NAMES_MIN = {"1", "2", "3", "4", "u", "r", "esc"}
+
+# 窗口内的 Qt 键 → 复习键名。窗口内这一套走 keyPressEvent，不经过任何钩子：
+# 窗口不是当前活动窗口就收不到，所以不会妨碍你在别的软件里打字。
+# 空格/回车在窗口内**永远**是翻面键（不翻面就没法用）；设置项只管"偷瞄时要不要全局捕获"。
+REVIEW_KEY_FROM_QT = {
+    Qt.Key_Space: "space", Qt.Key_Return: "enter", Qt.Key_Enter: "enter",
+    Qt.Key_U: "u", Qt.Key_R: "r", Qt.Key_Escape: "esc",
+    Qt.Key_1: "1", Qt.Key_2: "2", Qt.Key_3: "3", Qt.Key_4: "4",
+}
+# Anki 的 nextReviews 里有 U+2066/U+2069 这类不可见控制符（`<10 分` 的双向隔离符），
+# 某些字体会渲染成方框——显示前一律剔掉。
+REVIEW_TEXT_JUNK = re.compile("[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 # 评分按钮的名字：Anki 按张数变（学习步/FSRS 下可能只有 2 个按钮）
 REVIEW_BUTTON_LABELS = {
@@ -1113,8 +1125,12 @@ class AnkiWorker(QThread):
 
 
 class GlobalInputHook:
-    """偷瞄模式的全局输入钩子：滚轮翻页（吞掉，底下应用不滚），
+    """**偷瞄模式专用**的全局输入钩子：滚轮翻页（吞掉，底下应用不滚），
     右键/中键/侧键与按键退出（放行），左键放行且不退出（偷瞄时要能照常点工作窗口）。
+
+    只有一个层是全局的——**偷瞄（Ctrl+E）那一层**。窗口内的交互键（老板键 Ctrl+D、
+    内容键 Ctrl+Alt+A / Ctrl+Alt+D、卡片交互键）一律走 Qt 自己的窗口内机制，钩子只在
+    偷瞄期间装着；偷瞄中当前页是卡片时，卡片交互键也由这里全局捕获（可以不聚焦窗口背）。
 
     钩子装在 Qt 主线程上——Qt 的事件循环本来就在取消息，低级钩子的回调正好在其中
     触发。回调里只发 Qt 队列信号（QueuedConnection），绝不在钩子里直接翻页。"""
@@ -1179,20 +1195,20 @@ class GlobalInputHook:
         try:
             if n_code >= 0 and int(w_param) in (WM_KEYDOWN, WM_SYSKEYDOWN):
                 info = ctypes.cast(l_param, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
-                # 隐形背诵：只吞那 9 个复习键，而且只在"背诵中 + 窗口可见 + 没最小化"时吞
-                # （想正常打字就先 Ctrl+D 把窗口收起来）。其余按键一律放行。
-                if getattr(self.owner, "review_mode", False) and self.owner.review_keys_active():
-                    name = REVIEW_KEY_NAMES.get(int(info.vkCode))
-                    if name and (self.owner.review_swallow_all() or name in REVIEW_KEY_NAMES_MIN):
-                        self.owner.review_key_signal.emit(name)
-                        return 1
-                    return 0
                 if self.owner.peek_mode:
                     if self._matches_peek_key(int(info.vkCode)):
                         self.owner.peek_exit_signal.emit("peek_key")
                         return 1  # 偷瞄期间这个键归我们，别落到当前应用上
+                    # 偷瞄这一层是全局的：当前页是卡片时，卡片交互键也在这里捕获——
+                    # 不聚焦窗口也能翻面/评分（这是"ce 全局"的含义），而且不退出偷瞄。
+                    if self.owner.peek_captures_review_keys():
+                        name = REVIEW_KEY_NAMES.get(int(info.vkCode))
+                        if name and name != "esc" and (
+                                self.owner.review_swallow_all() or name in REVIEW_KEY_NAMES_MIN):
+                            self.owner.review_key_signal.emit(name)
+                            return 1
                     self.owner.peek_exit_signal.emit("key")
-                    return 0  # 其他按键放行
+                    return 0  # 其他按键放行（也退出偷瞄）
         except Exception:
             pass
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
@@ -1730,12 +1746,11 @@ class SettingsDialog(QDialog):
         deck_layout.addWidget(btn_pick_deck)
         layout.addRow("牌组:", deck_row)
 
-        self.anki_swallow_check = QCheckBox("吞掉空格/回车（评分键 1-4 一定吞）")
+        self.anki_swallow_check = QCheckBox("偷瞄时也全局捕获空格/回车（评分键 1-4 一定捕获）")
         self.anki_swallow_check.setChecked(bool(self.config.get("anki_swallow_keys", True)))
-        self.anki_swallow_check.setToolTip("背诵时这两个键归卡片（翻面/继续）。\n"
-                                           "关掉后空格/回车还给系统，正常打字不受影响——\n"
-                                           "翻面改用鼠标点一下卡片（和 Anki 一样），评分仍用 1/2/3/4。\n"
-                                           "不想被打字打扰时，随时 Ctrl+D 把窗口收起来即可（收起来就一个键都不吞）。")
+        self.anki_swallow_check.setToolTip("偷瞄（Ctrl+E）那一层是全局的：勾上则空格/回车也归卡片（翻面/继续），\n"
+                                           "关掉则它们留给你手头的软件打字。\n"
+                                           "窗口内不受影响：窗口是当前活动窗口时空格/回车一直是翻面键。")
         layout.addRow(self.anki_swallow_check)
 
         self.anki_conceal_check = QCheckBox("背诵时把 Anki 自己的窗口藏起来")
@@ -1920,10 +1935,9 @@ class SettingsDialog(QDialog):
 # ================= 主程序 =================
 class StealthReader(QWidget):
     update_text_signal = pyqtSignal(str, bool)
-    hotkey_signal = pyqtSignal()
+    # 只有偷瞄键是全局热键（keyboard 库的回调在它自己的线程上，所以走信号回主线程）。
+    # 老板键/安全文档键/背诵键都是窗口内 QShortcut，直接连处理函数，不需要信号。
     peek_hotkey_signal = pyqtSignal()
-    safe_hotkey_signal = pyqtSignal()
-    review_hotkey_signal = pyqtSignal()
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
     peek_wheel_signal = pyqtSignal(int)
     peek_exit_signal = pyqtSignal(str)
@@ -2004,6 +2018,7 @@ class StealthReader(QWidget):
         self.is_resizing = False
         self.is_moving = False
         self.resize_margin = 15
+        self._last_resize_repage = 0.0
         self.last_toggle_time = 0
         self.local_shortcut = None
         self.book_selector_dialog = None
@@ -2028,10 +2043,7 @@ class StealthReader(QWidget):
         self.initTray()
 
         self.update_text_signal.connect(self.on_update_text_safe)
-        self.hotkey_signal.connect(self.toggle_window)
         self.peek_hotkey_signal.connect(self.toggle_peek)
-        self.safe_hotkey_signal.connect(self.toggle_safe_mode)
-        self.review_hotkey_signal.connect(self.toggle_review_mode)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
@@ -2319,7 +2331,7 @@ class StealthReader(QWidget):
             block = block.next()
         return (cut if cut is not None else limit), lead
 
-    def apply_page_margins(self):
+    def apply_page_margins(self, cut=True):
         """页边距（四边）：左右和顶部是固定的视口留白，底部按"本页最后一行完整"再收一次。
 
         分成两层是有原因的：
@@ -2328,7 +2340,11 @@ class StealthReader(QWidget):
           - 底部再按行位置收边：正文是按几何切页的，切点落在哪一行就显示到哪，
             压在窗口下沿的那一行会被切掉半行，所以要退到最后一个完整行的下沿。
         四边量到的是同一个东西——正文墨迹：顶部/左右是固定留白，底部再多补回最后一行行盒
-        里那几像素行距（见 page_cut_line），于是"看得见的底部留白 ≥ 设定值"且最小就是设定值。"""
+        里那几像素行距（见 page_cut_line），于是"看得见的底部留白 ≥ 设定值"且最小就是设定值。
+
+        `cut=False` 给**卡片页**用：卡片是可以滚动的（长答案超过一屏），底边出现半行是正常的
+        滚动现象；书页那种"退到最后一个完整行"的裁切反而会害人——实测一张 130px 高的短卡片
+        被算出 261px 的下边距，视口只剩卡片那么高，窗口一缩小视口直接掉到 0。"""
         te = self.text_edit
         vm = te.viewportMargins()
         margin = self.page_margin_px()
@@ -2339,6 +2355,11 @@ class StealthReader(QWidget):
             self.page_content_bottom = te.viewport().height()
             if vm.left() or vm.top() or vm.right() or vm.bottom():
                 te.setViewportMargins(0, 0, 0, 0)
+            return
+        if not cut:
+            self.page_content_bottom = te.viewport().height() + vm.bottom() - margin
+            if (vm.left(), vm.top(), vm.right(), vm.bottom()) != (margin, margin, margin, margin):
+                te.setViewportMargins(margin, margin, margin, margin)
             return
         base_h = te.viewport().height() + vm.bottom()   # 未按页裁切时的可见高度
         if base_h <= margin * 3:
@@ -2613,22 +2634,11 @@ class StealthReader(QWidget):
         review_key_str = (self.config.get("anki_key", "ctrl+alt+a") or "").strip()
         try:
             keyboard.unhook_all()
-            keyboard.add_hotkey(hotkey_str, self.on_global_hotkey_triggered)
-            # 注意：unhook_all 只拆 keyboard 库自己的钩子；偷瞄/背诵用的 ctypes 钩子是独立管理的，
-            # 所以看门狗每 90 秒的例行重挂碰不到它——背诵吞键不需要在重挂后补装。
+            # **只有偷瞄键是全局的**（你说的 ce 全局）。老板键、安全文档键、背诵键全部只做
+            # 窗口内 QShortcut：窗口不是当前活动窗口就收不到，别的软件里的 Ctrl+D / Ctrl+Alt+A
+            # 照常是它自己的功能。老板键藏起来之后用托盘图标叫回来（藏起来的窗口不可能是前台）。
             keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered)
-            taken = {hotkey_str.lower(), peek_key_str.lower()}
-            # 安全文档热键：和上面两个撞车的话只留先注册的那个，免得一次按键触发两个动作
-            if safe_key_str and safe_key_str.lower() not in taken:
-                keyboard.add_hotkey(safe_key_str, self.on_safe_hotkey_triggered)
-                taken.add(safe_key_str.lower())
-            elif safe_key_str:
-                log_event(f"安全文档热键与老板键/偷瞄键重复，已跳过: {safe_key_str}")
-            # 隐形背诵热键：同样避免一次按键触发两个动作
-            if review_key_str and review_key_str.lower() not in taken:
-                keyboard.add_hotkey(review_key_str, self.on_review_hotkey_triggered)
-            elif review_key_str:
-                log_event(f"背诵热键与已有热键重复，已跳过: {review_key_str}")
+            taken = {peek_key_str.lower()}
         except Exception as e:
             log_event(f"全局热键注册失败: {e}")
         try:
@@ -2651,18 +2661,20 @@ class StealthReader(QWidget):
             if self.safe_shortcut:
                 self.safe_shortcut.setKey(QKeySequence())
                 self.safe_shortcut = None
-            if safe_key_str:
+            if safe_key_str and safe_key_str.lower() not in taken:
                 self.safe_shortcut = QShortcut(QKeySequence(safe_key_str), self)
                 self.safe_shortcut.activated.connect(self.toggle_safe_mode)
+                taken.add(safe_key_str.lower())
         except:
             pass
         try:
             if self.review_shortcut:
                 self.review_shortcut.setKey(QKeySequence())
                 self.review_shortcut = None
-            if review_key_str:
+            if review_key_str and review_key_str.lower() not in taken:
                 self.review_shortcut = QShortcut(QKeySequence(review_key_str), self)
                 self.review_shortcut.activated.connect(self.toggle_review_mode)
+                taken.add(review_key_str.lower())
         except:
             pass
 
@@ -2677,45 +2689,16 @@ class StealthReader(QWidget):
             except Exception:
                 self.marks_shortcuts = []
 
-    def on_global_hotkey_triggered(self):
-        # 这三个回调跑在 keyboard 库的分发线程上，那里没有兜底 try：回调抛异常（比如日志
-        # 写盘失败）会把分发线程直接打死，此后线程活着、listening 仍是 True，热键却一个都不响。
-        # 所以自己兜住，绝不把异常抛回库里。
-        try:
-            log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
-            self.hotkey_signal.emit()
-        except Exception as e:
-            try:
-                log_event(f"老板键回调异常: {e}")
-            except Exception:
-                pass
-
     def on_peek_hotkey_triggered(self):
+        # 这个回调跑在 keyboard 库的分发线程上，那里没有兜底 try：回调抛异常（比如日志
+        # 写盘失败）会把分发线程直接打死，此后线程活着、listening 仍是 True，热键却一个都不响。
+        # 所以自己兜住，绝不把异常抛回库里。老板键/安全文档键/背诵键都是窗口内 QShortcut，
+        # 走 Qt 自己的事件分发，不需要这一层。
         try:
             self.peek_hotkey_signal.emit()
         except Exception as e:
             try:
                 log_event(f"偷瞄键回调异常: {e}")
-            except Exception:
-                pass
-
-    def on_safe_hotkey_triggered(self):
-        try:
-            log_event("安全文档热键触发")
-            self.safe_hotkey_signal.emit()
-        except Exception as e:
-            try:
-                log_event(f"安全文档键回调异常: {e}")
-            except Exception:
-                pass
-
-    def on_review_hotkey_triggered(self):
-        try:
-            log_event("隐形背诵热键触发")
-            self.review_hotkey_signal.emit()
-        except Exception as e:
-            try:
-                log_event(f"背诵键回调异常: {e}")
             except Exception:
                 pass
 
@@ -2768,8 +2751,6 @@ class StealthReader(QWidget):
             self.refresh_hotkeys()
             if self.peek_mode:
                 self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e"))
-            if self.review_mode:
-                self.install_review_hook()      # 钩子万一被系统摘掉，这里补回来
             if reason:
                 log_event(f"全局热键已重挂（{reason}）")
         except Exception as e:
@@ -2887,27 +2868,43 @@ class StealthReader(QWidget):
 
         self.content_layout.addWidget(self.text_edit)
 
-        # 背诵专用页脚：一行"学习计划 + 今日/本次 + 四个评分按钮（各自带下次复习间隔）"。
+        # 背诵专用页脚：两行——上面一行"学习计划 + 今日/本次"，下面一行四个评分按钮
+        # （各自带 Anki 给的"按下去会变成什么"间隔）。两行是量出来的：窗口 429px 宽时
+        # 四个按钮就占掉 ~400px，挤成一行会把学习计划压没。
         # 平时整条藏着；安全文档盖上来时也藏着——周报底下挂一排评分按钮，一眼就露馅。
         self.review_bar = QWidget()
+        self.review_bar.setObjectName("reviewBar")
         # 竖向 Maximum：页脚永远只占它需要的那一点高度。默认策略下 QVBoxLayout 会把
         # 多余空间也分给它（实测占了半个窗口高），正文区就被压掉一半。
         self.review_bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        bar_layout = QHBoxLayout(self.review_bar)
-        bar_layout.setContentsMargins(6, 2, 6, 4)
-        bar_layout.setSpacing(0)
+        bar_layout = QVBoxLayout(self.review_bar)
+        bar_layout.setContentsMargins(7, 3, 7, 5)
+        bar_layout.setSpacing(2)
+        plan_row = QHBoxLayout()
+        plan_row.setContentsMargins(0, 0, 0, 0)
+        plan_row.setSpacing(0)
         self.review_plan_label = QLabel("")
-        self.review_plan_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        bar_layout.addWidget(self.review_plan_label)
+        # 横向 Ignored：窗口窄的时候让计划文字自己收缩，绝不把按钮挤出窗口
+        self.review_plan_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
+        plan_row.addWidget(self.review_plan_label)
+        bar_layout.addLayout(plan_row)
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
         self.review_buttons = []
         for _i in range(4):
             _btn = QPushButton("")
-            _btn.setFlat(True)
             _btn.setFocusPolicy(Qt.NoFocus)
             _btn.setCursor(Qt.ArrowCursor)
+            _btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             _btn.clicked.connect(lambda _=False, n=_i + 1: self.review_grade_button(n))
-            bar_layout.addWidget(_btn)
+            btn_row.addWidget(_btn)
             self.review_buttons.append(_btn)
+        self.review_hint_label = QLabel("")
+        self.review_hint_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
+        self.review_hint_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        btn_row.addWidget(self.review_hint_label, 1)
+        bar_layout.addLayout(btn_row)
         self.review_bar.setVisible(False)
         self.content_layout.addWidget(self.review_bar)
 
@@ -2949,7 +2946,7 @@ class StealthReader(QWidget):
             # 偷瞄模式下这些事件照旧往下走：左键已经不会退出偷瞄了，
             # 所以正文区要能正常划选、点击（选区/划线面板都按常规流程处理）。
             if event.type() == QEvent.MouseButtonDblClick and self.peek_mode:
-                # 偷瞄时双击正文 = 换成安全文档（窗口继续亮着，内容无害）
+                # 偷瞄时双击正文 = 换成安全文档（窗口继续亮着、偷瞄状态保持，只换内容）
                 self.enter_safe_mode()
                 return True
             if event.type() == QEvent.MouseButtonPress and self.on_viewport_press(event):
@@ -3084,16 +3081,16 @@ class StealthReader(QWidget):
 
     # --- 偷瞄模式：Ctrl+E 浮现，滚轮在任何地方都能翻页，其他输入一律退出 ---
     def toggle_peek(self):
+        """偷瞄键：**只动可见层，绝不换页**。
+
+        当前是哪一页（书页 / 卡片页 / 安全文档页）就浮现哪一页——和老板键一样，
+        可见层与内容层正交。以前这里会把背诵/安全文档先退掉（"偷瞄的永远是书"），
+        在卡片页按一下偷瞄键就得重新进牌组，会话、计数、撤销上下文全丢，是错的。
+        """
         now = time.time()
         if now - self.peek_last_toggle < 0.3:
             return
         self.peek_last_toggle = now
-        if self.review_mode:
-            # 背诵中按偷瞄键：按设计先把背诵退掉（书页回来），再照常进偷瞄
-            self.exit_review_mode(reason="peek")
-        if self.safe_mode:
-            # 安全文档下按偷瞄键也一样：先回到书，再浮现书页（偷瞄的永远是书）
-            self.exit_safe_mode()
         if self.peek_mode:
             self.exit_peek("peek_key")
             return
@@ -3102,12 +3099,11 @@ class StealthReader(QWidget):
         self.enter_peek()
 
     def enter_peek(self):
-        """浮现但不抢焦点，挂全局滚轮。挂不上钩子就不进——半吊子的偷瞄只会让人困惑。"""
+        """浮现但不抢焦点，挂全局滚轮。挂不上钩子就不进——半吊子的偷瞄只会让人困惑。
+
+        不碰内容层：屏幕上是哪一页就浮现哪一页（卡片页 = 那张卡、安全文档页 = 那份文档）。"""
         if self.peek_mode:
             return
-        if self.safe_mode:
-            # 从安全文档进偷瞄：先把真书放回来再看，否则偷瞄到的还是那份假页面
-            self.exit_safe_mode()
         if not self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e")):
             print("偷瞄模式未启动：全局输入钩子安装失败")
             return
@@ -3127,12 +3123,11 @@ class StealthReader(QWidget):
             set_window_protection(int(self.winId()), True)
 
     def exit_peek(self, reason=""):
-        """退出偷瞄 = **把窗口收起来**。
+        """退出偷瞄 = **把窗口收起来**（等价于老板键的隐藏），内容层一个字都不动。
 
-        偷瞄是"临时看一眼"，看完就该让它从屏幕上消失——包括从安全文档进来的那次：
-        退出时不再退回安全文档那副假页面（那样窗口还亮着，等于没走），而是直接隐藏。
-        唯一例外是"交给安全文档"（双击正文 / 按 Ctrl+Alt+D 切过去），那时窗口继续亮着，
-        只是内容换成安全文档。要再叫出来：Ctrl+E 继续偷瞄，或老板键 / 托盘图标显示窗口。"""
+        退出去时屏幕上是哪一页，回来还是哪一页：卡片页仍是那张卡（会话/计数/撤销都在），
+        安全文档页仍是那份文档。要再叫出来：Ctrl+E 继续偷瞄，或点托盘图标
+        （窗口藏起来时不可能是前台窗口，所以老板键那会儿按不了）。"""
         if not self.peek_mode:
             return
         self.peek_mode = False
@@ -3140,17 +3135,18 @@ class StealthReader(QWidget):
         self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
         self.peek_input_hook.uninstall()  # 先卸钩，后面任何一步出错都不能泄漏钩子
         self.apply_style()                # 先恢复正常样式，免得偷瞄那套样式留到下次露脸
-        if self.safe_mode:
-            self.exit_safe_mode()         # 从安全文档进来的：真书放回来（窗口马上要藏起来）
-        if reason == "safe_mode":
-            return                        # 交给安全文档：窗口继续亮着，内容换成安全文档
         self.sync_progress_async()
         self.hide()
         log_event(f"偷瞄退出（{reason or '未说明'}）→ 窗口已隐藏")
 
     def on_peek_wheel(self, delta):
         """偷瞄模式的滚轮 = 窗口内滚动的手感：一格滚几行（事件交给 QTextEdit 默认处理，
-        实测一格约 60px ≈ 3 行），滚到 5000 字缓冲区边沿后自动衔接前后页，不跳字不空页。"""
+        实测一格约 60px ≈ 3 行），滚到 5000 字缓冲区边沿后自动衔接前后页，不跳字不空页。
+
+        卡片页（背诵）不参与分页：只滚卡片自己——它的 local_* 是空壳，一个字都不许碰。"""
+        if self.review_mode:
+            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+            return
         if not self.is_local_mode:
             # 网络模式与窗口内行为一致：只滚缓冲区
             QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
@@ -3300,7 +3296,6 @@ class StealthReader(QWidget):
             # 退出安全文档时会拿它去恢复书页，把书的位置弄坏。只记一个"我是从卡片来的"。
             self.safe_snapshot = {"from_review": True}
             self.dismiss_action_panel(cancelled=True)
-            self.exit_peek("safe_mode")
             self.safe_mode = True
             self.local_full_text = self.safe_doc_text()
             self.local_start_index = 0
@@ -3316,7 +3311,6 @@ class StealthReader(QWidget):
             return
         self.safe_snapshot = self.snapshot_book_state()
         self.dismiss_action_panel(cancelled=True)
-        self.exit_peek("safe_mode")
         self.safe_mode = True
         # 借用本地渲染管线：字体/字号/行距/段间距/页边距/缩进全都沿用，排版和书页一模一样
         self.is_local_mode = True
@@ -3499,11 +3493,8 @@ class StealthReader(QWidget):
             self.review_hint(INSTALL_HINT, 6000)
             log_event(f"进背诵失败：{self.review_err_text(e)}")
             return False
-        if self.peek_mode:
-            # 从偷瞄进来：只收起偷瞄（不隐藏窗口，马上要显示卡片）
-            self.peek_mode = False
-            self.peek_input_hook.uninstall()
-            self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
+        # 偷瞄中按背诵键（或从托盘进）：**保持偷瞄**，只把内容换成卡片——可见层与内容层正交。
+        # 钩子继续装着，从卡片铺好的那一刻起它会全局捕获卡片交互键（可以不聚焦窗口地背）。
         if self.safe_mode:
             self.exit_safe_mode()              # 从安全文档进来：先把真书放回来，再拍快照
         self.review_entering = True
@@ -3561,8 +3552,7 @@ class StealthReader(QWidget):
             self.show()                    # WA_ShowWithoutActivating：不抢工作窗口的焦点
         self.raise_()
         self.ensure_on_screen()
-        self.install_review_hook()         # 吞那 9 个复习键（只在背诵中 + 窗口可见时吞）
-        self.review_timer.start()
+        self.review_timer.start()          # 卡片交互键全在窗口内（keyPressEvent），不装任何钩子
         if self.config.get("anki_conceal", True):
             try:
                 self.anki_client().conceal_anki()   # 纯 win32 调用，不排 Anki 的队
@@ -3573,8 +3563,12 @@ class StealthReader(QWidget):
         log_event(f"隐形背诵：已进入（牌组 {deck}）")
 
     def apply_review_bar_style(self):
-        """页脚的字号/颜色跟着阅读设置走，只是小一号、淡一点——像文档底下的一行小字。"""
-        size = max(8, int(self.config.get("font_size", 14)) - 3)
+        """页脚的字号/颜色跟着阅读设置走：字号贴近正文（约 1.15 倍换算，不再是小一号的 11px），
+        不透明度提到 0.92，再加一层**和文字同色**的极淡底色——压在壁纸/IDE 上也读得清。
+
+        上一版是 `font_size - 3` = 11px + 0.61 不透明度，真人反馈"下方的字太小而且看不清"，
+        实测只有正文的 59% 大小。同色底色的好处是浅色主题与深色主题都成立。"""
+        size = max(13, int(round(int(self.config.get("font_size", 14)) * 1.15)))
         color = QColor(200, 200, 200)
         try:
             base = QColor(str(self.config.get("text_color") or ""))
@@ -3582,14 +3576,18 @@ class StealthReader(QWidget):
                 color = base
         except Exception:
             pass
-        c = f"rgba({color.red()},{color.green()},{color.blue()},155)"
-        dim = f"rgba({color.red()},{color.green()},{color.blue()},75)"
+        r, g, b = color.red(), color.green(), color.blue()
+        c = f"rgba({r},{g},{b},235)"
+        dim = f"rgba({r},{g},{b},110)"
+        scrim = f"rgba({r},{g},{b},30)"
+        edge = f"rgba({r},{g},{b},85)"
         self.review_bar.setStyleSheet(
+            f"QWidget#reviewBar {{ background: {scrim}; border-radius: 4px; }}"
             f"QLabel {{ color: {c}; font-size: {size}px; background: transparent; }}"
             f"QPushButton {{ color: {c}; font-size: {size}px; background: transparent;"
-            f" border: none; padding: 3px 6px; }}"
-            f"QPushButton:hover {{ background: rgba(255,255,255,0.12); border-radius: 3px; }}"
-            f"QPushButton:disabled {{ color: {dim}; }}")
+            f" border: 1px solid {edge}; border-radius: 4px; padding: 3px 8px; }}"
+            f"QPushButton:hover {{ background: {scrim}; }}"
+            f"QPushButton:disabled {{ color: {dim}; border-color: {dim}; }}")
 
     def update_review_bar(self):
         """页脚内容：学习计划（新/学/复）+ 今日与本次张数 + 四个评分按钮。
@@ -3615,7 +3613,7 @@ class StealthReader(QWidget):
         for i, btn in enumerate(self.review_buttons):
             if i < len(buttons):
                 name = labels[i] if i < len(labels) else str(buttons[i])
-                when = times[i] if i < len(times) else ""
+                when = REVIEW_TEXT_JUNK.sub("", str(times[i])) if i < len(times) else ""
                 btn.setText(f"{buttons[i]} {name}" + (f" {when}" if when else ""))
                 btn.setVisible(True)
                 btn.setEnabled(bool(s.get("shown")))
@@ -3631,13 +3629,14 @@ class StealthReader(QWidget):
             tail.append(f"今日已 {s['reviewed_today']}")
         if s.get("counted"):
             tail.append(f"本次 {s['counted']}")
+        self.review_plan_label.setText("　".join(x for x in [plan, " · ".join(tail)] if x))
         if not card:
             hint = "今天清完了"
         elif s.get("shown"):
-            hint = "评分"
+            hint = "1-4 评分 · R 重听 · U 撤销"
         else:
-            hint = "空格 / 点一下卡片 翻面"
-        self.review_plan_label.setText("　".join(x for x in [plan, " · ".join(tail), hint] if x))
+            hint = "空格翻面 · Ctrl+D 收起"
+        self.review_hint_label.setText(hint)
 
     def apply_counts(self, stats, reviewed):
         """把 Anki 给的计数装进会话（数据都由后台线程取来，这里一次网都不连）。
@@ -3734,7 +3733,7 @@ class StealthReader(QWidget):
         cursor = QTextCursor(self.text_edit.document())
         cursor.select(QTextCursor.Document)
         cursor.mergeBlockFormat(block_format)
-        self.apply_page_margins()
+        self.apply_page_margins(cut=False)   # 卡片可以滚动，不做书页那种"退到整行"的底部裁切
         self.text_edit.verticalScrollBar().setValue(0)
 
     def toggle_review_mode(self):
@@ -3768,35 +3767,24 @@ class StealthReader(QWidget):
                 self.safe_snapshot = None
             self.restore_book_state(snap, write_progress=False)
         self.review_timer.stop()
-        if not self.peek_mode:
-            # 卸掉吞键钩子（钩子泄漏的症状是全系统输入发卡）；偷瞄模式下钩子还要用，留着
-            self.peek_input_hook.uninstall()
         self.update_tray_tooltip()
         log_event(f"隐形背诵：已退出（{reason or '未说明'}，本次背了 {session.get('counted', 0)} 张）")
 
     # --- 复习键 ---
 
     def review_swallow_all(self):
-        """是否连空格/回车也吞（设置项；关掉就只吞 1-4/U/R/Esc，正常打字不受影响）。"""
+        """偷瞄时是否连空格/回车也全局捕获（设置项；关掉则只有 1-4/U/R/Esc 全局，
+        空格/回车留给底下的应用打字）。窗口内不影响：窗口内空格/回车一直是翻面键。"""
         return bool(self.config.get("anki_swallow_keys", True))
 
-    def review_keys_active(self):
-        """吞键的前提：背诵中 + 窗口可见 + 没最小化 + **没被安全文档盖住**。
+    def peek_captures_review_keys(self):
+        """偷瞄这一层（全局层）当前该不该捕获卡片交互键。
 
-        隐藏（Ctrl+D）时 `isVisible()` 为 False，键立刻全部放行——不必重挂钩子；
-        最小化的窗口 `isVisible()` 仍为 True，所以要单独判一次，否则会把人家的空格吃掉；
-        安全文档模式下更要一个键都不吞：那会儿屏幕上是"工作周报"，敲不出空格立刻露馅。
+        只有"偷瞄中 + 当前页是卡片 + 没被安全文档盖住"才捕获。窗口内（非偷瞄）一个钩子
+        都不装：卡片交互键和书页一样走窗口 `keyPressEvent`，只有窗口是当前活动窗口时
+        才响应——在别的软件里打字再也不会把卡片翻掉或评掉。
         """
-        return bool(self.review_mode and not self.safe_mode
-                    and self.isVisible() and not self.isMinimized())
-
-    def install_review_hook(self):
-        """背诵也要用到那个 ctypes 钩子（和偷瞄共用一套，互不干扰）。"""
-        try:
-            return self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e"))
-        except Exception as e:
-            log_event(f"背诵吞键钩子安装失败（不吞键也能用）: {e}")
-            return False
+        return bool(self.peek_mode and self.review_mode and not self.safe_mode)
 
     def on_review_key(self, name):
         """复习键回调。信号从钩子线程发过来，QueuedConnection 保证在这里是主线程。"""
@@ -3872,6 +3860,11 @@ class StealthReader(QWidget):
         """
         s = self.review_session
         if not s or not s.get("card"):
+            return
+        if not s.get("shown"):
+            # 和 Anki 一样：没翻面就没有评分按钮。键盘是全局可达的（偷瞄层），
+            # 少了这道门，翻面前手滑按到 1-4 就会把卡片直接评掉。
+            self.review_hint("先翻面再评分（空格 / 点一下卡片）", 2000)
             return
         buttons = s["card"].get("buttons") or [1, 2, 3, 4]
         if button not in buttons:
@@ -4347,10 +4340,7 @@ class StealthReader(QWidget):
                 min_h = getattr(self, 'single_line_height', 20)
                 new_h = max(event.pos().y(), min_h)
                 self.resize(new_w, new_h)
-
-                # 【核心逻辑】调整大小时基于锚点重绘
-                if self.is_local_mode:
-                    self.repage_to(anchor)
+                self.repage_after_resize(anchor)
 
             elif self.is_moving:
                 delta = QPoint(event.globalPos() - self.oldPos)
@@ -4360,9 +4350,35 @@ class StealthReader(QWidget):
             if self.config.get("auto_mode"):
                 self.adjust_color_to_background()
 
+    def repage_after_resize(self, anchor=None, force=False):
+        """缩放（以及改字号/改排版后）把**当前这一页**重排到新几何上。
+
+        以前这里只会 `repage_to(anchor)`——那是给书页写的：卡片页的 `local_full_text`
+        是空壳，`repage_to` 第一行就 return，于是卡片页缩放后 viewport 边距还停在旧高度。
+        实测 429x787 → 429x460：viewport 从 512 掉到 185，下边距却还是 229（比可见高度
+        还大），正文直接被挤没——这就是"缩放就出错"。
+
+        拖动时每个鼠标事件都会进来，所以节流到 20 次/秒，松手时 force 收一次尾。
+        """
+        if not self.is_local_mode:
+            return
+        now = time.time()
+        if not force and now - self._last_resize_repage < 0.05:
+            return
+        self._last_resize_repage = now
+        if self.review_mode and not self.safe_mode:
+            keep = self.text_edit.verticalScrollBar().value()
+            self.render_card()      # 里面会 apply_card_style() → apply_page_margins()，几何跟着新高度
+            self.text_edit.verticalScrollBar().setValue(keep)
+            return
+        self.repage_to(self.current_top_offset() if anchor is None else anchor)
+
     def mouseReleaseEvent(self, event):
+        was_resizing = self.is_resizing
         self.is_resizing = False
         self.is_moving = False
+        if was_resizing:
+            self.repage_after_resize(force=True)   # 松手收尾：节流期间丢掉的那几像素补回来
         self.setCursor(Qt.ArrowCursor)
         self.save_config()
 
@@ -5009,11 +5025,19 @@ class StealthReader(QWidget):
 
     def keyPressEvent(self, event):
         key = event.key()
-        if self.review_mode:
-            # 背诵时正文是卡片：方向键/空格翻的是卡片本身，不翻书页
+        if self.review_mode and not self.safe_mode:
+            # 卡片页的交互键 = **窗口内**（和书页完全同一套机制）：只有窗口是当前活动窗口
+            # 时才响应。在这之前这套键走的是全局低级钩子，你在别的软件里打字按到 1-4
+            # 会把卡片直接评掉——那条路已经删掉了。
+            name = REVIEW_KEY_FROM_QT.get(key)
+            if name is not None:
+                self.on_review_key(name)
+                event.accept()
+                return
+            # 其余方向键/翻页键滚的是卡片自己（卡片可能比窗口高），不翻书页
             sb = self.text_edit.verticalScrollBar()
             page = max(1, self.text_edit.viewport().height())
-            if key in [Qt.Key_Right, Qt.Key_Down, Qt.Key_Space, Qt.Key_PageDown]:
+            if key in [Qt.Key_Right, Qt.Key_Down, Qt.Key_PageDown]:
                 sb.setValue(min(sb.maximum(), sb.value() + page))
             elif key in [Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp]:
                 sb.setValue(max(sb.minimum(), sb.value() - page))
