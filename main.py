@@ -26,7 +26,8 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog)
 from PyQt5.QtCore import Qt, QPoint, QRect, QPointF, pyqtSignal, QObject, QThread, QTimer, QEvent
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
-                         QFontMetrics, QTextCursor, QTextBlockFormat, QWheelEvent)
+                         QFontMetrics, QTextCursor, QTextBlockFormat, QWheelEvent,
+                         QPixmap, QIcon, QPainterPath)
 
 # 启用高分屏支持
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -1578,7 +1579,12 @@ class StealthReader(QWidget):
         w = self.config.get("window_width", 400)
         h = self.config.get("window_height", 300)
         self.resize(w, h)
-        self.move(100, 100)
+        # 恢复上次关闭时的位置；没存过或位置已不在当前桌面（比如拔了显示器）才回默认
+        sx, sy = self.config.get("win_x"), self.config.get("win_y")
+        if isinstance(sx, int) and isinstance(sy, int) and self._point_on_desktop(sx, sy):
+            self.move(sx, sy)
+        else:
+            self.move(100, 100)
         self.oldPos = self.pos()
 
         self.apply_style()
@@ -1608,19 +1614,57 @@ class StealthReader(QWidget):
                         return True
         return super().eventFilter(source, event)
 
+    def _point_on_desktop(self, x, y):
+        """坐标是否还落在某块屏幕上（虚拟桌面并集内），防止换了显示器窗口飞出屏。"""
+        union = QRect()
+        for scr in QApplication.instance().screens():
+            union = union.united(scr.geometry())
+        return not union.isNull() and union.contains(x, y)
+
+    def save_window_pos(self):
+        """记住窗口当前位置，下次启动原位出现。"""
+        try:
+            self.config["win_x"] = self.x()
+            self.config["win_y"] = self.y()
+            self.save_config()
+        except Exception:
+            pass
+
     def initTray(self):
         self.tray_icon = QSystemTrayIcon(self)
-        icon = self.style().standardIcon(QStyle.SP_ComputerIcon)
-        self.tray_icon.setIcon(icon)
+        # 极简图标：一枚白色书签（圆角条 + 底部三角缺口），透明底，别再放字和色块
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(245, 245, 245))
+        path = QPainterPath()
+        path.addRoundedRect(21, 6, 22, 52, 5, 5)
+        notch = QPainterPath()
+        notch.moveTo(27, 58)
+        notch.lineTo(32, 44)
+        notch.lineTo(37, 58)
+        notch.closeSubpath()
+        painter.drawPath(path.subtracted(notch))
+        painter.end()
+        self.tray_icon.setIcon(QIcon(pixmap))
+        self.tray_icon.setToolTip("StealthReader 阅读器（进程运行中）")
         tray_menu = QMenu()
-        tray_menu.addAction("显示/隐藏").triggered.connect(self.toggle_window)
+        tray_menu.addAction("显示/隐藏（老板键）").triggered.connect(self.toggle_window)
+        tray_menu.addAction("打开本地书籍…").triggered.connect(self.open_local_file_dialog)
+        tray_menu.addAction("设置…").triggered.connect(self.open_settings)
+        tray_menu.addSeparator()
         tray_menu.addAction("退出").triggered.connect(self.quit_app)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_activated)
         self.tray_icon.show()
+        # 图标出现在任务栏角溢出区（^）里，右键任务栏 → 任务栏设置 → 任务栏角溢出，
+        # 把 StealthReader 打开就能常驻右下角
 
     def on_tray_activated(self, reason):
-        if reason == QSystemTrayIcon.DoubleClick:
+        # 单击就切换显隐，双击太绕
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.toggle_window()
 
     def toggle_window(self):
@@ -1632,6 +1676,7 @@ class StealthReader(QWidget):
         if self.isVisible():
             log_event("老板键 -> 隐藏窗口")
             self.sync_progress_async()
+            self.save_window_pos()
             self.hide()
         else:
             log_event("老板键 -> 显示窗口")
@@ -2111,6 +2156,7 @@ class StealthReader(QWidget):
     def closeEvent(self, event):
         self.exit_peek("close")  # 窗口关了必须先卸全局钩子，再走保存
         self.sync_progress_async()
+        self.save_window_pos()
         if self.is_local_mode:
             self.config["last_local_pos"] = self.local_start_index
             self.save_config()
@@ -2121,6 +2167,7 @@ class StealthReader(QWidget):
         if self.is_local_mode:
             self.config["last_local_pos"] = self.local_start_index
             self.save_config()
+        self.save_window_pos()
 
         self.peek_input_hook.uninstall()  # 钩子泄漏的症状是全系统滚轮发卡，退出必须拆干净
         keyboard.unhook_all()
@@ -2134,6 +2181,16 @@ if __name__ == '__main__':
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         ctypes.windll.user32.MessageBoxW(None, "StealthReader 已经在运行了（托盘里）", "提示", 0x40)
         sys.exit(0)
+
+    # 防静默死亡：PyQt5 对槽函数里未处理的异常默认 qFatal 直接杀进程（pythonw 无控制台，
+    # 死得无声无息）。装了自定义 excepthook 后 PyQt5 改为只调钩子不杀进程，异常落进日志，
+    # 应用继续跑。
+    def _unhandled_exc(t, v, tb):
+        try:
+            log_event("未处理异常:\n" + "".join(traceback.format_exception(t, v, tb))[-900:])
+        except Exception:
+            pass
+    sys.excepthook = _unhandled_exc
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
