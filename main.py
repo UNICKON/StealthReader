@@ -2114,6 +2114,10 @@ class StealthReader(QWidget):
         self.initTray()
 
         self.update_text_signal.connect(self.on_update_text_safe)
+        # 热键"同一下只认第一次"的标记（见 hotkey_is_repeat）：tag -> 这一下按的键名，
+        # 松键回调负责清。没有它，按住老板键不放会被系统自动重复连点成"显示-隐藏-显示"。
+        self._hotkey_gate = {}
+        self._hotkey_gate_at = {}
         self.hotkey_signal.connect(self.toggle_window)
         self.peek_hotkey_signal.connect(self.toggle_peek)
         self.safe_hotkey_signal.connect(self.toggle_safe_mode)
@@ -2748,6 +2752,11 @@ class StealthReader(QWidget):
         g_safe = _reg_global(safe_key_str, self.on_safe_hotkey_triggered, "安全文档")
         g_review = _reg_global(review_key_str, self.on_review_hotkey_triggered, "背诵")
         g_feed = _reg_global(feed_key_str, self.on_feed_hotkey_triggered, "社区")
+        # 松键回调也重挂一遍（unhook_all 会把它一起拆掉）：热键"同一下只认第一次"靠它复位。
+        try:
+            keyboard.on_release(self.on_hotkey_release)
+        except Exception as e:
+            log_event(f"松键监听注册失败: {e}")
         # 说明：全局热键和 QShortcut 只能留一条路。两条都留的话，窗口是前台时同一个键会被
         # 触发两次（老板键收起又立刻弹出），所以下面只在"全局注册失败"时才建 QShortcut。
         try:
@@ -2756,6 +2765,7 @@ class StealthReader(QWidget):
                 self.local_shortcut = None
             if not g_boss:
                 self.local_shortcut = QShortcut(QKeySequence(hotkey_str), self)
+                self.local_shortcut.setAutoRepeat(False)   # 按住不放时 Qt 也会重复触发同一个快捷键
                 self.local_shortcut.activated.connect(self.toggle_window)
         except:
             pass
@@ -2765,6 +2775,7 @@ class StealthReader(QWidget):
                 self.peek_shortcut = None
             if not g_peek:
                 self.peek_shortcut = QShortcut(QKeySequence(peek_key_str), self)
+                self.peek_shortcut.setAutoRepeat(False)
                 self.peek_shortcut.activated.connect(self.toggle_peek)
         except:
             pass
@@ -2774,6 +2785,7 @@ class StealthReader(QWidget):
                 self.safe_shortcut = None
             if not g_safe and safe_key_str:
                 self.safe_shortcut = QShortcut(QKeySequence(safe_key_str), self)
+                self.safe_shortcut.setAutoRepeat(False)
                 self.safe_shortcut.activated.connect(self.toggle_safe_mode)
         except:
             pass
@@ -2783,6 +2795,7 @@ class StealthReader(QWidget):
                 self.review_shortcut = None
             if not g_review and review_key_str:
                 self.review_shortcut = QShortcut(QKeySequence(review_key_str), self)
+                self.review_shortcut.setAutoRepeat(False)
                 self.review_shortcut.activated.connect(self.toggle_review_mode)
         except:
             pass
@@ -2792,6 +2805,7 @@ class StealthReader(QWidget):
                 self.feed_shortcut = None
             if not g_feed and feed_key_str:
                 self.feed_shortcut = QShortcut(QKeySequence(feed_key_str), self)
+                self.feed_shortcut.setAutoRepeat(False)
                 self.feed_shortcut.activated.connect(self.toggle_feed_mode)
         except:
             pass
@@ -2807,11 +2821,58 @@ class StealthReader(QWidget):
             except Exception:
                 self.marks_shortcuts = []
 
+    # 热键"按住不放"最多认多久（秒）：超过它就算松键回调丢了，当下一次新按下（见 hotkey_is_repeat）
+    HOTKEY_REPEAT_MAX = 2.0
+
+    def hotkey_is_repeat(self, tag, key_str):
+        """同一下按键只认第一次。**True = 这一下是按住不放的系统重复，丢掉。**
+
+        按住键不放时 Windows 会一直重复发 keydown（自动重复），`keyboard` 库的热键也就跟着
+        连发：老板键会被连点成"显示-隐藏-显示-隐藏"，在用户眼里就是**唤出时闪一下又不见了**
+        （2026-10-16 实测：按住 ctrl+s 一下 = 12 次触发）。原来只有 0.3 秒的时间防连击，
+        挡不住隔了 0.3 秒以后的重复。
+
+        判据是"**这一下按的那个键松开了没有**"：`on_hotkey_release`（keyboard 库的松键回调）
+        负责清标记。所以按一下、按多久、连按多快都不误伤，只把"没松手"的重复挡掉。
+        跑在库的分发线程上，只碰纯 Python 状态，不碰界面、不开定时器。
+        """
+        trig = (key_str or "").lower().replace(" ", "").split("+")[-1]
+        if not trig:
+            return False
+        gate = getattr(self, "_hotkey_gate", None)
+        if gate is None:
+            return False
+        if gate.get(tag) == trig:
+            # 万一下面的松键回调丢了（钩子被系统摘掉、进程被杀、锁屏期间松的手），
+            # 绝不能把热键永久锁死——超过 2 秒就当这是新的一下，宁可多切一次。
+            if time.time() - self._hotkey_gate_at.get(tag, 0.0) < self.HOTKEY_REPEAT_MAX:
+                return True
+        gate[tag] = trig
+        self._hotkey_gate_at[tag] = time.time()
+        return False
+
+    def on_hotkey_release(self, event):
+        """keyboard 库的松键回调：把"这一下按过了"的标记清掉，下一次按下才算新的一下。
+
+        同样跑在库的分发线程上：只用纯 Python 状态，绝不碰界面、绝不开定时器。
+        """
+        name = (getattr(event, "name", "") or "").lower()
+        if not name:
+            return
+        gate = getattr(self, "_hotkey_gate", None)
+        if not gate:
+            return
+        for tag in [t for t, k in list(gate.items()) if k == name]:
+            gate.pop(tag, None)
+            self._hotkey_gate_at.pop(tag, None)
+
     def on_global_hotkey_triggered(self):
         # 这四个回调都跑在 keyboard 库的分发线程上，那里没有兜底 try：回调抛异常（比如日志
         # 写盘失败）会把分发线程直接打死，此后线程活着、listening 仍是 True，热键却一个都不响。
         # 所以自己兜住，绝不把异常抛回库里。
         try:
+            if self.hotkey_is_repeat("boss", self.config.get("boss_key", "")):
+                return
             log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
             self.hotkey_signal.emit()
         except Exception as e:
@@ -2822,6 +2883,8 @@ class StealthReader(QWidget):
 
     def on_peek_hotkey_triggered(self):
         try:
+            if self.hotkey_is_repeat("peek", self.config.get("peek_key", "")):
+                return
             self.peek_hotkey_signal.emit()
         except Exception as e:
             try:
@@ -2831,6 +2894,8 @@ class StealthReader(QWidget):
 
     def on_safe_hotkey_triggered(self):
         try:
+            if self.hotkey_is_repeat("safe", self.config.get("safe_key", "")):
+                return
             log_event("安全文档热键触发")
             self.safe_hotkey_signal.emit()
         except Exception as e:
@@ -2841,6 +2906,8 @@ class StealthReader(QWidget):
 
     def on_review_hotkey_triggered(self):
         try:
+            if self.hotkey_is_repeat("review", self.config.get("anki_key", "")):
+                return
             log_event("隐形背诵热键触发")
             self.review_hotkey_signal.emit()
         except Exception as e:
@@ -2851,6 +2918,8 @@ class StealthReader(QWidget):
 
     def on_feed_hotkey_triggered(self):
         try:
+            if self.hotkey_is_repeat("feed", self.config.get("feed_key", "")):
+                return
             log_event("社区统一流热键触发")
             self.feed_hotkey_signal.emit()
         except Exception as e:
@@ -3143,8 +3212,16 @@ class StealthReader(QWidget):
         return not union.isNull() and union.contains(x, y)
 
     def save_window_pos(self):
-        """记住窗口当前位置，下次启动原位出现。"""
+        """记住窗口当前位置，下次启动原位出现。
+
+        **只记"确实落在某块真实屏幕上"的位置**：锁屏解锁、拔显示器、缩放变化之后，Windows 会把
+        窗口丢到桌面之外；这时候照着记下来，就是把一个坏坐标写进配置，下次召唤又按它摆一次、
+        再被 ensure_on_screen 挪回来——日志里"窗口被挪到屏幕外，已挪回…"于是每次显示都要重来一遍
+        （2026-10-16 实测过这个循环）。宁可不更新，也不存坏坐标。
+        """
         try:
+            if not window_on_real_screen(int(self.winId())):
+                return
             self.config["win_x"] = self.x()
             self.config["win_y"] = self.y()
             self.save_config()
