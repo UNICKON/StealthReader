@@ -1,0 +1,496 @@
+{
+ "code": 0,
+ "result": [
+  {
+   "id": 0,
+   "_id": "other",
+   "name": "网事杂谈",
+   "groups": [
+    {
+     "name": "网事杂谈",
+     "id": 10004,
+     "forums": [
+      {
+       "fid": -7,
+       "name": "网事杂谈",
+       "info": null,
+       "is_forumlist": false,
+       "id": -7,
+       "icon": ""
+      },
+      {
+       "fid": "-343809",
+       "name": "寂寞的车",
+       "info": "车迷俱乐部",
+       "is_forumlist": false,
+       "id": "-343809",
+       "icon": ""
+      },
+      {
+       "fid": "-7955747",
+       "name": "晴风村",
+       "info": "情感生活",
+       "is_forumlist": false,
+       "id": "-7955747",
+       "icon": ""
+      },
+      {
+       "fid": "843",
+       "name": "国际新闻",
+       "info": null,
+       "is_forumlist": false,
+       "id": "843",
+       "icon": ""
+      },
+      {
+       "fid": "-576177",
+       "name": "音乐影视",
+       "info": null,
+       "is_forumlist": false,
+       "id": "-576177",
+       "icon": ""
+      },
+      {
+       "fid": "524",
+       "name": "漩涡书院",
+       "info": "网络文学",
+       "is_forumlist": false,
+       "id": "524",
+       "icon": ""
+      },
+      {
+       "fid": "-81981",
+       "name": "生命之杯",
+       "info": "足球",
+       "is_forumlist": false,
+       "id": "-81981",
+       "icon": ""
+      },
+      {
+       "fid": "-1459709",
+       "name": "职场人生",
+       "info": null,
+       "is_forumlist": false,
+       "id": "-1459709",
+       "icon": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": 0,
+   "_id": "wow",
+   "name": "魔兽世界",
+   "groups": [
+    {
+     "name": "艾泽拉斯议事厅",
+     "id": 10000,
+     "forums": [
+      {
+       "fid": 7,
+       "name": "艾泽拉斯议事厅",
+       "info": "魔兽主讨论区",
+       "is_forumlist": false,
+       "id": 7,
+       "icon": ""
+      },
+      {
+       "fid": 230,
+       "name": "艾泽拉斯风纪委员会",
+       "info": "曝光违背公认准则的行为",
+       "is_forumlist": false,
+       "id": 230,
+       "icon": ""
+      },
+      {
+       "fid": 310,
+       "name": "前瞻资讯",
+       "info": "新版本与高阶讨论",
+       "is_forumlist": false,
+       "id": 310,
+       "icon": ""
+      },
+      {
+       "fid": 510569,
+       "name": "魔兽世界：无限",
+       "info": "",
+       "is_forumlist": false,
+       "id": 510569,
+       "icon": ""
+      },
+      {
+       "fid": 510502,
+       "name": "熊猫人之谜",
+       "info": "怀旧服讨论",
+       "is_forumlist": false,
+       "id": 510502,
+       "icon": ""
+      },
+      {
+       "fid": 510521,
+       "name": "泰坦重铸(时光)",
+       "info": "怀旧服讨论",
+       "is_forumlist": false,
+       "id": 510521,
+       "icon": ""
+      },
+      {
+       "fid": 624,
+       "name": "经典旧世",
+       "info": "怀旧服讨论",
+       "is_forumlist": false,
+       "id": 624,
+       "icon": ""
+      },
+      {
+       "fid": 770,
+       "name": "燃烧的远征",
+       "info": "怀旧服讨论",
+       "is_forumlist": false,
+       "id": 770,
+       "icon": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": 0,
+   "_id": "company",
+   "name": "特约专区",
+   "groups": [
+    {
+     "name": "暴雪游戏",
+     "id": 10006,
+     "forums": [
+      {
+       "fid": 459,
+       "name": "守望先锋",
+       "info": "Overwatch 2",
+       "is_forumlist": false,
+       "id": 459,
+       "icon": ""
+      },
+      {
+       "fid": 422,
+       "name": "炉石传说",
+       "info": "HearthStone",
+       "is_forumlist": false,
+       "id": 422,
+       "icon": ""
+      },
+      {
+       "fid": 318,
+       "name": "暗黑破坏神3",
+       "info": "D3综合讨论区",
+       "is_forumlist": false,
+       "id": 318,
+       "icon": ""
+      },
+      {
+       "fid": 431,
+       "name": "风暴英雄",
+       "info": "Heroes of the Storm",
+       "is_forumlist": false,
+       "id": 431,
+       "icon": ""
+      },
+      {
+       "fid": 406,
+       "name": "星际争霸2",
+       "info": "Starcraft Ⅱ",
+       "is_forumlist": false,
+       "id": 406,
+       "icon": ""
+      },
+      {
+       "fid": 490,
+       "name": "魔兽争霸",
+       "info": "WarCraft",
+       "is_forumlist": false,
+       "id": 490,
+       "icon": ""
+      },
+      {
+       "fid": 685,
+       "name": "暗黑破坏神4",
+       "info": null,
+       "is_forumlist": false,
+       "id": 685,
+       "icon": ""
+      },
+      {
+       "fid": 769,
+       "name": "暗黑破坏神2 重制版",
+       "info": null,
+       "is_forumlist": false,
+       "id": 769,
+       "icon": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": 0,
+   "_id": "mobi",
+   "name": "手机游戏",
+   "groups": [
+    {
+     "name": "手机/网页游戏",
+     "id": 10009,
+     "forums": [
+      {
+       "fid": 863,
+       "name": "手机游戏快讯",
+       "info": null,
+       "is_forumlist": false,
+       "id": 863,
+       "icon": ""
+      },
+      {
+       "fid": "861",
+       "name": "代号无限大",
+       "info": null,
+       "is_forumlist": false,
+       "id": "861",
+       "icon": ""
+      },
+      {
+       "fid": 863,
+       "name": "洛奇Mobile",
+       "info": null,
+       "is_forumlist": false,
+       "id": 47494660,
+       "icon": ""
+      },
+      {
+       "fid": 863,
+       "name": "蓝色星原: 旅谣",
+       "info": null,
+       "is_forumlist": false,
+       "id": "39640915",
+       "icon": ""
+      },
+      {
+       "fid": 571,
+       "name": "手游评分版",
+       "info": null,
+       "is_forumlist": false,
+       "id": 571,
+       "icon": ""
+      },
+      {
+       "fid": 823,
+       "name": "上线游戏讨论区",
+       "info": null,
+       "is_forumlist": false,
+       "id": 823,
+       "icon": ""
+      },
+      {
+       "fid": 822,
+       "name": "测试阶段游戏讨论区",
+       "info": null,
+       "is_forumlist": false,
+       "id": 822,
+       "icon": ""
+      },
+      {
+       "fid": 824,
+       "name": "海外游戏讨论区",
+       "info": null,
+       "is_forumlist": false,
+       "id": 824,
+       "icon": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": 0,
+   "_id": "trad",
+   "name": "传统游戏",
+   "groups": [
+    {
+     "name": "传统游戏",
+     "id": 10011,
+     "forums": [
+      {
+       "fid": 414,
+       "name": "游戏综合讨论区",
+       "info": null,
+       "is_forumlist": false,
+       "id": 414,
+       "icon": ""
+      },
+      {
+       "fid": 510505,
+       "name": "游戏业界新闻",
+       "info": null,
+       "is_forumlist": false,
+       "id": 510505,
+       "icon": ""
+      },
+      {
+       "fid": 614,
+       "name": "PS游戏综合讨论",
+       "info": null,
+       "is_forumlist": false,
+       "id": 614,
+       "icon": ""
+      },
+      {
+       "fid": 615,
+       "name": "XBOX游戏综合讨论",
+       "info": null,
+       "is_forumlist": false,
+       "id": 615,
+       "icon": ""
+      },
+      {
+       "fid": 616,
+       "name": "Nintendo游戏综合讨论",
+       "info": "百年老店任天堂",
+       "is_forumlist": false,
+       "id": 616,
+       "icon": ""
+      },
+      {
+       "fid": 510431,
+       "name": "ROG掌机",
+       "info": "尽掌控 超会玩",
+       "is_forumlist": false,
+       "id": 510431,
+       "icon": ""
+      },
+      {
+       "fid": -21175563,
+       "name": "传统RPG综合讨论",
+       "info": "类跑团游戏讨论",
+       "is_forumlist": false,
+       "id": -21175563,
+       "icon": ""
+      },
+      {
+       "fid": -60252908,
+       "name": "文字冒险游戏综合讨论",
+       "info": "Galgame",
+       "is_forumlist": false,
+       "id": -60252908,
+       "icon": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": 0,
+   "_id": "mmo",
+   "name": "网络游戏",
+   "groups": [
+    {
+     "name": "网络游戏",
+     "id": 10012,
+     "forums": [
+      {
+       "fid": 300,
+       "name": "网络游戏综合",
+       "info": null,
+       "is_forumlist": false,
+       "id": 300,
+       "icon": ""
+      },
+      {
+       "fid": "855",
+       "name": "诛仙世界",
+       "info": null,
+       "is_forumlist": false,
+       "id": "855",
+       "icon": ""
+      },
+      {
+       "fid": "-362960",
+       "name": "最终幻想14",
+       "info": "幻想，此刻成真",
+       "is_forumlist": false,
+       "id": "-362960",
+       "icon": ""
+      },
+      {
+       "fid": "842",
+       "name": "命运方舟",
+       "info": "Lost ARK",
+       "is_forumlist": false,
+       "id": "842",
+       "icon": ""
+      },
+      {
+       "fid": "-7861121",
+       "name": "剑网3",
+       "info": "J3客户端版",
+       "is_forumlist": false,
+       "id": "-7861121",
+       "icon": ""
+      },
+      {
+       "fid": 840,
+       "name": "游戏王：大师决斗",
+       "info": "Yu-Gi-Oh! Master Duel",
+       "is_forumlist": false,
+       "id": 840,
+       "icon": ""
+      },
+      {
+       "fid": "510489",
+       "name": "三角洲行动",
+       "info": "Delta Force",
+       "is_forumlist": false,
+       "id": "510489",
+       "icon": ""
+      },
+      {
+       "fid": "510508",
+       "name": "无烬战争",
+       "info": null,
+       "is_forumlist": false,
+       "id": "510508",
+       "icon": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": 0,
+   "_id": "club",
+   "name": "社区事务",
+   "groups": [
+    {
+     "name": "国家地理俱乐部",
+     "id": 10013,
+     "forums": [
+      {
+       "fid": 10,
+       "name": "银色黎明裁判所",
+       "info": "站务管理 问题解答 版务投诉",
+       "is_forumlist": false,
+       "id": 10,
+       "icon": ""
+      },
+      {
+       "fid": 335,
+       "name": "论坛开发",
+       "info": "APP/网站BUG/建议",
+       "is_forumlist": false,
+       "id": 335,
+       "icon": ""
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

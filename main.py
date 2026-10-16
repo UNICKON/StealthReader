@@ -2409,6 +2409,8 @@ class StealthReader(QWidget):
         self.feed_source_i = 0
         self.feed_busy = False          # 后台取数中（同一次取数不重复发）
         self.feed_pending = None        # 忙着的时候来的取数请求，等回来补上（见 feed_load）
+        self.feed_board_pending = False  # 正在拉板块表（回来要弹选择器，见 feed_load_boards）
+        self.feed_boards_tried = set()   # 拉过全量板块表的来源（拉不到也别反复去拉）
         self.feed_gen = 0               # "视图代次"：换代后回来的旧结果一律丢掉（见 on_feed_data）
         if FEED_OK:
             try:
@@ -4140,6 +4142,8 @@ class StealthReader(QWidget):
             posts, nxt, append, gen, tag = payload
         elif kind == "detail":
             post, cmts, gen, tag = payload
+        elif kind == "boards":
+            boards, gen, tag = payload
         else:
             msg, gen, tag = payload
         # 两道核对，缺一不可：
@@ -4150,6 +4154,17 @@ class StealthReader(QWidget):
         if not self.feed_mode:
             self.feed_pending = None
             return                                  # 人已经切走了，结果和排队一起丢
+        if kind == "boards":
+            # 板块表回来 → 弹可搜索的选择器。它不改视图，所以只核对来源（代次变了也要丢：
+            # 那说明中途换了来源/栏目，此刻弹出来的列表已经对不上了）
+            pending = self.feed_board_pending
+            self.feed_board_pending = False
+            log_event("社区：板块表拿到 %d 条（来源 %s，还用得上=%s）"
+                      % (len(boards or []), tag, pending and not gone))
+            if gone or not pending:
+                return
+            self.feed_board_picker()
+            return
         if gone:
             pend = self.feed_pending
             self.feed_pending = None
@@ -4161,6 +4176,10 @@ class StealthReader(QWidget):
         if kind == "error":
             self.feed_error = str(msg)
             log_event(f"社区取数失败: {msg}")
+            if self.feed_board_pending:              # 拉板块表失败：这不该让整页变成"取数失败"
+                self.feed_board_pending = False
+                self.feed_error = ""
+                self.review_hint("板块列表没拉到（%s）" % str(msg)[:40], 2000)
         else:
             self.feed_error = ""
             nav = self.feed_nav
@@ -4470,9 +4489,21 @@ class StealthReader(QWidget):
         self.feed_load("detail" if nav.view == "detail" else "list")
         return True
 
+    def feed_board_key(self):
+        """这个来源的"板块/栏目"记在 config 的哪个键上（每个来源各记各的）。
+
+        以前栏目只活在内存里：切来源再切回来就掉回第一栏。NGA 的板块更是"上次看的那个版
+        下次还想接着看"，所以按来源分开记（`feed_board_nga` / `feed_board_v2ex` …）。"""
+        src = self.feed_source()
+        return "feed_board_%s" % getattr(src, "key", "") if src is not None else ""
+
     def feed_first_channel(self):
-        """这个来源的第一个栏目。切来源/进页面时用它把栏目放到一个**真实存在**的值上，
-        否则页脚会显示"全部"而这个来源根本没有"全部"这一栏（来源自己说了算，见 channels）。"""
+        """进来源/切来源时把栏目放到一个**真实存在**的值上。
+
+        顺序是：config 里这个来源上次停的那一栏（还在列表里就用它）→ 第一栏 → "全部"。
+        只用第一栏的话，页脚会显示"全部"而这个来源根本没有"全部"这一栏；
+        只认 config 的话，来源改了自己的栏目表之后会停在一个不存在的栏目上（两者来源自己说了算，
+        见 channels）。"""
         src = self.feed_source()
         if src is None:
             return "全部"
@@ -4480,13 +4511,17 @@ class StealthReader(QWidget):
             chans = list(src.channels() or [])
         except Exception:
             chans = []
+        remembered = str(self.config.get(self.feed_board_key()) or "")
+        if remembered and remembered in chans:
+            return remembered
         return chans[0] if chans else "全部"
 
     def feed_cycle_source(self, step):
         """`[` `]` 切来源：全部来源（混流）→ IT之家 → V2EX → linux.do → 知乎 → 离线示例。
 
         批次 B 之后"来源"才真的成了可切的一维：默认落在混流上（真人要的是"一个窗口看所有站"），
-        想只看某一个站就按 `]`；栏目是来源内部的再一层，用 `,` `.` 切（见 feed_cycle_channel）。"""
+        想只看某一个站就按 `]`；栏目是来源内部的再一层，用 `,` `.` 切（见 feed_cycle_channel）。
+        键位不好记，所以右键菜单里也有同名的两项（见 build_feed_menu）。"""
         if not self.feed_sources:
             return False
         n = len(self.feed_sources)
@@ -4503,10 +4538,20 @@ class StealthReader(QWidget):
         log_event(f"社区：切到来源 {getattr(src, 'label', '')}")
         return True
 
+    def feed_goto_source(self, index):
+        """直接跳到第 index 个来源（右键菜单用）。"""
+        if not self.feed_sources:
+            return False
+        index = max(0, min(len(self.feed_sources) - 1, int(index)))
+        if index == self.feed_source_i:
+            return False
+        return self.feed_cycle_source(index - self.feed_source_i)
+
     def feed_cycle_channel(self, step):
         """`,` `.` 切栏目（来源内的"热榜/最新"这类，位置相当于 Reddit 的 subreddit）。
 
-        栏目列表完全由来源声明；只有一个栏目时按了没反应——那是正常的，不是坏了。"""
+        栏目列表完全由来源声明；只有一个栏目时按了没反应——那是正常的，不是坏了。
+        换过的栏目按来源记进 config（见 feed_board_key）。"""
         src = self.feed_source()
         if src is None:
             return False
@@ -4521,12 +4566,101 @@ class StealthReader(QWidget):
         except ValueError:
             i = 0
         self.feed_nav.channel = channels[(i + step) % len(channels)]
+        self.config[self.feed_board_key()] = self.feed_nav.channel
         self.feed_gen += 1
         self.feed_nav.reset()
         self.update_review_bar()
         self.feed_load("list")
         self.feed_scroll_top()
         return True
+
+    def feed_goto_channel(self, channel):
+        """直接跳到某个栏目/板块（右键菜单、板块选择器用）。"""
+        src = self.feed_source()
+        nav = self.feed_nav
+        if src is None or nav is None:
+            return False
+        channel = str(channel or "")
+        if not channel or channel == nav.channel:
+            return False
+        self.feed_nav.channel = channel
+        self.config[self.feed_board_key()] = channel
+        self.feed_error = ""
+        self.feed_gen += 1
+        nav.reset()
+        self.update_review_bar()
+        self.feed_load("list")
+        self.feed_scroll_top()
+        log_event(f"社区：切到栏目 {channel}")
+        return True
+
+    def feed_load_boards(self):
+        """后台拉当前来源的**全量板块表**（只有 NGA 有这么多；别的来源本来就一栏两栏）。
+
+        放在后台是因为它要联网；回来之后弹一个可搜索的列表（见 feed_board_picker）。"""
+        src = self.feed_source()
+        if src is None or not hasattr(src, "boards") or self.feed_busy:
+            return False
+        self.feed_busy = True
+        self.feed_board_pending = True
+        self.feed_boards_tried.add(getattr(src, "key", ""))   # 试过一次就不再自动重试
+
+        def work():
+            try:
+                self.feed_data_signal.emit("boards", (src.boards(), self.feed_gen,
+                                                      getattr(src, "key", "")))
+            except Exception as e:
+                self.feed_data_signal.emit("error", (str(e), self.feed_gen, getattr(src, "key", "")))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.review_hint("正在拉板块列表…", 1200)
+        return True
+
+    def feed_board_picker(self):
+        """板块选择器：**可搜索**的列表（NGA 有 661 个板块，菜单里放不下）。
+
+        用 Qt 自己的可编辑下拉框：点开就能打字筛，回车选中。选完立刻换栏目并重新取数。"""
+        src = self.feed_source()
+        if src is None or self.feed_nav is None:
+            return False
+        if (hasattr(src, "boards") and not getattr(src, "_boards", None)
+                and getattr(src, "key", "") not in self.feed_boards_tried):
+            # 全量表还没拉过：**绝不能在界面线程里拉**（NGA 那一下要几秒，界面会僵住）。
+            # 交给后台，回来再弹选择器（见 feed_load_boards / on_feed_data）。
+            return self.feed_load_boards()
+        try:
+            boards = list(src.boards() or [])
+        except Exception:
+            boards = []
+        if not boards:
+            self.review_hint("这个来源没有板块列表", 1500)
+            return False
+        labels = []
+        for b in boards:
+            group = str(b.get("group") or "").strip()
+            labels.append(("%s · %s" % (group, b["label"])) if group else b["label"])
+        cur = 0
+        for i, b in enumerate(boards):
+            if b["label"] == self.feed_nav.channel:
+                cur = i
+                break
+        title = "%s · 换板块（共 %d 个，可以打字筛）" % (self.feed_source_label(), len(boards))
+        pick, ok = QInputDialog.getItem(self, title, "板块：", labels, cur, False)
+        if not ok or not pick:
+            return False
+        i = labels.index(pick)
+        return self.feed_goto_channel(boards[i]["label"])
+
+    def feed_source_picker(self):
+        """社区（来源）选择器：一个可搜索的列表，选完立刻切过去。"""
+        if not self.feed_sources:
+            return False
+        labels = [getattr(s, "label", "") or getattr(s, "key", "") for s in self.feed_sources]
+        cur = max(0, min(len(labels) - 1, self.feed_source_i))
+        pick, ok = QInputDialog.getItem(self, "换社区（来源）", "社区：", labels, cur, False)
+        if not ok or not pick:
+            return False
+        return self.feed_goto_source(labels.index(pick))
 
     def feed_open_original(self):
         """用系统浏览器打开原帖。第一轮**只读**：不发帖、不点赞、不转发（写操作风险最高）。"""
@@ -4588,6 +4722,14 @@ class StealthReader(QWidget):
             return True
         if key == Qt.Key_O:
             self.feed_open_original()
+            return True
+        if key == Qt.Key_C:
+            # C = 换社区（来源）。键位不好记，所以右键菜单里也有同名项（见 build_feed_menu）
+            self.feed_source_picker()
+            return True
+        if key == Qt.Key_V:
+            # V = 换板块（栏目）。NGA 那样几百个版面也能在这儿打字搜
+            self.feed_board_picker()
             return True
         sb = self.text_edit.verticalScrollBar()
         page = max(1, self.text_edit.viewport().height())
@@ -6323,10 +6465,66 @@ class StealthReader(QWidget):
             self.dismiss_action_panel()
             self.delete_highlight(hl.get("id"))
 
+    def build_feed_menu(self):
+        """社区页的右键菜单。
+
+        为什么要这份菜单：`[` `]` `,` `.` 这三个键**没有地方能看见**——真人反馈"没法切换不同社区"
+        就是这个原因（功能一直在，但没人知道键位）。菜单里放同名的两项，另外给两个可以打字搜的
+        选择器（来源一共七八个、NGA 的板块有六百多个，菜单塞不下）。
+        """
+        cmenu = QMenu(self)
+        nav = self.feed_nav
+        src = self.feed_source()
+        copy_action = cmenu.addAction("📋 复制选中文字")
+        copy_action.triggered.connect(self.copy_selection)
+        copy_action.setEnabled(bool(self.text_edit.textCursor().hasSelection()))
+        cmenu.addSeparator()
+        # 换社区（来源）
+        src_menu = cmenu.addMenu("🌐 换社区（%s）" % self.feed_source_label())
+        for i, s in enumerate(self.feed_sources):
+            label = getattr(s, "label", "") or getattr(s, "key", "")
+            act = src_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(i == self.feed_source_i)
+            act.triggered.connect(lambda _=False, idx=i: self.feed_goto_source(idx))
+        src_menu.addSeparator()
+        src_menu.addAction("🔍 列表里搜…（C）").triggered.connect(self.feed_source_picker)
+        # 换板块（栏目）
+        try:
+            channels = list(src.channels() or []) if src is not None else []
+        except Exception:
+            channels = []
+        cur = nav.channel if nav is not None else ""
+        board_menu = cmenu.addMenu("📋 换板块（%s）" % (cur or "—"))
+        for ch in channels[:24]:
+            act = board_menu.addAction(ch)
+            act.setCheckable(True)
+            act.setChecked(ch == cur)
+            act.triggered.connect(lambda _=False, c=ch: self.feed_goto_channel(c))
+        if len(channels) > 24:
+            board_menu.addSeparator()
+            board_menu.addAction("　…还有 %d 个（用下面的列表搜）" % (len(channels) - 24)).setEnabled(False)
+        board_menu.addSeparator()
+        board_menu.addAction("🔍 列表里搜…（V）").triggered.connect(self.feed_board_picker)
+        cmenu.addSeparator()
+        cmenu.addAction("🔄 重新拉取（R）").triggered.connect(self.feed_reload)
+        if nav is not None and nav.view == "detail":
+            cmenu.addAction("⬅️ 返回列表（退格）").triggered.connect(self.feed_back)
+        cmenu.addAction("↗️ 用浏览器打开原帖（O）").triggered.connect(self.feed_open_original)
+        cmenu.addSeparator()
+        cmenu.addAction("⚙️ 设置").triggered.connect(self.open_settings)
+        cmenu.addAction("❌ 退出社区页（%s）" % (self.config.get("feed_key") or "ctrl+alt+f")).triggered.connect(
+            lambda: self.exit_feed_mode(reason="menu"))
+        return cmenu
+
     def build_context_menu(self):
         """右键菜单。安全文档模式下只给中性项：菜单里的"打开本地书籍/导出划线笔记"这类字眼
         本身就是破绽，凑过来看屏幕的人一眼就懂了。"""
         cmenu = QMenu(self)
+        if self.feed_mode:
+            # 社区页有自己的菜单：换社区/换板块/刷新/回列表/开原帖。
+            # 走书页那份菜单会露出"打开本地书籍""导出划线笔记"这些和当前页面无关的项。
+            return self.build_feed_menu()
         if self.review_mode:
             # 背诵菜单：也要中性（不出现 "Anki/牌组/评分" 这类字眼），但鼠标路径必须完整——
             # 万一设置里关掉了吞键，或者有人习惯只用鼠标，也能翻面、评分、退出。

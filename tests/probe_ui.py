@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """界面集成探针：**零网络**，离屏 Qt 走完整形窗口（混流 / 切来源 / 详情 / 打开原帖 / 退出）。
 
     python tests/probe_ui.py
@@ -356,7 +356,11 @@ else:
             pass
     qapp.processEvents()
 
-    # 菜单入口：安全文档模式下菜单是"中性项"（故意不放它），所以先把那层遮罩摘掉再看
+    # 菜单入口：安全文档模式下菜单是"中性项"（故意不放它），所以先把那层遮罩摘掉再看。
+    # **必须在书页状态下看**：社区页现在有自己的菜单（换社区/换板块），这一节验的是书页那份
+    # （以前社区页复用书页菜单，所以在社区页里也碰巧能看到——探针没摘 feed 其实是在测另一份）。
+    if w.feed_mode:
+        w.exit_feed_mode(reason="probe")
     orig_veiled = w._book_veiled
     w._book_veiled = lambda: False
     menu_texts = [a.text() for a in w.build_context_menu().actions()]
@@ -518,6 +522,115 @@ check("取消勾选 = 回到\"跟着书页走\"（键删掉，不是留个 0）"
       (w.config.get("feed_font_size"), w.config.get("feed_font_family")))
 _set_dlg.reject()
 qapp.processEvents()
+
+# 8.6 换社区 / 换板块：右键菜单里得看得见，选了要立刻生效，还要按来源记住
+print("--- 换社区 / 换板块 ---")
+
+
+class BoardSrc(feed_sources.SourceAdapter):
+    """一个只有"板块"可切的替身来源（NGA 那种形态：几十上百个版面）。"""
+
+    key = "boardsrc"
+    label = "板块源"
+    needs_auth = False
+
+    def channels(self):
+        return ["甲板", "乙板"]
+
+    def list(self, channel=None, cursor=None):
+        return [], None
+
+    def detail(self, post, cursor=None):
+        return post, None
+
+    def comments(self, post, cursor=None):
+        return [], None
+
+    def boards(self, force=False):
+        return [{"label": "甲板", "fid": "1", "group": "测试分类"},
+                {"label": "乙板", "fid": "2", "group": "测试分类"}]
+
+
+use_sources([BoardSrc()])
+w.enter_feed_mode()                     # 必须在社区页里：取数回来的处理只在 feed_mode 下走
+w.feed_nav.channel = w.feed_first_channel()
+w.feed_load("list")
+pump(lambda: not w.feed_busy)
+_menu = w.build_feed_menu()
+_menu_txt = []
+for _a in _menu.actions():
+    _menu_txt.append(_a.text())
+    _sub = _a.menu()
+    if _sub is not None:
+        _menu_txt += [x.text() for x in _sub.actions()]
+check("社区页右键菜单里有「换社区」「换板块」两项（功能一直在，但以前没有任何地方能看见键位）",
+      any("换社区" in t for t in _menu_txt) and any("换板块" in t for t in _menu_txt),
+      [t for t in _menu_txt if t][:8])
+check("菜单里列出了当前来源的板块（%s）" % w.feed_source().label,
+      any("甲板" in t for t in _menu_txt) and any("乙板" in t for t in _menu_txt),
+      [t for t in _menu_txt if t][:12])
+
+# 换板块：换完要立刻生效，并按来源记进 config
+w.config.pop("feed_board_boardsrc", None)
+check("换板块当场生效", w.feed_goto_channel("乙板") and w.feed_nav.channel == "乙板",
+      w.feed_nav.channel)
+pump(lambda: not w.feed_busy)
+check("换过的板块按来源记进 config", w.config.get("feed_board_boardsrc") == "乙板",
+      w.config.get("feed_board_boardsrc"))
+# 模拟"重新落到这个来源"（切回来/重开程序）：栏目是从 config 里按来源恢复的
+w.feed_nav.channel = "甲板"
+check("再落到这个来源时用记忆值，而不是第一栏（以前只有内存，切走就掉）",
+      w.feed_first_channel() == "乙板", w.feed_first_channel())
+w.config["feed_board_boardsrc"] = "一个已经不存在的板块"
+check("记忆里那一栏不存在了，就老实退回第一栏（不显示一个假栏目）",
+      w.feed_first_channel() == "甲板", w.feed_first_channel())
+w.config["feed_board_boardsrc"] = "乙板"
+
+# 选择器：`V` 那条路（全量表没拉过 → 后台拉 → 回来后弹可搜索的列表）
+_orig_get_item = app_mod.QInputDialog.getItem
+_PICK_CALLS = []
+
+
+def _fake_get_item(*a, **k):
+    items = list(a[3]) if len(a) > 3 else []
+    _PICK_CALLS.append(len(items))
+    return ("测试分类 · 乙板", True)
+
+
+app_mod.QInputDialog.getItem = _fake_get_item
+try:
+    w.feed_boards_tried.discard("boardsrc")
+    check("第一次按 V：先去后台拉全量板块表（不在界面线程里拉网）", w.feed_board_picker() is True)
+    pump(lambda: not w.feed_busy, 10.0)
+    qapp.processEvents()
+    check("板块表回来后弹出可搜索的选择器，选中即换过去", w.feed_nav.channel == "乙板",
+          (w.feed_nav.channel, _PICK_CALLS, [m for m in LOGS if "板块" in m][-2:]))
+except Exception as _e:
+    check("板块选择器这条路没炸", False, "%s: %s" % (type(_e).__name__, _e))
+finally:
+    app_mod.QInputDialog.getItem = _orig_get_item
+
+# 换社区：`C` 那条路 + 直接跳
+use_sources(ORIG_SOURCES)
+w.config["feed_source"] = "mix"
+_check_src_before = w.feed_source().key
+check("菜单能直接跳到指定来源", w.feed_goto_source(2) and w.feed_source().key != _check_src_before,
+      (w.feed_source().key, _check_src_before))
+pump(lambda: not w.feed_busy)
+_orig_get_item = app_mod.QInputDialog.getItem
+app_mod.QInputDialog.getItem = lambda *a, **k: ("IT之家", True)
+try:
+    w.feed_source_picker()
+    qapp.processEvents()
+    check("C 键的选择器能换社区（选完立刻换过去并取数）", w.feed_source().label == "IT之家",
+          w.feed_source().label)
+except Exception as _e:
+    check("社区选择器这条路没炸", False, "%s: %s" % (type(_e).__name__, _e))
+finally:
+    app_mod.QInputDialog.getItem = _orig_get_item
+pump(lambda: not w.feed_busy)
+check("换社区之后 config 里记的是新来源", w.config.get("feed_source") == w.feed_source().key,
+      (w.config.get("feed_source"), w.feed_source().key))
 
 print("\n=== 9. 退出：书的状态不许被动过 ===")
 w.exit_feed_mode(reason="probe")

@@ -866,6 +866,66 @@ def _nga_author(data, it):
     return "" if name.startswith("UID:") else name
 
 
+# NGA 的常用板块表（栏目名 → fid）。
+#
+# NGA 是"一个站里几百个版面"的形态，所以这一家的栏目就是**板块**。官方的板块树在
+# `app_api.php?__lib=home&__act=category&_v=2`，**不需要 Cookie**（2026-10-16 实测：
+# 200、7 个分类 → 分组 → 661 个板块，每条带 fid/name/info）。600 多条放进菜单没法看，
+# 所以界面分两层：这张短表当默认菜单，`NgaSource.boards()` 拉全量给"更多板块…"用。
+#
+# 下面这十条是从官方分类树里**逐条核过**的（名字和 fid 都对得上）：
+#   网事杂谈 -7 / 晴风村 -7955747 / 寂寞的车 -343809 / 生命之杯 -81981 / 漩涡书院 524 /
+#   国际新闻 843 / 音乐影视 -576177 / 程序员职业交流 -202020 /
+#   消费电子 IT新闻 436 / 娱乐吃瓜区 -39223361
+# 记一笔**没放进来**的：TouchFish 扩展的 `touchfish.ngaTab` 默认枚举里有
+# 「股票大时代=706」「Cosplay=472」「消费电子=436」「娱乐吃瓜=-39223361」——
+# 后两个在官方树里的名字分别是「消费电子 IT新闻」「娱乐吃瓜区」（fid 一致，已收进来）；
+# 前两个在官方树里**找不到同名条目**（要么是隐藏版面、要么是它抄的），所以不进默认表：
+# 想看得在「更多板块…」里填 fid。别人给的默认值不该被我们当成事实。
+NGA_BOARDS = (
+    ("网事杂谈", "-7"),
+    ("晴风村", "-7955747"),
+    ("寂寞的车", "-343809"),
+    ("生命之杯", "-81981"),
+    ("漩涡书院", "524"),
+    ("国际新闻", "843"),
+    ("音乐影视", "-576177"),
+    ("程序员职业交流", "-202020"),
+    ("消费电子 IT新闻", "436"),
+    ("娱乐吃瓜区", "-39223361"),
+)
+
+
+def _nga_boards(data):
+    """NGA 的板块分类树 → `[{"label", "fid", "group"}]`（按官方顺序，重复的去掉）。
+
+    真实形状（2026-10-16 实测 `app_api.php?__lib=home&__act=category&_v=2`）：
+        {"code": 0, "result": [{"name": "网事杂谈", "groups": [
+            {"name": "网事杂谈", "forums": [{"fid": -7, "name": "网事杂谈", "info": null}, ...]},
+            ...]}, ...]}
+    **fid 有时候是整数、有时候是字符串**（同一份响应里两种都有，比如 -7 和 "-7955747"），
+    所以统一成字符串再比；同名同 fid 的重复条目（实测「手游评分版=863」这类同名不同 fid 的
+    反而要留着，只有完全相同的才算重复）只留第一条。"""
+    out, seen = [], set()
+    for cat in (data or {}).get("result") or []:
+        if not isinstance(cat, dict):
+            continue
+        for g in cat.get("groups") or []:
+            if not isinstance(g, dict):
+                continue
+            for f in g.get("forums") or []:
+                if not isinstance(f, dict):
+                    continue
+                label = feed_mod.strip_html(f.get("name") or "")
+                fid = f.get("fid")
+                fid = "" if fid is None else str(fid).strip()
+                if not label or not fid or (label, fid) in seen:
+                    continue
+                seen.add((label, fid))
+                out.append({"label": label, "fid": fid, "group": str(g.get("name") or "")})
+    return out
+
+
 class NgaSource(RealSource):
     """NGA（艾泽拉斯国家地理）。**免登录完全进不去**，必须贴浏览器 Cookie。
 
@@ -883,18 +943,71 @@ class NgaSource(RealSource):
       - 回复**没有真正的层级**（引用写在正文里），所以按平铺给。
 
     解析全部按真响应写（`__T` 的两种含义、`strict=False`、GBK、`__U` 占位名都处理了）。
+
+    **板块（fid）**：NGA 是"一个站里有几百个版面"的形态，所以这一家的栏目就是板块。
+    默认只给 `NGA_BOARDS` 那张短表（工位上会看的十来个），`boards()` 能拉全量
+    （官方分类树 661 个，**不要 Cookie**），界面里用可搜索的列表让人挑任意一条或直接填 fid。
     """
 
     key = "nga"
     label = "NGA"
     base_url = "https://bbs.nga.cn"
     needs_auth = True                  # 这个是真的要登录：列表都进不去
-    CHANNELS = ("网事杂谈",)
-    FID = {"网事杂谈": "-7"}
+    CHANNELS = tuple(label for label, _fid in NGA_BOARDS)
+    FID = dict(NGA_BOARDS)
     MAX_PAGE_BYTES = 4000000
+    BOARDS_URL = "https://bbs.nga.cn/app_api.php?__lib=home&__act=category&_v=2"
+
+    def __init__(self, http, auth=None):
+        RealSource.__init__(self, http, auth)
+        self._boards = []              # 全量板块表（`boards()` 拉到之后放这儿）
 
     def channels(self):
+        """栏目 = 板块。拉过全量表就用全量（界面里能滚能搜），否则就是那张短表。"""
+        if self._boards:
+            return [b["label"] for b in self._boards]
         return list(self.CHANNELS)
+
+    def board_fid(self, channel):
+        """栏目名（或直接给的 fid）→ NGA 的 fid。认不出来就退回默认板块。"""
+        s = str(channel or "").strip()
+        for label, fid in NGA_BOARDS:
+            if s == label or s == fid:
+                return fid
+        for b in self._boards:
+            if s == b["label"] or s == b["fid"]:
+                return b["fid"]
+        return NGA_BOARDS[0][1]
+
+    def board_label(self, fid):
+        """fid → 人看的名字（认不出来就把 fid 本身当名字，别显示空白）。"""
+        s = str(fid or "").strip()
+        for label, f in NGA_BOARDS:
+            if s == f:
+                return label
+        for b in self._boards:
+            if s == b["fid"]:
+                return b["label"]
+        return s
+
+    def boards(self, force=False):
+        """拉全量板块表：`[{"label", "fid", "group"}]`（按官方分类树的顺序）。
+
+        **不需要 Cookie**（2026-10-16 实测：200，661 个板块）。拉不到就退回短表——
+        换板块是件小事，拉不到全量不该让整页报错，但也不能假装拿到了。"""
+        if self._boards and not force:
+            return list(self._boards)
+        try:
+            raw = self.http.get_bytes(self.BOARDS_URL, ttl=TTL_DETAIL,
+                                      max_bytes=self.MAX_PAGE_BYTES, timeout=LIST_TIMEOUT)
+            data = _nga_parse(raw)
+        except Exception:
+            return [{"label": label, "fid": fid, "group": ""} for label, fid in NGA_BOARDS]
+        got = _nga_boards(data)
+        if got:
+            self._boards = got
+        return list(self._boards) if self._boards else [
+            {"label": label, "fid": fid, "group": ""} for label, fid in NGA_BOARDS]
 
     def image_base(self):
         return self.http.cache.img_dir if self.http.cache is not None else ""
@@ -911,8 +1024,9 @@ class NgaSource(RealSource):
         return str(base or "img.nga.cn/attachments").strip("/")
 
     def list(self, channel=None, cursor=None):
-        channel = channel if channel in self.FID else self.CHANNELS[0]
-        url = "%s/thread.php?fid=%s&__output=8" % (self.base_url, self.FID[channel])
+        fid = self.board_fid(channel)
+        channel = self.board_label(fid)
+        url = "%s/thread.php?fid=%s&__output=8" % (self.base_url, fid)
         data = self._json(url, TTL_LIST, "NGA 列表", timeout=LIST_TIMEOUT)
         posts = []
         for it in _nga_rows(data, "__T"):

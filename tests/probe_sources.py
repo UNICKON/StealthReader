@@ -459,15 +459,64 @@ check("要登录的来源没配 Cookie 时状态点明这一点（页脚就靠�
 
 print("\n=== 12. NGA（批次 D）：免登录进不去；贴上 Cookie 后按**真响应**解析 ===")
 check("NGA 标记为需要凭据", feed_sources.NgaSource.needs_auth is True)
-check("栏目只有网事杂谈（fid -7）", feed_sources.NgaSource.CHANNELS == ("网事杂谈",))
+check("栏目 = 板块短表（第一条是网事杂谈 fid -7）",
+      feed_sources.NgaSource.CHANNELS[0] == "网事杂谈"
+      and feed_sources.NgaSource.FID["网事杂谈"] == "-7",
+      feed_sources.NgaSource.CHANNELS[:3])
+check("短表里的 fid 全是字符串（官方接口两种类型都出现过，统一过）",
+      all(isinstance(v, str) and v for v in feed_sources.NgaSource.FID.values()),
+      sorted(set(type(v).__name__ for v in feed_sources.NgaSource.FID.values())))
+check("短表有十来个工位上会看的板块（不是一个）",
+      len(feed_sources.NgaSource.CHANNELS) >= 8, len(feed_sources.NgaSource.CHANNELS))
 na = feed_sources.NgaSource(FakeHttp(cache=MemCache()))
 check("没配 Cookie 时状态说得明白",
       "未配置" in na.auth_state() and "要登录" in na.auth_state(), na.auth_state())
+check("栏目名 → fid", (na.board_fid("晴风村"), na.board_fid("-7955747"), na.board_fid("不存在"))
+      == ("-7955747", "-7955747", "-7"), (na.board_fid("晴风村"), na.board_fid("不存在")))
+check("fid → 栏目名（认不出来就把 fid 本身当名字，不留空白）",
+      (na.board_label("-7"), na.board_label("999999")) == ("网事杂谈", "999999"),
+      (na.board_label("-7"), na.board_label("999999")))
+check("短表就在 boards() 的兜底里（拉不到全量也不至于只剩一个板块）",
+      [b["label"] for b in na.boards()][:2] == ["网事杂谈", "晴风村"],
+      [b["label"] for b in na.boards()][:3])
 try:
     na.list("网事杂谈", 0)
     check("连不上/没登录时如实抛错（不返回空列表假装成功）", False, "没抛")
 except FeedNetError as e:
     check("连不上/没登录时如实抛错（不返回空列表假装成功）", True, str(e))
+
+# 板块分类树：真响应裁了一半（7 个分类各留第一组前 8 条），形状照原样
+raw_cat = fixture("nga_category.json")
+if raw_cat:
+    nb = feed_sources.NgaSource(
+        FakeHttp(bytes_routes={"app_api.php": json.dumps(raw_cat).encode("utf-8")},
+                 cache=MemCache()), {"cookie": "ngaPassportUid=1"})
+    board_list = nb.boards()
+    flat = []
+    for _cat in raw_cat["result"]:
+        for _g in _cat["groups"]:
+            for _f in _g["forums"]:
+                flat.append((str(_f["name"]), str(_f["fid"]), str(_g["name"])))
+    check("（真夹具）分类树解出了全部板块条目", len(board_list) == len(flat),
+          (len(board_list), len(flat)))
+    check("（真夹具）条目的名字/fid/分组都对得上（含 fid 是整数的那些）",
+          [(b["label"], b["fid"], b["group"]) for b in board_list] == flat,
+          board_list[:2])
+    check("（真夹具）拉过全量之后 channels() 就是全量（界面里能滚能搜）",
+          len(nb.channels()) == len(board_list) and nb.channels()[0] == flat[0][0],
+          (len(nb.channels()), nb.channels()[:2]))
+    check("（真夹具）全量里的板块也能做 fid/名字 双向翻译",
+          nb.board_fid(flat[1][0]) == flat[1][1] and nb.board_label(flat[1][1]) == flat[1][0],
+          (nb.board_fid(flat[1][0]), flat[1][1]))
+    # 重复条目只留一条：官方树里有「手游评分版=863」这种同名同 fid 的重复
+    dup = feed_sources._nga_boards({"result": [{"groups": [{"name": "g", "forums": [
+        {"fid": 7, "name": "甲"}, {"fid": "7", "name": "甲"}, {"fid": 8, "name": "甲"},
+        {"fid": None, "name": "乙"}, {"fid": 9, "name": ""}]}]}]})
+    check("解析器：同名同 fid 去重、同名不同 fid 留着、空名字和空 fid 丢掉",
+          dup == [{"label": "甲", "fid": "7", "group": "g"},
+                  {"label": "甲", "fid": "8", "group": "g"}], dup)
+else:
+    skip("NGA 板块分类树", "缺 tests/fixtures/nga_category.json")
 
 # 真夹具：`record_fixtures.py nga` 用浏览器 Cookie 录的（列表、正文各裁过，老帖那条是原样 GBK）
 raw_ngal = fixture_bytes("nga_list.json")

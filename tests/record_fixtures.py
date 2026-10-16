@@ -246,6 +246,24 @@ def _trim_nga_list(obj, keep=6):
     return {"data": {"__T": out}}
 
 
+def _trim_nga_category(obj, groups=1, each=8):
+    """板块分类树：每个分类只留前 1 组、每组前 8 条（真响应里有 7 个分类 / 661 个板块）。
+
+    只留解析器用到的 `fid` / `name` / `info` / `is_forumlist` / `id` / `icon`，
+    外层的 `forum_icon_pre` / `appcolumn_notis` / `buff` 这些广告和图标前缀一概不留。
+    形状（含"fid 有时候是整数、有时候是字符串"这个坑）照原样保留。"""
+    out = []
+    for cat in (obj or {}).get("result") or []:
+        gs = []
+        for g in (cat.get("groups") or [])[:groups]:
+            fs = [{k: f.get(k) for k in ("fid", "name", "info", "is_forumlist", "id", "icon")}
+                  for f in (g.get("forums") or [])[:each]]
+            gs.append({"name": g.get("name"), "id": g.get("id"), "forums": fs})
+        out.append({"id": cat.get("id"), "_id": cat.get("_id"), "name": cat.get("name"),
+                    "groups": gs})
+    return {"code": (obj or {}).get("code"), "result": out}
+
+
 def _trim_nga_read(obj, keep=3, each=220):
     """正文只留前几楼、每楼前 220 字；用户表只留 `uid` + `username`。
 
@@ -536,6 +554,21 @@ def record(which):
                         print("  录到 nga_old_thread_403.json   %8d 字节（原样，GBK）" % len(raw3))
                     else:
                         print("  老帖这次不是 403（HTTP %s），没录那条" % status3)
+        # 板块分类树：**不要 Cookie**（跟上面两条不一样），所以放在 `if cred` 外面
+        # （`fetch_raw` 要一个 cred 字典，空字典就行：它会退回默认 UA、不带 Cookie）
+        raw4, status4 = fetch_raw(
+            "https://bbs.nga.cn/app_api.php?__lib=home&__act=category&_v=2", {},
+            {"Referer": "https://bbs.nga.cn/"})
+        if status4 == 200 and raw4:
+            try:
+                cat = json.loads(raw4.decode("utf-8", "replace"))
+            except Exception as e:
+                print("  板块分类树不是能读的 JSON（%s），跳过" % e)
+            else:
+                save_raw("nga_category.json", _trim_nga_category(cat),
+                         note="已裁剪：7 个分类各留第一组前 8 条（真响应里有 661 个板块）")
+        else:
+            print("  板块分类树没拿到（HTTP %s）" % status4)
     if which in ("", "xhs"):
         print("小红书")
         cred = auth_for("xhs")
