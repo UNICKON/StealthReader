@@ -156,13 +156,26 @@ class AnkiClient:
         （库里 1,195 张到期、默认上限 200 时，findCards('is:due') 会一直说 1195，
         而复习器其实早就"今日已清"，两个真相源会打架）。
         父牌组的数已经含子牌组（Anki 自己的口径），所以选父牌组就是对整棵子树复习。
+
+        **一个牌组查不到计数，整批就全废**（实测：本机「系统默认」单独查也报
+        "Deck counts unavailable."，而 26 个牌组一起查会因为它整批失败——"列出牌组"
+        按钮当时就是这么变成"读不到牌组"的）。所以批量失败后逐个重试，查得到的收下、
+        查不到的跳过；调用方按"这个牌组没有计数"处理，不要当整体失败。
         """
         if decks is None:
             decks = self.deck_names()
         decks = list(decks)
         if not decks:
             return {}
-        raw = self.invoke("getDeckStats", {"decks": decks}) or {}
+        raw = {}
+        try:
+            raw = self.invoke("getDeckStats", {"decks": decks}) or {}
+        except AnkiCommandError:
+            for name in decks:                       # 有坏牌组就整批废掉，退化成逐个查
+                try:
+                    raw.update(self.invoke("getDeckStats", {"decks": [name]}) or {})
+                except AnkiCommandError:
+                    continue
         out = {}
         for item in raw.values():
             out[item.get("name", "")] = {
@@ -468,6 +481,12 @@ class AnkiClient:
         """还原我们藏起来的 Anki 窗口。
 
         **默认不激活**：`SW_SHOW`/`SW_RESTORE` 会把 Anki 亮到最前面，正好把假文档暴露给同事。
+
+        两个实测过的坑（都出现过"还原了但人还是看不见"）：
+        1. 藏之前 Anki 是**最小化**的话，`SW_SHOWNOACTIVATE` 不会把它展开——还原完还得查一次
+           `IsIconic`，仍然缩着就 `SW_RESTORE`（这一步会激活窗口，但"看不见"比"跳一下"严重）。
+        2. 最小化窗口的 `GetWindowRect` 是 `@-16000,-16000` 这种垃圾值，所以位置体检查的是
+           `GetWindowPlacement` 的 `rcNormalPosition`；整个落在屏幕外就搬回主屏居中。
         """
         if not self._anki_was_concealed:
             return False
@@ -475,7 +494,84 @@ class AnkiClient:
         self._anki_was_concealed = False
         if not hwnd:
             return False
-        ctypes.windll.user32.ShowWindow(hwnd, 9 if activate else 4)   # SW_RESTORE / SW_SHOWNOACTIVATE
+        u32 = ctypes.windll.user32
+        u32.ShowWindow(hwnd, 9 if activate else 4)   # SW_RESTORE / SW_SHOWNOACTIVATE
+        if not u32.IsWindowVisible(hwnd) or u32.IsIconic(hwnd):
+            u32.ShowWindow(hwnd, 9)                  # 还缩着/还藏着：展开
+        self.ensure_on_screen(hwnd)
+        return True
+
+    def ensure_anki_visible(self, activate=False):
+        """无条件把 Anki 的主窗口叫回屏幕内（托盘菜单 / 上次被杀之后的兜底）。
+
+        和 `reveal_anki` 不同：不看"是不是我们藏的"，只看结果——看不见就显示，在屏幕外就搬回来。
+        """
+        hwnd = self.anki_hwnd()
+        if not hwnd:
+            return False
+        u32 = ctypes.windll.user32
+        moved = False
+        if not u32.IsWindowVisible(hwnd) or u32.IsIconic(hwnd):
+            u32.ShowWindow(hwnd, 9 if activate else 4)
+            if not u32.IsWindowVisible(hwnd) or u32.IsIconic(hwnd):
+                u32.ShowWindow(hwnd, 9)
+            moved = True
+        if self.ensure_on_screen(hwnd):
+            moved = True
+        self._anki_was_concealed = False
+        return moved
+
+    def ensure_on_screen(self, hwnd):
+        """窗口整个落在所有显示器之外时，搬回主屏工作区居中。返回是否搬过。
+
+        判据用 `GetWindowPlacement().rcNormalPosition`（最小化窗口的 `GetWindowRect` 是垃圾值），
+        并逐显示器判交集——双屏下摆在副屏是正常的，不该被搬走。
+        """
+        u32 = ctypes.windll.user32
+
+        class WINDOWPLACEMENT(ctypes.Structure):
+            _fields_ = [("length", wt.UINT), ("flags", wt.UINT), ("showCmd", wt.UINT),
+                        ("ptMinPosition", wt.POINT), ("ptMaxPosition", wt.POINT),
+                        ("rcNormalPosition", wt.RECT)]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT),
+                        ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
+        wp = WINDOWPLACEMENT()
+        wp.length = ctypes.sizeof(WINDOWPLACEMENT)
+        if not u32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
+            return False
+        r = wp.rcNormalPosition
+
+        hit = [False]
+        MONITORENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HANDLE, wt.HANDLE,
+                                            ctypes.POINTER(wt.RECT), wt.LPARAM)
+
+        def _cb(hmon, _hdc, _lprc, _lp):
+            mi = MONITORINFO()
+            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            if u32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                m = mi.rcMonitor
+                if (r.right > m.left and r.left < m.right
+                        and r.bottom > m.top and r.top < m.bottom):
+                    hit[0] = True
+                    return False
+            return True
+
+        u32.EnumDisplayMonitors(0, None, MONITORENUMPROC(_cb), 0)
+        if hit[0]:
+            return False                                    # 在某个显示器上，别动它
+        work = wt.RECT()
+        u32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0)   # SPI_GETWORKAREA 主屏
+        avail_w = work.right - work.left
+        avail_h = work.bottom - work.top
+        w = max(640, min(r.right - r.left, avail_w - 80))
+        h = max(480, min(r.bottom - r.top, avail_h - 80))
+        x = work.left + (avail_w - w) // 2
+        y = work.top + (avail_h - h) // 2
+        SWP_NOZORDER, SWP_SHOWWINDOW = 0x0004, 0x0040
+        u32.SetWindowPos(hwnd, 0, x, y, w, h, SWP_NOZORDER | SWP_SHOWWINDOW)
         return True
 
     # 兼容旧名（批次 1 探针用过）

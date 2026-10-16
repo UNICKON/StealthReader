@@ -227,4 +227,19 @@
   （`max(13, 字号 × 1.15)`，默认字号下 16px），不透明度 0.61 → 0.92，加一层同色薄衬
   （`QWidget#reviewBar`）与按钮边框，并把 Anki `nextReviews` 里的 U+2066/U+2069
   方向控制符剔掉（否则渲染成豆腐块）。页脚总高 50px（原 27px），正文仍让出 737px。
+- **页脚不许影响窗口尺寸**：按钮横向策略改用 `QSizePolicy.Ignored`——`Fixed` 时四个按钮的
+  `minimumSizeHint`（456px）会经页脚传给 top-level，进背诵瞬间窗口从 429 被顶到 494。
+  空间不够时按**页脚真实字号**（`review_bar_font_px()`，不是 `review_bar.fontMetrics()`
+  那个控件的默认 12px）量出文字宽度，超了就把按钮缩成 `1 重来`、提示缩成 `空格翻面`；
+  缩放时只重跑 `fill_review_bar()`（文字），不重套样式表。
+- **`getDeckStats` 是"一坏全坏"的**：批量里任何一个牌组查不到计数，整批报
+  "Deck counts unavailable."（本机默认牌组「系统默认」就是这种）。`deck_stats()` 因此
+  批量失败后退化成逐个查、跳过查不到的（设置里显示 `（计数不可用）`）——
+  否则"列出牌组"按钮会整体变成"读不到牌组"。
+- **藏 Anki 要能自己爬回来**：① 还原时若 `IsIconic` 仍为真（藏之前它就是最小化的），
+  `SW_SHOWNOACTIVATE` 展开不了，要补 `SW_RESTORE`；② 位置体检查
+  `GetWindowPlacement().rcNormalPosition`（最小化窗口的 `GetWindowRect` 是
+  `@-16000,-16000` 的垃圾值），逐显示器判交集，屏幕外才搬回主屏；③ 进背诵时落
+  `anki_concealed_by_us` 标记、还原成功清掉，启动时据此体检（进程被强杀也能恢复），
+  托盘另有「叫回 Anki 窗口」。
 

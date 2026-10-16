@@ -1854,7 +1854,11 @@ class SettingsDialog(QDialog):
             return
         labels = []
         for name in names:
-            info = stats.get(name) or {}
+            info = stats.get(name)
+            if info is None:
+                # 个别牌组（本机是「系统默认」）Anki 就是不给计数，照实说，别写"待复习 0"
+                labels.append(f"{name}　（计数不可用）")
+                continue
             due = int(info.get("new", 0)) + int(info.get("learn", 0)) + int(info.get("review", 0))
             labels.append(f"{name}　（待复习 {due}）")
         current = self.anki_deck_input.text().strip()
@@ -2063,6 +2067,8 @@ class StealthReader(QWidget):
 
         self.refresh_hotkeys()
         self.register_session_notification()   # 锁屏解锁后靠它主动重挂热键
+        # 上次进程要是被强杀（任务管理器/崩溃），Anki 可能还停在我们藏起来的状态：延迟一会儿体检一次
+        QTimer.singleShot(1500, self.recover_anki_window)
 
         # 尝试恢复上次打开的本地文件
         if self.config.get("last_local_file") and os.path.exists(self.config["last_local_file"]):
@@ -2953,7 +2959,10 @@ class StealthReader(QWidget):
             _btn = QPushButton("")
             _btn.setFocusPolicy(Qt.NoFocus)
             _btn.setCursor(Qt.ArrowCursor)
-            _btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            # 横向 Ignored：按钮文字再长也不许把窗口顶宽。实测 Fixed 时四个按钮（456px）
+            # 会让 top-level 的 minimumSizeHint 从 69 变成 494，进背诵的瞬间窗口被 429→494。
+            # Ignored 之后最小值是 0，空间够时仍按 sizeHint 正常显示（文字自动取舍见 fill_review_bar）。
+            _btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             _btn.clicked.connect(lambda _=False, n=_i + 1: self.review_grade_button(n))
             btn_row.addWidget(_btn)
             self.review_buttons.append(_btn)
@@ -3092,6 +3101,7 @@ class StealthReader(QWidget):
         tray_menu = QMenu()
         tray_menu.addAction("显示/隐藏（老板键）").triggered.connect(self.toggle_window)
         tray_menu.addAction("隐形背诵（Anki 卡片）").triggered.connect(self.toggle_review_mode)
+        tray_menu.addAction("叫回 Anki 窗口").triggered.connect(self.rescue_anki_window)
         tray_menu.addAction("打开本地书籍…").triggered.connect(self.open_local_file_dialog)
         tray_menu.addAction("设置…").triggered.connect(self.open_settings)
         tray_menu.addSeparator()
@@ -3503,9 +3513,47 @@ class StealthReader(QWidget):
                 pass
             try:
                 self.review_client.reveal_anki()   # 还原也不激活：绝不把 Anki 亮到最前面
+                self.forget_anki_concealed()
             except Exception:
                 pass
         self.stop_anki_worker()
+
+    def forget_anki_concealed(self):
+        """清掉"我们把 Anki 窗口藏起来了"的落盘标记（确认已经放出来时调）。"""
+        if self.config.pop("anki_concealed_by_us", None) is not None:
+            try:
+                self.save_config()
+            except Exception:
+                pass
+
+    def recover_anki_window(self):
+        """启动时的窗口体检：上次进程要是被强杀的，Anki 可能还停在我们藏起来的状态。
+
+        有落盘标记就**显示**它；没标记只做位置体检（整个落在屏幕外才搬回来），
+        免得把人自己最小化的 Anki 无端弹出来。
+        """
+        try:
+            client = self.anki_client()
+            if self.config.get("anki_concealed_by_us"):
+                log_event("上次没来得及还原 Anki 窗口，启动补一次")
+                client.ensure_anki_visible()
+                self.forget_anki_concealed()
+            else:
+                hwnd = client.anki_hwnd()
+                if hwnd and client.ensure_on_screen(hwnd):
+                    log_event("Anki 窗口在屏幕外，已搬回主屏")
+        except Exception as e:
+            log_event(f"Anki 窗口体检失败: {type(e).__name__}")
+
+    def rescue_anki_window(self):
+        """托盘手动兜底：把 Anki 窗口从"被藏着 / 最小化 / 屏幕外"救回来。"""
+        try:
+            client = self.anki_client()
+            client.ensure_anki_visible(activate=True)
+            self.forget_anki_concealed()
+            log_event("手动叫回 Anki 窗口")
+        except Exception as e:
+            log_event(f"叫回 Anki 窗口失败: {type(e).__name__}: {e}")
 
 
     def review_status_text(self):
@@ -3612,7 +3660,10 @@ class StealthReader(QWidget):
         self.review_timer.start()          # 卡片交互键全在窗口内（keyPressEvent），不装任何钩子
         if self.config.get("anki_conceal", True):
             try:
-                self.anki_client().conceal_anki()   # 纯 win32 调用，不排 Anki 的队
+                if self.anki_client().conceal_anki():   # 纯 win32 调用，不排 Anki 的队
+                    # 落盘标记：这个进程要是被任务管理器/崩溃干掉，下次启动还知道要把它放出来
+                    self.config["anki_concealed_by_us"] = True
+                    self.save_config()
             except Exception:
                 pass
         self.apply_counts(r.get("stats"), r.get("reviewed"))
@@ -3625,7 +3676,7 @@ class StealthReader(QWidget):
 
         上一版是 `font_size - 3` = 11px + 0.61 不透明度，真人反馈"下方的字太小而且看不清"，
         实测只有正文的 59% 大小。同色底色的好处是浅色主题与深色主题都成立。"""
-        size = max(13, int(round(int(self.config.get("font_size", 14)) * 1.15)))
+        size = self.review_bar_font_px()
         color = QColor(200, 200, 200)
         try:
             base = QColor(str(self.config.get("text_color") or ""))
@@ -3660,6 +3711,30 @@ class StealthReader(QWidget):
         if not visible:
             return
         self.apply_review_bar_style()
+        self.fill_review_bar()
+
+    def review_bar_font_px(self):
+        """页脚实际用的字号（px）——`apply_review_bar_style` 的那条换算，只此一处定义。"""
+        return max(13, int(round(int(self.config.get("font_size", 14)) * 1.15)))
+
+    def _review_bar_metrics(self):
+        """按**页脚真实字号**量文字宽度。
+
+        不能用 `review_bar.fontMetrics()`：那是页脚控件自己的默认字体（约 12px），
+        而按钮上的字是样式表给的 16px——量出来偏小，判"够宽"于是永远不触发紧凑模式（踩过）。
+        """
+        font = QFont(self.config.get("font_family", "Microsoft YaHei"))
+        font.setPixelSize(self.review_bar_font_px())
+        return QFontMetrics(font)
+
+    def fill_review_bar(self):
+        """页脚的文字内容：学习计划 + 四个评分按钮 + 右侧提示。
+
+        单独拆出来是为了**缩放时能只重跑文字**（不重套样式表）：窗口窄了就只写
+        "1 重来"，把 Anki 给的间隔舍掉——宁可少给一点信息，也不能让页脚把窗口顶宽。
+        """
+        if not hasattr(self, "review_bar") or not self.review_bar.isVisible():
+            return
         s = self.review_session or {}
         card = s.get("card") or {}
         buttons = list(card.get("buttons") or [1, 2, 3, 4])
@@ -3667,11 +3742,19 @@ class StealthReader(QWidget):
         labels = REVIEW_BUTTON_LABELS.get(len(buttons))
         if labels is None:
             labels = ["重来", "困难", "良好", "容易"][:len(buttons)]
+        full, compact = [], []
+        for i in range(len(buttons)):
+            name = labels[i] if i < len(labels) else str(buttons[i])
+            when = REVIEW_TEXT_JUNK.sub("", str(times[i])) if i < len(times) else ""
+            full.append(f"{buttons[i]} {name}" + (f" {when}" if when else ""))
+            compact.append(f"{buttons[i]} {name}")
+        fm = self._review_bar_metrics()
+        need = sum(fm.horizontalAdvance(t) + 22 for t in full) + 6 * max(0, len(full) - 1) + 16
+        # 判据只用窗口宽度：进模式那一刻页脚自己的 width() 还是旧值（实测会误判成"够宽"）
+        narrow = self.width() < need
         for i, btn in enumerate(self.review_buttons):
             if i < len(buttons):
-                name = labels[i] if i < len(labels) else str(buttons[i])
-                when = REVIEW_TEXT_JUNK.sub("", str(times[i])) if i < len(times) else ""
-                btn.setText(f"{buttons[i]} {name}" + (f" {when}" if when else ""))
+                btn.setText(compact[i] if narrow else full[i])
                 btn.setVisible(True)
                 btn.setEnabled(bool(s.get("shown")))
             else:
@@ -3688,12 +3771,12 @@ class StealthReader(QWidget):
             tail.append(f"本次 {s['counted']}")
         self.review_plan_label.setText("　".join(x for x in [plan, " · ".join(tail)] if x))
         if not card:
-            hint = "今天清完了"
+            hint, hint_short = "今天清完了", "今天清完了"
         elif s.get("shown"):
-            hint = "1-4 评分 · R 重听 · U 撤销"
+            hint, hint_short = "1-4 评分 · R 重听 · U 撤销", "1-4 评分"
         else:
-            hint = "空格翻面 · Ctrl+D 收起"
-        self.review_hint_label.setText(hint)
+            hint, hint_short = "空格翻面 · Ctrl+D 收起", "空格翻面"
+        self.review_hint_label.setText(hint_short if narrow else hint)
 
     def apply_counts(self, stats, reviewed):
         """把 Anki 给的计数装进会话（数据都由后台线程取来，这里一次网都不连）。
@@ -3815,7 +3898,8 @@ class StealthReader(QWidget):
             if self.anki_worker is not None:
                 # 也走后台：退出的那 60ms 不该卡住界面。退出程序时 quit_app 会再同步兜一次，
                 # 保证 Anki 窗口绝对不会留在"藏起来"的状态。
-                self.anki_call(lambda: (client.leave_review(), client.reveal_anki()), key="leave")
+                self.anki_call(lambda: (client.leave_review(), client.reveal_anki()),
+                               on_ok=lambda _r: self.forget_anki_concealed(), key="leave")
         if restore and snap:
             # 安全文档正盖在卡片上（而且就是从背诵切过来的）：一起收掉，直接回到书。
             # 否则会走进"从安全文档退出→回到卡片"的分支，而背诵这时已经退出了，留下一屏卡片残影。
@@ -4427,6 +4511,7 @@ class StealthReader(QWidget):
             keep = self.text_edit.verticalScrollBar().value()
             self.render_card()      # 里面会 apply_card_style() → apply_page_margins()，几何跟着新高度
             self.text_edit.verticalScrollBar().setValue(keep)
+            self.fill_review_bar()  # 页脚文字跟着新宽度取舍（只重跑文字，不重套样式表）
             return
         self.repage_to(self.current_top_offset() if anchor is None else anchor)
 
