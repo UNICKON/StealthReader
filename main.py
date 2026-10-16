@@ -2821,8 +2821,9 @@ class StealthReader(QWidget):
             except Exception:
                 self.marks_shortcuts = []
 
-    # 热键"按住不放"最多认多久（秒）：超过它就算松键回调丢了，当下一次新按下（见 hotkey_is_repeat）
-    HOTKEY_REPEAT_MAX = 2.0
+    # 热键"重复流"中断多久算这一下按完了（秒）。按住不放时系统每 30~60 毫秒来一次重复，
+    # 而 Windows 的**首次重复延迟**大约 0.5 秒——所以这个值必须比 0.5 大，1.0 秒足够稳。
+    HOTKEY_REPEAT_MAX = 1.0
 
     def hotkey_is_repeat(self, tag, key_str):
         """同一下按键只认第一次。**True = 这一下是按住不放的系统重复，丢掉。**
@@ -2843,9 +2844,11 @@ class StealthReader(QWidget):
         if gate is None:
             return False
         if gate.get(tag) == trig:
-            # 万一下面的松键回调丢了（钩子被系统摘掉、进程被杀、锁屏期间松的手），
-            # 绝不能把热键永久锁死——超过 2 秒就当这是新的一下，宁可多切一次。
+            # 只要"重复流"还在（每次重复的间隔远小于这个阈值），就把闸门续期——
+            # 按住多久都只算一下。真的停下来了（松手，或松键回调丢了之后键早就不动了），
+            # 阈值一过，下一次按下就是新的一下：绝不会把热键永久锁死。
             if time.time() - self._hotkey_gate_at.get(tag, 0.0) < self.HOTKEY_REPEAT_MAX:
+                self._hotkey_gate_at[tag] = time.time()
                 return True
         gate[tag] = trig
         self._hotkey_gate_at[tag] = time.time()
