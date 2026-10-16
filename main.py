@@ -22,6 +22,7 @@ from urllib.parse import unquote
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QAction, QDialog, QFormLayout, QLineEdit, QSlider,
                              QSpinBox, QDoubleSpinBox, QPushButton, QSystemTrayIcon, QStyle,
+                             QGridLayout,
                              QColorDialog, QCheckBox, QHBoxLayout,
                              QFrame, QTextEdit, QShortcut, QListWidget,
                              QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog,
@@ -2961,11 +2962,18 @@ class StealthReader(QWidget):
             _btn.setCursor(Qt.ArrowCursor)
             # 横向 Ignored：按钮文字再长也不许把窗口顶宽。实测 Fixed 时四个按钮（456px）
             # 会让 top-level 的 minimumSizeHint 从 69 变成 494，进背诵的瞬间窗口被 429→494。
-            # Ignored 之后最小值是 0，空间够时仍按 sizeHint 正常显示（文字自动取舍见 fill_review_bar）。
+            # Ignored 之后最小值是 0；空间不够不改文字、而是折行（见 _layout_review_buttons）。
             _btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             _btn.clicked.connect(lambda _=False, n=_i + 1: self.review_grade_button(n))
-            btn_row.addWidget(_btn)
             self.review_buttons.append(_btn)
+        # 按钮放在一个网格里：窗口宽就是一行四个，窄就折成两行两个——**间隔信息绝不省**
+        # （"1 重来 <1 分"是这张卡按下去的结果，比"排成一行"重要得多）。
+        self.review_buttons_area = QWidget()
+        self.review_btn_grid = QGridLayout(self.review_buttons_area)
+        self.review_btn_grid.setContentsMargins(0, 0, 0, 0)
+        self.review_btn_grid.setSpacing(4)
+        self._review_bar_per_row = 0
+        btn_row.addWidget(self.review_buttons_area)
         self.review_hint_label = QLabel("")
         self.review_hint_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
         self.review_hint_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -3672,10 +3680,11 @@ class StealthReader(QWidget):
 
     def apply_review_bar_style(self):
         """页脚的字号/颜色跟着阅读设置走：字号贴近正文（约 1.15 倍换算，不再是小一号的 11px），
-        不透明度提到 0.92，再加一层**和文字同色**的极淡底色——压在壁纸/IDE 上也读得清。
+        不透明度 0.92。
 
-        上一版是 `font_size - 3` = 11px + 0.61 不透明度，真人反馈"下方的字太小而且看不清"，
-        实测只有正文的 59% 大小。同色底色的好处是浅色主题与深色主题都成立。"""
+        **整条页脚不设底色**（真人反馈："这个区块不要用背景色，太显眼"）——它就是正文下面
+        一行小字加几个按钮，压在文档上不该看出来是个面板。按钮只留一圈很淡的描边，
+        够看出"这是个按钮"就行；悬停也只把描边点亮，不填色。"""
         size = self.review_bar_font_px()
         color = QColor(200, 200, 200)
         try:
@@ -3687,14 +3696,13 @@ class StealthReader(QWidget):
         r, g, b = color.red(), color.green(), color.blue()
         c = f"rgba({r},{g},{b},235)"
         dim = f"rgba({r},{g},{b},110)"
-        scrim = f"rgba({r},{g},{b},30)"
-        edge = f"rgba({r},{g},{b},85)"
+        edge = f"rgba({r},{g},{b},60)"
         self.review_bar.setStyleSheet(
-            f"QWidget#reviewBar {{ background: {scrim}; border-radius: 4px; }}"
+            f"QWidget#reviewBar {{ background: transparent; }}"
             f"QLabel {{ color: {c}; font-size: {size}px; background: transparent; }}"
             f"QPushButton {{ color: {c}; font-size: {size}px; background: transparent;"
-            f" border: 1px solid {edge}; border-radius: 4px; padding: 3px 8px; }}"
-            f"QPushButton:hover {{ background: {scrim}; }}"
+            f" border: 1px solid {edge}; border-radius: 3px; padding: 3px 8px; }}"
+            f"QPushButton:hover {{ border-color: {c}; }}"
             f"QPushButton:disabled {{ color: {dim}; border-color: {dim}; }}")
 
     def update_review_bar(self):
@@ -3728,10 +3736,14 @@ class StealthReader(QWidget):
         return QFontMetrics(font)
 
     def fill_review_bar(self):
-        """页脚的文字内容：学习计划 + 四个评分按钮 + 右侧提示。
+        """页脚的文字内容：学习计划 + 评分按钮 + 右侧提示。
 
-        单独拆出来是为了**缩放时能只重跑文字**（不重套样式表）：窗口窄了就只写
-        "1 重来"，把 Anki 给的间隔舍掉——宁可少给一点信息，也不能让页脚把窗口顶宽。
+        单独拆出来是为了**缩放时能只重跑文字**（不重套样式表）。
+
+        窗口窄了怎么办：**折行，不砍间隔**。`1 重来 <1 分` 里那个 `<1 分` 是这张卡按下去
+        的结果（真人明确说"这个很重要"），所以窄窗宁可把四个按钮排成两行（429 宽下是 2+2），
+        也不把间隔省掉；同时给右侧提示留出位置，宁可再多折一行，也不让提示被挤成半截。
+        只有当"一行连着间隔的一个按钮都放不下"（窗口极窄）时，才退到不带间隔的短文字。
         """
         if not hasattr(self, "review_bar") or not self.review_bar.isVisible():
             return
@@ -3742,19 +3754,35 @@ class StealthReader(QWidget):
         labels = REVIEW_BUTTON_LABELS.get(len(buttons))
         if labels is None:
             labels = ["重来", "困难", "良好", "容易"][:len(buttons)]
-        full, compact = [], []
+        full, short = [], []
         for i in range(len(buttons)):
             name = labels[i] if i < len(labels) else str(buttons[i])
             when = REVIEW_TEXT_JUNK.sub("", str(times[i])) if i < len(times) else ""
             full.append(f"{buttons[i]} {name}" + (f" {when}" if when else ""))
-            compact.append(f"{buttons[i]} {name}")
+            short.append(f"{buttons[i]} {name}")
+        # 提示分三档：放得下就全写，放不下退一档，最后一档只剩动作——
+        # 关键是不出现"半截字"（"空格翻面 · Ctrl+D 收"这种），也不要动不动就把提醒整句拿掉。
+        if not card:
+            hints = ("今天清完了", "今天清完了", "今天清完了")
+        elif s.get("shown"):
+            hints = ("1-4 评分 · R 重听 · U 撤销", "1-4 评分 R 重听", "1-4 评分")
+        else:
+            hints = ("空格翻面 · Ctrl+D 收起", "空格翻面 Ctrl+D", "空格翻面")
+        hint_short = hints[-1]
         fm = self._review_bar_metrics()
-        need = sum(fm.horizontalAdvance(t) + 22 for t in full) + 6 * max(0, len(full) - 1) + 16
-        # 判据只用窗口宽度：进模式那一刻页脚自己的 width() 还是旧值（实测会误判成"够宽"）
-        narrow = self.width() < need
+        avail = max(140, self.width() - 22)
+        maxw = max([fm.horizontalAdvance(t) + 22 for t in full] or [0])
+        compact = maxw > avail          # 最后一招：连一个带间隔的按钮都放不下
+        texts = short if compact else full
+        if compact:
+            maxw = max([fm.horizontalAdvance(t) + 22 for t in short] or [maxw])
+        # 给提示留位（按中间那档量，最多留三分之一宽度），再算一行放几个
+        reserve = min(fm.horizontalAdvance(hints[1]) + 12, avail // 3)
+        per_row = max(1, min(len(buttons), int((max(120, avail - reserve) + 4) // (maxw + 4)))) if maxw else 1
+        self._layout_review_buttons(per_row, len(buttons))
         for i, btn in enumerate(self.review_buttons):
             if i < len(buttons):
-                btn.setText(compact[i] if narrow else full[i])
+                btn.setText(texts[i])
                 btn.setVisible(True)
                 btn.setEnabled(bool(s.get("shown")))
             else:
@@ -3770,13 +3798,46 @@ class StealthReader(QWidget):
         if s.get("counted"):
             tail.append(f"本次 {s['counted']}")
         self.review_plan_label.setText("　".join(x for x in [plan, " · ".join(tail)] if x))
-        if not card:
-            hint, hint_short = "今天清完了", "今天清完了"
-        elif s.get("shown"):
-            hint, hint_short = "1-4 评分 · R 重听 · U 撤销", "1-4 评分"
-        else:
-            hint, hint_short = "空格翻面 · Ctrl+D 收起", "空格翻面"
-        self.review_hint_label.setText(hint_short if narrow else hint)
+        # 最后一行还剩多少地方：从长到短挑第一句放得下的（而不是让它被挤成半截字）
+        used_last = (len(buttons) - 1) % per_row + 1 if buttons else 0
+        room = avail - used_last * (maxw + 4)
+        hint = hint_short
+        if not compact:
+            for candidate in hints:                     # 6px 就够：网格本身还有 4px 间距
+                if room >= fm.horizontalAdvance(candidate) + 6:
+                    hint = candidate
+                    break
+        self.review_hint_label.setText(hint)
+
+    def _layout_review_buttons(self, per_row, count):
+        """把 count 个评分按钮按每行 per_row 个重排（窄窗折行，不省间隔）。
+
+        只在每行个数真的变了才动布局——缩放时每 50ms 就会进一次这里，反复搬控件会闪。
+        """
+        per_row = max(1, min(count, per_row))
+        if getattr(self, "_review_bar_per_row", None) == per_row:
+            return
+        self._review_bar_per_row = per_row
+        grid = self.review_btn_grid
+        while grid.count():
+            grid.takeAt(0)
+        row = col = 0
+        for i, btn in enumerate(self.review_buttons):
+            if i >= count:
+                break
+            grid.addWidget(btn, row, col)
+            col += 1
+            if col >= per_row:
+                col = 0
+                row += 1
+        # 提示跟在最后一行的按钮后面；那一行正好排满就挤在同一行的末尾（省一行高度），
+        # 而不是另起一行——页脚每多一行就多吃掉 24px 正文高度。
+        if col == 0 and row > 0:
+            row -= 1
+            col = per_row
+        grid.addWidget(self.review_hint_label, row, col, 1, 1)
+        for c in range(per_row + 1):
+            grid.setColumnStretch(c, 1 if c == col else 0)
 
     def apply_counts(self, stats, reviewed):
         """把 Anki 给的计数装进会话（数据都由后台线程取来，这里一次网都不连）。
