@@ -55,10 +55,33 @@ class RealSource(SourceAdapter):
     needs_auth = False
     base_url = ""
 
-    def __init__(self, http):
+    def __init__(self, http, auth=None):
         self.http = http
+        # 浏览器里复制来的 {"cookie": "...", "user_agent": "..."}（来自 feed_auth.json）。
+        # 来源自己决定怎么用；没配就是空字典，"未配置"是一条正常状态，不是错误。
+        self.auth = dict(auth or {})
         self.last_error = ""
         self.served_stale = False      # 这次给的是不是"断网时顶上的旧缓存"
+
+    # -- 凭据 -------------------------------------------------------------
+    @property
+    def has_auth(self):
+        return bool(str(self.auth.get("cookie") or "").strip())
+
+    def auth_state(self):
+        """给界面看的四个字：**配了没配**比"这个站要不要登录"更有用。
+
+        知乎的列表免登录、正文要登录，所以"要不要"是一个来源内部就分层的概念；
+        而"你贴没贴 Cookie"永远是当前状态，页脚/详情里要说的就是它。"""
+        if self.has_auth:
+            return "Cookie 已配置"
+        return "Cookie 未配置（这个来源要登录）" if self.needs_auth else "免登录"
+
+    def auth_note(self):
+        """配了没配、配了管不管用——详情页里那句实话要用这个拼。"""
+        if not self.has_auth:
+            return "（这个站的正文/评论要登录，可以在应用目录的 feed_auth.json 里贴一次 Cookie）"
+        return "（已经贴了 Cookie，但接口这次没给——见下面的原文）"
 
     # -- 公共 -------------------------------------------------------------
     def image_base(self):
@@ -527,19 +550,90 @@ class ZhihuSource(RealSource):
         return posts, None                  # 热榜就这一页，没有分页
 
     def detail(self, post, cursor=None):
-        """知乎给不了正文：把列表现成的那段真摘要摆出来，再直说一句为什么只有这么点。"""
+        """知乎给不了正文：把列表现成的那段真摘要摆出来，再直说一句为什么只有这么点。
+
+        **配了 Cookie 就真去试一次**——不然"要登录"这句话永远只是我的猜测，人也就不知道
+        自己贴的 Cookie 到底管不管用。试的结果照实写出来：拿到了就显示正文，
+        401/403 就说清楚（网页接口除了 Cookie 还要前端算 `x-zse-96` 签名）。"""
         out = Post.from_dict(post.to_dict())
         body = []
         if out.excerpt:
             body.append(Block(kind=BLOCK_P, text=out.excerpt))
-        body.append(Block(kind=BLOCK_QUOTE,
-                          text="知乎的正文和评论要登录才给（接口返回 401/403），"
-                               "这里只显示热榜页给出的摘要。按 O 打开原帖看全文。"))
+        got, why = None, ""
+        if self.has_auth:
+            got, why = self._fetch_answer(str(post.id))
+        if got is not None:
+            out.body = self._localize_images(got, limit=8) + [
+                Block(kind=BLOCK_QUOTE, text="以上正文来自知乎（用的是 feed_auth.json 里的 Cookie）。")]
+            return out, None
+        note = ("知乎的正文和评论要登录才给（接口返回 401/403），这里只显示热榜页给出的摘要。"
+                "按 O 打开原帖看全文。")
+        if self.has_auth and why:
+            note = ("贴了 Cookie 也还是没拿到正文：%s。"
+                    "知乎网页接口除了 Cookie 还要前端算 x-zse-96 签名，光有 Cookie 往往不够；"
+                    "这里先显示热榜页给出的摘要，按 O 打开原帖看全文。" % why)
+        body.append(Block(kind=BLOCK_QUOTE, text=note))
         out.body = body
         return out, None
 
+    def _answer(self, qid):
+        """向知乎要这个问题的头一条回答。返回 (answer dict 或 None, 失败原因)。"""
+        url = ("%s/api/v4/questions/%s/answers"
+               "?include=data[*].content,excerpt,voteup_count,comment_count,author.name"
+               "&limit=1&offset=0&sort_by=default" % (self.base_url, qid))
+        try:
+            data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎正文",
+                                      headers={"x-requested-with": "fetch"}, timeout=LIST_TIMEOUT)
+        except FeedNetError as e:
+            return None, str(e)
+        except Exception as e:
+            return None, type(e).__name__
+        items = (data or {}).get("data") if isinstance(data, dict) else None
+        if not items:
+            return None, "接口没回内容（可能改版了）"
+        first = items[0] if isinstance(items, list) else items
+        if not isinstance(first, dict):
+            return None, "接口回的形状不认识"
+        return first, ""
+
+    def _fetch_answer(self, qid):
+        """正文：返回 (blocks 或 None, 失败原因)。"""
+        first, why = self._answer(qid)
+        if first is None:
+            return None, why
+        blocks = feed_mod.blocks_from_html(first.get("content") or "")
+        if not blocks:
+            return None, "接口回了内容但正文是空的（这条回答可能只开放摘要）"
+        return blocks, ""
+
     def comments(self, post, cursor=None):
-        return [], None                     # 拿不到就是拿不到，不造评论
+        """评论：配了 Cookie 才试。回答 id 要先从正文接口拿（同一个请求有缓存，不会多下一次）。"""
+        if not self.has_auth:
+            return [], None
+        first, _why = self._answer(str(post.id))
+        if not first or not first.get("id"):
+            return [], None
+        url = ("%s/api/v4/answers/%s/comments?limit=20&offset=0&order=normal&status=open"
+               % (self.base_url, first["id"]))
+        try:
+            data = self.http.get_json(url, ttl=TTL_LIST, what="知乎评论", timeout=LIST_TIMEOUT)
+        except Exception:
+            return [], None                 # 评论拿不到就如实为空，不编
+        items = (data or {}).get("data") if isinstance(data, dict) else None
+        out = []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            au = (it.get("author") or {}).get("name") if isinstance(it.get("author"), dict) else ""
+            ts = feed_mod.parse_time(it.get("created_time"))
+            out.append(Comment(
+                cid=str(it.get("id") or len(out)),
+                author=str(au or ""),
+                created=feed_mod.human_time(ts),
+                score=int(it.get("vote_count") or 0),
+                body=feed_mod.blocks_from_html(it.get("content") or "", max_blocks=40),
+            ))
+        return out, None
 
 
 class WeiboSource(RealSource):
@@ -609,14 +703,139 @@ class WeiboSource(RealSource):
         body = []
         if out.score:
             body.append(Block(kind=BLOCK_P, text="热度 %s（微博热搜榜）" % feed_mod._num(out.score)))
-        body.append(Block(kind=BLOCK_QUOTE,
-                          text="微博的正文和评论要登录才给（移动端接口返回 432、网页接口要前端签名），"
-                               "这里只给热搜词条。按 O 去微博搜这个词看原帖。"))
+        note = ("微博的正文和评论要登录才给（移动端接口返回 432、网页接口要前端签名），"
+                "这里只给热搜词条。按 O 去微博搜这个词看原帖。")
+        if self.has_auth:
+            # 不替微博打包票：贴的 Cookie 能不能让正文接口放行，我没有实测过，就不写"能"或"不能"。
+            note += "（已经贴了 Cookie，但这一层还没接正文接口——它另外要前端签名，能不能过要单独试。）"
+        body.append(Block(kind=BLOCK_QUOTE, text=note))
         out.body = body
         return out, None
 
     def comments(self, post, cursor=None):
         return [], None                           # 拿不到就是拿不到，不造评论
+
+
+class NgaSource(RealSource):
+    """NGA（艾泽拉斯国家地理）。**免登录完全进不去**，必须贴浏览器 Cookie。
+
+    2026-10-16 实测：`thread.php?fid=-7&__output=8` 返回 **HTTP 403 + GBK 的
+    `{"error":{"0":"未登录"}}`**（连 `__output=8` 这条"给程序看的"出口也一样），
+    首页直接写着游客不能访问。所以这个来源默认关闭，写完等 Cookie 到位再验。
+
+    接口形状按 NGA 公开的 `__output=8` 约定写（社区里长期在用）：
+      - 列表 `thread.php?fid=<fid>&__output=8` → `data.__T` 是帖子的字典（键 "0"、"1"…）；
+      - 正文 `read.php?tid=<tid>&__output=8` → `data.__T` 是楼主帖、`data.__R` 是回复。
+    **没验过的东西不当成验过**：解析写成"认不出来就如实说认不出来"，
+    夹具一到手（`tests/check_auth.py` 会把响应存到临时目录）就按真响应收紧。
+    """
+
+    key = "nga"
+    label = "NGA"
+    base_url = "https://bbs.nga.cn"
+    needs_auth = True                  # 这个是真的要登录：列表都进不去
+    CHANNELS = ("网事杂谈",)
+    FID = {"网事杂谈": "-7"}
+
+    def channels(self):
+        return list(self.CHANNELS)
+
+    def image_base(self):
+        return self.http.cache.img_dir if self.http.cache is not None else ""
+
+    def list(self, channel=None, cursor=None):
+        channel = channel if channel in self.FID else self.CHANNELS[0]
+        url = "%s/thread.php?fid=%s&__output=8" % (self.base_url, self.FID[channel])
+        data = self._get(url, TTL_LIST, "NGA 列表", timeout=LIST_TIMEOUT)
+        rows = self._rows(data, "__T")
+        posts = []
+        for it in rows:
+            tid = it.get("tid")
+            if not tid:
+                continue
+            ts = feed_mod.parse_time(it.get("postdate") or it.get("lastpost"))
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=channel, pid=str(tid),
+                title=feed_mod.strip_html(it.get("subject") or ""),
+                author=str(it.get("author") or ""),
+                created=feed_mod.human_time(ts), ts=ts,
+                score=0,                            # NGA 列表不给"赞"这个数
+                n_comments=max(0, int(it.get("replies") or 0)), comment_label="回复",
+                excerpt="",
+                url="%s/read.php?tid=%s" % (self.base_url, tid),
+                tags=[str(it.get("type"))] if it.get("type") else [],
+            ))
+        posts = [p for p in posts if p.title]
+        posts.sort(key=lambda p: (p.ts or 0), reverse=True)
+        return posts, None
+
+    def detail(self, post, cursor=None):
+        url = "%s/read.php?tid=%s&__output=8" % (self.base_url, post.id)
+        data = self._get(url, TTL_DETAIL, "NGA 正文")
+        out = Post.from_dict(post.to_dict())
+        head = self._rows(data, "__T")
+        # 楼主帖可能在 __T 里，也可能是 __R 的第 0 条（两种都见过，所以两种都认）
+        first = head[0] if head else {}
+        if not first.get("content"):
+            replies = self._rows(data, "__R")
+            first = replies[0] if replies else first
+        if first.get("subject"):
+            out.title = feed_mod.strip_html(first["subject"])
+        if first.get("author"):
+            out.author = str(first["author"])
+        ts = feed_mod.parse_time(first.get("postdate"))
+        if ts:
+            out.ts, out.created = ts, feed_mod.human_time(ts)
+        out.body = self._localize_images(_nga_blocks(first.get("content") or ""), limit=8)
+        if not out.body:
+            out.body = [Block(kind=BLOCK_QUOTE,
+                              text="这条帖子的正文没取到（可能要在浏览器里登录一次 NGA 再复制 Cookie）。")]
+        return out, None
+
+    def comments(self, post, cursor=None):
+        url = "%s/read.php?tid=%s&__output=8" % (self.base_url, post.id)
+        data = self._get(url, TTL_LIST, "NGA 回复")
+        rows = self._rows(data, "__R")
+        out = []
+        for it in rows[1:] if len(rows) > 1 else []:
+            ts = feed_mod.parse_time(it.get("postdate"))
+            body = _nga_blocks(it.get("content") or "")
+            if not body:
+                continue
+            out.append(Comment(
+                cid=str(it.get("pid") or it.get("lou") or len(out)),
+                author=str(it.get("author") or ""),
+                created=feed_mod.human_time(ts),
+                score=0,                       # NGA 回复没有分数
+                body=body,
+            ))
+        return out, None                       # NGA 是"引用"式楼层，没有真正的层级，就按平铺给
+
+    @staticmethod
+    def _rows(data, key):
+        """把 `data.__T` / `data.__R` 那种"数字键字典"收成列表。认不出来就返回空列表。"""
+        node = ((data or {}).get("data") or {}) if isinstance(data, dict) else {}
+        block = node.get(key)
+        if isinstance(block, dict):
+            items = [block[k] for k in sorted(block.keys(), key=lambda x: str(x))]
+        elif isinstance(block, list):
+            items = block
+        else:
+            items = []
+        return [it for it in items if isinstance(it, dict)]
+
+
+def _nga_blocks(html, limit=40):
+    """NGA 的正文是 HTML 里夹 BBCode（`[quote]` / `[b]` / `[img]`）。先做最小清理再交给通用解析。
+
+    只处理"不处理就会看着别扭"的那几种标记，不做完整 BBCode 实现——
+    认不出来的标记原样留着也比猜错强。"""
+    text = str(html or "")
+    text = re.sub(r"\[img\](.*?)\[/img\]", lambda m: '<img src="%s"/>' % m.group(1), text,
+                  flags=re.I | re.S)
+    text = re.sub(r"\[quote\](.*?)\[/quote\]", r"\1\n", text, flags=re.I | re.S)
+    text = re.sub(r"\[/?[a-z=*\u4e00-\u9fff][^\]]{0,40}\]", "", text)   # 剩下的 [b] [/b] [color=x] 丢掉
+    return feed_mod.blocks_from_html(text, max_blocks=limit)
 
 
 class MixSource(SourceAdapter):
@@ -736,7 +955,7 @@ def build_real_sources(cache_root=None, config=None, log=None):
     made = []
     for key, cls in (("ithome", IthomeSource), ("v2ex", V2exSource),
                      ("linuxdo", DiscourseSource), ("zhihu", ZhihuSource),
-                     ("weibo", WeiboSource)):
+                     ("weibo", WeiboSource), ("nga", NgaSource)):
         if key not in enabled:
             continue
         cred = auth.get(key) if isinstance(auth.get(key), dict) else {}
@@ -744,7 +963,7 @@ def build_real_sources(cache_root=None, config=None, log=None):
                     cookies=_cookies_from(cred.get("cookie")),
                     user_agent=cred.get("user_agent") or feed_net.UA,
                     headers={"Referer": cls.base_url + "/"})
-        src = cls(http)
+        src = cls(http, cred)
         src.needs_auth = bool(getattr(cls, "needs_auth", False))
         made.append(src)
 

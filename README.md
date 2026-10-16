@@ -359,6 +359,12 @@ pyinstaller -F -w -i read.ico -n "StealthReader" main.py
     （移动端接口返 432、网页接口要前端签名），所以详情页给热度 + 一句实话。
     它**默认不开**（`feed_sources` 里手动加 `"weibo"` 才出现）——微博的风控是这几个站里最紧的，
     单独一个开关，想关就关，不影响别的来源。`O` 打开的是这个词条的微博搜索页。
+  - **NGA**（默认关，要 Cookie）：免登录**完全进不去**——`thread.php?fid=-7&__output=8`
+    返回 403，返回体是 **GBK** 的 `{"error":{"0":"1:未登录"}}`（连"给程序看的"那个出口也一样），
+    首页直接写着游客不能访问。所以它不进默认列表，代码按 NGA 公开的 `__output=8` 约定写好了
+    （列表 `__T`、正文 `__T`+`__R`、正文里的 `[quote]`/`[img]` 这类标记做最小清理），
+    **但没验过的东西我不当验过**：解析写的是"认不出来就如实说认不出来"，
+    等 `tests/check_auth.py` 把真响应存下来再收紧。
   - **全部来源（混流）**：默认页。默认那几个站**并行**取数再按时间合流，每个来源每页分额（12 条一页、
     每个站最多一半），所以一个站刷得再快也不会霸占整页，另一个站的帖子一条都不会被丢掉。
     某个站挂了只会在页脚写一句"X 个来源没连上"，其余内容照常看。
@@ -367,13 +373,23 @@ pyinstaller -F -w -i read.ico -n "StealthReader" main.py
   上一次拿到的列表比一片空白有用。刚失败过的来源 60 秒内不再去撞，混流的等待时间就是最慢那个站
   （不是四个站相加）。
 - **登录凭据**：`feed_auth.json`（gitignore，**绝不进版本库**），格式
-  `{"linuxdo": {"cookie": "...", "user_agent": "..."}}`；没这个文件就当一个都没配，
-  该站连不上时页脚照实说。第一轮只读：不发帖、不点赞、不转发。
+  `{"linuxdo": {"cookie": "...", "user_agent": "..."}, "nga": {"cookie": "..."}}`；
+  没这个文件就当一个都没配，该站连不上时页脚照实说（要登录又没配的来源，页脚会写一句
+  "这个来源要 Cookie"，免得对着空白猜原因）。**贴完怎么知道管不管用**——有个自检：
+  ```powershell
+  & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\check_auth.py          # 只查配了的
+  & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\check_auth.py --all    # 连没配的也看一眼
+  ```
+  它会一个站一个站地报 `HTTP 401/403/200`、返回体的顶层键、以及一句人话结论（"被 Cloudflare
+  盾拦住" / "要登录（403 未登录）" / "通了"）。**带 Cookie 拿到的响应只写到 `%TEMP%`**，
+  不写进仓库——那里面有你的用户名和头像地址。第一轮只读：不发帖、不点赞、不转发。
 - **配置项**：`feed_key`（默认 `ctrl+alt+f`）、`feed_lowkey`（默认关；打开则社区页不出图、
   图片位置显示 `[图]`，工位上比老板键更低调的一道保险）、`feed_sources`（默认
   `["ithome","v2ex","linuxdo","zhihu"]`；写成 `[]` 就是"这些外部站点全关，只看离线示例"，
-  想只留一个站就写成 `["zhihu"]`；**微博不在默认里**，要就自己加 `"weibo"`——它是这几个站里
-  风控最紧的一档，单独一个开关，关掉不影响别的来源）、`feed_source`（记住上次停在哪个来源）。
+  想只留一个站就写成 `["zhihu"]`；**微博和 NGA 不在默认里**，要就自己加 `"weibo"` / `"nga"`——
+  它们一个风控最紧、一个要登录，单独开关，关掉不影响别的来源；来源在界面里的顺序是固定的
+  （混流 → IT之家 → V2EX → linux.do → 知乎 → 微博 → NGA → 示例），不跟着配置串走）、
+  `feed_source`（记住上次停在哪个来源）。
 - **离线示例源**（`feed_demo/posts.json`，12 条帖子 / 9 个栏目 / 2 张图）：不联网、不需要 Cookie，
   按 `Ctrl+Alt+F` 就能看到完整效果（列表、详情、多层评论、图片、折叠）。断网时它就是兜底。
 - **验收是能重跑的**（`tests/`，见 `tests/README.md`）：`probe_sources.py` 与 `probe_ui.py`
@@ -383,10 +399,19 @@ pyinstaller -F -w -i read.ico -n "StealthReader" main.py
   & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\probe_sources.py
   & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\probe_ui.py
   ```
-- **已知边界**：知乎的**正文和评论**、微博的**正文和评论**都要登录，排在批次 C / E（贴 Cookie
-  后再接详情/评论）；NGA / Chiphell 免登录完全进不去（NGA 游客 403、Chiphell 对所有路径返
-  非标准 HTTP 567 的防爬占位页）、小红书免登录也不可行（`/explore` 是空壳 SPA、
-  `api/sns/web/v1/homefeed` 返 500），都要 Cookie 或另想办法；微信读书排在批次 F（接进读书管线）。
+- **已知边界（以及为什么还停在这）**：以下几个站都要浏览器 Cookie，**探测结论都写在
+  `docs/community-feed-design.md` 里**，凭据到手就能接着做——
+  - **知乎**：热榜免登录；**正文/评论要登录**。代码已经会去试（详情页里配了 Cookie 就真发一次请求，
+    试到了就显示正文、试不到就把失败原因写在页面上），但知乎网页接口除了 Cookie **还要前端算
+    `x-zse-96` 签名**，光有 Cookie 往往不够——所以这条要等真 Cookie 试一次才有结论。
+  - **linux.do**：Cookie 里要有 `cf_clearance`，且 **UA 必须和浏览器一致**（自检会把这一点写出来）。
+  - **微博**：热搜免登录（已接）；正文/评论要登录，移动端接口直接返 432。
+  - **Chiphell**：对 `/`、`/portal.php`、`forum.php?mod=guide&view=hot`、`forum.php?mod=rss&fid=36`
+    以及移动端变体**一律返非标准 HTTP 567 的防爬占位页**——脚本基本过不去，有 Cookie 也未必。
+  - **小红书**：免登录不可行（`/explore` 是 36 KB 的空壳 SPA、`api/sns/web/v1/homefeed` 返 500）。
+  - **微信读书**（批次 F：书架 → 章节 → 喂进本地的书管线）：不打 Cookie 直连
+    `weread.qq.com/web/shelf/sync` 得到的是 `{"errCode":-2010,"errMsg":"用户不存在"}`，
+    也就是"没登录"。管线要等 Cookie 到位再动。
   演示数据里 12 条帖子的原帖地址是空的，所以 `O` 对示例数据没反应（真实来源都有真地址）。
 
 ## 🔧 稳定性（本机增补，非上游功能）

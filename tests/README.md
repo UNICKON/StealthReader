@@ -9,15 +9,19 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 & $py -X utf8 tests\probe_sources.py     # 来源层逻辑（零网络）
 & $py -X utf8 tests\probe_ui.py          # 界面集成（零网络，离屏 Qt 走完整窗）
 & $py -X utf8 tests\probe_live.py        # 真机联网冒烟（会真的发请求，跑完自清缓存）
+
+& $py -X utf8 tests\check_auth.py        # 凭据自检：我贴的 Cookie 到底管不管用（联网）
+& $py -X utf8 tests\check_auth.py --all  # 连没配 Cookie 的也查一遍（看基线是什么样）
 ```
 
 ## 三个探针各管什么
 
 | 探针 | 网络 | 管什么 |
 |---|---|---|
-| `probe_sources.py` | **零** | 每个来源的 列表 / 正文 / 评论 映射、统计单位、缓存与断网回落、混流分额与转发、结构不变量 |
+| `probe_sources.py` | **零** | 每个来源的 列表 / 正文 / 评论 映射、统计单位、缓存与断网回落、混流分额与转发、凭据管线、状态码→人话的映射、结构不变量 |
 | `probe_ui.py` | **零** | 真适配器 + 替身 Http 走完整窗：混流席位、`[` `]` 切来源、`,` `.` 切栏目、详情、`O` 开原帖、退出不动书的状态、两个"结果晚到"的竞态 |
 | `probe_live.py` | 真 | 真站能不能拿到、缓存第二次是否 0 秒、混流是否并行、整窗真拉一遍 |
+| `check_auth.py` | 真 | 贴了 Cookie 之后一个站一个站地验证：HTTP 码、返回体顶层键、一句人话结论 |
 
 **"零网络"是可以验证的，不是靠自觉**：`probe_sources.py` / `probe_ui.py` 开头把
 `requests.get / post / Session.get` 全换成抛异常，而所有适配器拿到的是一个读夹具的替身 Http。
@@ -26,6 +30,10 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 `probe_ui.py` 离屏跑（`QT_QPA_PLATFORM=offscreen`），会短暂开一个窗口对象然后销毁；
 它把 `save_annotations`、`log_event`、全局热键、`os.startfile` 全换成桩，
 并且停掉进度保存定时器——**不会写 config.json，不会动阅读进度，不会真的开浏览器**。
+
+`check_auth.py` 只读、不发帖不点赞；**带 Cookie 拿到的响应只写到
+`%TEMP%\sr_auth_probe\`，绝不写进仓库**（那里面有你的用户名、头像地址这些东西）。
+要拿它当夹具，先自己看一遍再手动搬过来。
 
 ## 夹具（`fixtures/`）
 
@@ -42,12 +50,25 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 | `zhihu_hot_list.json` | 知乎 `api.zhihu.com/topstory/hot-list` |
 | `weibo_hotsearch.json` | 微博 `weibo.com/ajax/side/hotSearch` |
 | `discourse_latest.json` / `discourse_topic.json` | **meta.discourse.org**（官方 Discourse 站） |
+| `nga_unauth_403.json` | NGA **没登录时**的真响应（GBK，`1:未登录`） |
+| `linuxdo_cf.html` | linux.do 的 Cloudflare `Just a moment...` 拦截页 |
+| `chiphell_567.html` | Chiphell 的非标准 567 防爬占位页 |
+| `zhihu_unauth_answers.json` | 知乎正文接口**没登录时**的真响应（`code 40362` 风控） |
+| `weread_unauth_shelf.json` | 微信读书书架接口**没登录时**的真响应（`errCode -2010`） |
 
-最后一行的来源要看清楚：**不是 linux.do**。linux.do 前面挂着 Cloudflare 盾，本机录不到
-（403/超时），而 Discourse 适配器（回复树、最后回复时间、广告帖兜底）没有夹具就等于没人盯，
-所以退回官方的 meta.discourse.org 录——两边是同一种 Discourse，结构一致。
+后五个是**"失败"的真响应**，专门用来验"连不上/没登录时页面说的是实话"——这类路径最容易
+被写成"假装成功"，所以更要拿真响应盯住。
+
+`discourse_*` 那一行的来源要看清楚：**不是 linux.do**。linux.do 前面挂着 Cloudflare 盾，
+本机录不到（403/超时），而 Discourse 适配器（回复树、最后回复时间、广告帖兜底）没有夹具就等于
+没人盯，所以退回官方的 meta.discourse.org 录——两边是同一种 Discourse，结构一致。
 linux.do 特有的那部分（`cf_clearance` + UA 必须一致）不在这个夹具的覆盖范围里，
-真机能不能过只能靠 `probe_live.py` 和实际使用时的页脚反馈。
+真机能不能过只能靠 `check_auth.py` 和实际使用时的页脚反馈。
 
 录不到的站**不写空文件**：那个站对应的探针章节自己会 `skip`（并在结果里报"跳过 N 项"），
 所以夹具目录里"缺哪个文件"本身就是一条信息。
+
+**手写形状的例外**：探针里有几条明确标着"（手写形状）"的检查——那些是"按公开的接口约定手写
+一小段响应"，用来验 NGA 的 `__T`/`__R` 收表、BBCode 清理、以及"Cookie 管用时知乎正文的解析"
+这类**我自己的解析逻辑**。它们只证明"我的代码自洽"，**不证明"代码符合那个站"**——
+真正的证明要等 `check_auth.py` 把真响应存下来，再按真形状收紧。

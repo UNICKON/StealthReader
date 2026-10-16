@@ -356,6 +356,155 @@ if raw_z:
           (not zp[0].excerpt) or any(b.text == zp[0].excerpt for b in zd2.body),
           [b.text[:24] for b in zd2.body])
 
+print("\n=== 11. 凭据管线：配了没配、配了管不管用，都要说清楚 ===")
+
+
+class FakeResp(object):
+    """只带 feed_net 会看的那几个字段，用来把**真响应体**喂进真实的错误映射。"""
+
+    def __init__(self, status, body, headers=None):
+        self.status_code = status
+        self.content = body
+        self.headers = headers or {}
+        try:
+            self.text = body.decode("utf-8", "replace")
+        except Exception:
+            self.text = ""
+
+
+class FakeSession(object):
+    def __init__(self, resp):
+        self.resp = resp
+
+    def get(self, *a, **k):
+        return self.resp
+
+
+def mapped(url, status, body, headers=None):
+    """走真实的 Http.get_json（含状态码→人话的映射），返回那句人话。"""
+    h = feed_net.Http(cache=feed_net.Cache(os.path.join(TMP_CACHE, "err")))
+    h._session = lambda: FakeSession(FakeResp(status, body, headers))
+    try:
+        h.get_json(url, ttl=60, what="t")
+        return "（没抛错）"
+    except FeedNetError as e:
+        return str(e)
+
+
+nga_body = open(os.path.join(FIX, "nga_unauth_403.json"), "rb").read()
+cf_body = open(os.path.join(FIX, "linuxdo_cf.html"), "rb").read()
+chip_body = open(os.path.join(FIX, "chiphell_567.html"), "rb").read()
+check("NGA 的 GBK 403 被认成'要登录'（不是含糊的'被拒绝'）",
+      mapped("https://bbs.nga.cn/thread.php?fid=-7&__output=8", 403, nga_body) == "要登录（403）",
+      mapped("https://bbs.nga.cn/thread.php?fid=-7&__output=8", 403, nga_body))
+check("Cloudflare 的'Just a moment'认成盾，不是普通 403",
+      "Cloudflare" in mapped("https://linux.do/latest.json", 403, cf_body),
+      mapped("https://linux.do/latest.json", 403, cf_body))
+check("Chiphell 的非标准 567 如实报出来",
+      "567" in mapped("https://www.chiphell.com/", 567, chip_body),
+      mapped("https://www.chiphell.com/", 567, chip_body))
+check("_says_login 也认 \\uXXXX 转义写法",
+      feed_net._says_login(FakeResp(403, b'{"error":{"0":"\\u672a\\u767b\\u5f55"}}')) is True)
+check("普通 403（比如知乎的风控）不会被误判成'要登录'",
+      feed_net._says_login(FakeResp(403, open(os.path.join(
+          FIX, "zhihu_unauth_answers.json"), "rb").read())) is False)
+
+empty = feed_sources.IthomeSource(FakeHttp({"newslistpageget": raw_i}, cache=MemCache()))
+check("没配凭据时 has_auth 为假、状态是'免登录'",
+      empty.has_auth is False and empty.auth_state() == "免登录")
+withauth = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache()),
+                                    {"cookie": "z_c0=fake", "user_agent": "UA"})
+check("配了 Cookie 就认（知乎这条靠它去试正文）",
+      withauth.has_auth is True and withauth.auth_state() == "Cookie 已配置",
+      withauth.auth_state())
+noauth = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache()))
+check("没配 Cookie 时状态如实说'未配置'", noauth.auth_state() == "免登录"
+      and noauth.has_auth is False, noauth.auth_state())
+check("没配时代码里那句实话告诉人去哪贴 Cookie", "feed_auth.json" in noauth.auth_note(),
+      noauth.auth_note())
+check("配了之后的措辞不替接口打包票", "没给" in withauth.auth_note() or "原文" in withauth.auth_note())
+check("要登录的来源没配 Cookie 时状态点明这一点（页脚就靠这句）",
+      feed_sources.NgaSource(FakeHttp(cache=MemCache())).auth_state()
+      == "Cookie 未配置（这个来源要登录）")
+
+print("\n=== 12. NGA（批次 D 的一半）：免登录进不去，要 Cookie；解析认不出来就认认不出来 ===")
+check("NGA 标记为需要凭据", feed_sources.NgaSource.needs_auth is True)
+check("栏目只有网事杂谈（fid -7）", feed_sources.NgaSource.CHANNELS == ("网事杂谈",))
+na = feed_sources.NgaSource(FakeHttp(cache=MemCache()))
+check("没配 Cookie 时状态说得明白",
+      "未配置" in na.auth_state() and "要登录" in na.auth_state(), na.auth_state())
+try:
+    na.list("网事杂谈", 0)
+    check("没登录时如实抛错（不返回空列表假装成功）", False, "没抛")
+except FeedNetError as e:
+    check("没登录时如实抛错（不返回空列表假装成功）", True, str(e))
+na2 = feed_sources.NgaSource(FakeHttp(
+    {"thread.php": {"error": {"0": "1:未登录"}}, "read.php": {"error": {"0": "1:未登录"}}},
+    cache=MemCache()))
+try:
+    na2.list("网事杂谈", 0)
+    check("接口回 error 时也不会把 error 当帖子", len(na2.list("网事杂谈", 0)[0]) == 0)
+except Exception:
+    check("接口回 error 时也不会把 error 当帖子", True)
+# 下面这两块用的是**按 NGA 公开约定手写**的响应形状（不是真夹具）——
+# 所以它们只验"我的解析写得自洽"，真响应一到手（tests/check_auth.py 会存下来）要按真形状收紧。
+rows = feed_sources.NgaSource._rows(
+    {"data": {"__T": {"0": {"tid": 11, "subject": "a"}, "1": {"tid": 12, "subject": "b"}},
+              "__ROWS": 2}}, "__T")
+check("（手写形状）__T 的数字键字典收成列表", [r["tid"] for r in rows] == [11, 12], rows)
+check("（手写形状）认不出来时给空列表，不炸", feed_sources.NgaSource._rows({}, "__T") == [])
+bbc = feed_sources._nga_blocks('看这个[img]https://x/a.jpg[/img]<br/>正文[b]加粗[/b]'
+                               '[quote]引用的话[/quote]结束')
+kinds = [b.kind for b in bbc]
+texts = " ".join(b.text for b in bbc)
+check("（手写形状）[img] 变成图片块、[quote] 里的字留着、[b] 这类标记丢掉",
+      feed_mod.BLOCK_IMG in kinds and "引用的话" in texts
+      and "[b]" not in texts and "[/quote]" not in texts,
+      (kinds, texts[:60]))
+
+print("\n=== 13. 知乎：贴了 Cookie 才去试正文，试不到就说试不到 ===")
+zlist = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache()))
+zp0, _ = zlist.list("热榜", 0)
+d_noauth, _ = zlist.detail(zp0[0])
+check("没配 Cookie：详情是'真摘要 + 去贴 Cookie'的实话",
+      any("摘要" in b.text or len(b.text) > 40 for b in d_noauth.body)
+      and any("登录" in b.text for b in d_noauth.body),
+      [b.text[:26] for b in d_noauth.body])
+zdeny = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, fail=["answers"], cache=MemCache()),
+                                 {"cookie": "z_c0=expired"})
+d_deny, _ = zdeny.detail(zp0[0])
+deny_txt = " ".join(b.text for b in d_deny.body)
+check("配了 Cookie 但接口拦住：实话里带上了失败原因，而不是假装没配",
+      "贴了 Cookie" in deny_txt and "连接超时" in deny_txt, deny_txt[-70:])
+zok = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z, "answers": {"data": [
+    {"id": 123, "content": "<p>这是用 Cookie 拿到的正文。</p><p>第二段。</p>",
+     "voteup_count": 9, "comment_count": 2}]}}, cache=MemCache()), {"cookie": "z_c0=ok"})
+d_ok, _ = zok.detail(zp0[0])
+ok_txt = " ".join(b.text for b in d_ok.body)
+check("（手写形状）Cookie 管用时正文真的显示出来了",
+      "这是用 Cookie 拿到的正文" in ok_txt and "第二段" in ok_txt, ok_txt[:50])
+check("（手写形状）并且标明正文是从哪来的", "Cookie" in ok_txt, ok_txt[-40:])
+zcmt = feed_sources.ZhihuSource(FakeHttp({
+    "hot-list": raw_z,
+    # 顺序有讲究：评论地址里也带 "answers" 这个词，所以 "/comments" 必须排在前面先匹配
+    "/comments": {"data": [{"id": 1, "content": "同意", "vote_count": 3,
+                            "author": {"name": "某人"}, "created_time": 1700000000}]},
+    "answers": {"data": [{"id": 77, "content": "<p>x</p>"}]},
+}, cache=MemCache()), {"cookie": "z_c0=ok"})
+d_c, _ = zcmt.comments(zp0[0])
+check("（手写形状）评论接口通了就显示评论", len(d_c) == 1 and d_c[0].author == "某人",
+      [(c.author, c.body[0].text) for c in d_c])
+check("（手写形状）评论拿不到时如实为空", zdeny.comments(zp0[0]) == ([], None))
+
+print("\n=== 14. 来源登记认出了新来源 ===")
+on_nga = feed_sources.build_real_sources(
+    cache_root=TMP_CACHE, config={"feed_sources": ["nga", "zhihu"]}, log=None)
+# 顺序由代码里的登记表决定（固定的，不跟着配置串走），这样 `[`/`]` 的顺序永远可预期
+check("写进 feed_sources 就能带出 NGA", [s.key for s in on_nga] == ["mix", "zhihu", "nga"],
+      [s.key for s in on_nga])
+check("NGA 在列表里被标成需要凭据",
+      next(s for s in on_nga if s.key == "nga").needs_auth is True)
+
 # ---------------------------------------------------------------- 收尾
 shutil.rmtree(TMP_CACHE, ignore_errors=True)
 shutil.rmtree(MemCache.img_dir, ignore_errors=True)

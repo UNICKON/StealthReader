@@ -3702,6 +3702,9 @@ class StealthReader(QWidget):
             bits.append("%d 个来源没连上（%s）" % (len(errs), errs[0]))
         if stale:
             bits.append("用的是上次的缓存")
+        # "要登录但没配"是一条状态，不是错误：页脚说一句，免得人对着 NGA 那一片空白猜原因。
+        if getattr(src, "needs_auth", False) and not getattr(src, "has_auth", False):
+            bits.append("这个来源要 Cookie（feed_auth.json）")
         return "；".join(bits)
 
     def feed_status_text(self):

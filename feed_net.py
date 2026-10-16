@@ -152,6 +152,24 @@ class Cache(object):
         return n
 
 
+def _says_login(r):
+    """返回体里是不是在说"要登录"。utf-8 / gbk / \\uXXXX 转义三种写法都认。
+
+    NGA 是 GBK（`{"error":{"0":"1:未登录"}}`），知乎是 utf-8，还有一些站把中文转义成 \\uXXXX。"""
+    raw = (r.content or b"")[:4000]
+    for enc in ("utf-8", "gbk"):
+        try:
+            text = raw.decode(enc, "ignore")
+        except Exception:
+            continue
+        low = text.lower()
+        if "未登录" in text or "请登录" in text or "not logged" in low or "login required" in low:
+            return True
+    escaped = raw.decode("ascii", "ignore").lower()
+    return ("\\u672a\\u767b\\u5f55" in escaped          # 未登录
+            or "\\u8bf7\\u767b\\u5f55" in escaped)      # 请登录
+
+
 class Http(object):
     """带缓存和限速的取数器。每个来源一个实例（各自可以带自己的 Cookie/UA）。"""
 
@@ -198,7 +216,15 @@ class Http(object):
             raise FeedNetError("被 Cloudflare 盾拦住（要贴浏览器 Cookie）")
         if r.status_code == 401:
             raise FeedNetError("要登录（401）")
+        if r.status_code == 432:
+            # 微博的"要登录"用的是这个非标准码（实测 m.weibo.cn 返回 432 + 空体）
+            raise FeedNetError("要登录（432）")
         if r.status_code == 403:
+            # 403 有好几种：Cloudflare 盾（上面那条）、"没登录"、以及"没权限"。
+            # 看一眼返回体再下结论——NGA 免登录时返回的就是 GBK 的 {"error":{"0":"1:未登录"}}，
+            # 所以这里 utf-8 和 gbk 都试一遍（只按 utf-8 解会解成乱码，关键词就命不中了）。
+            if _says_login(r):
+                raise FeedNetError("要登录（403）")
             raise FeedNetError("被拒绝（403）")
         if r.status_code == 404:
             raise FeedNetError("接口不存在（404）")
