@@ -610,26 +610,46 @@ class _MONITORINFO(ctypes.Structure):
 
 def window_on_real_screen(hwnd):
     """窗口是否落在某块"真实存在"的屏幕上。用 Win32 的 MonitorFromWindow 问系统，
-    不经过 Qt——Qt 会缓存过期屏幕布局，拔过显示器后会把窗口安排到不存在的屏幕坐标里。"""
+    不经过 Qt——Qt 会缓存过期屏幕布局，拔过显示器后会把窗口安排到不存在的屏幕坐标里。
+
+    必须声明原型：不声明时 ctypes 把 HWND 按 32 位 int 传、把 HMONITOR 按 32 位 int 收，
+    64 位下句柄低 32 位碰巧为 0 就会被判成"不在任何屏幕上"，于是窗口被平白挪走。"""
     try:
         user32 = ctypes.windll.user32
-        return bool(user32.MonitorFromWindow(hwnd, 0))  # MONITOR_DEFAULTTONULL
+        return bool(user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 0))  # MONITOR_DEFAULTTONULL
     except Exception:
         return True  # 校验失败时别乱动窗口
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+def window_rect(hwnd):
+    """窗口的物理像素矩形 (left, top, right, bottom)，失败返回 None。"""
+    try:
+        user32 = ctypes.windll.user32
+        r = _RECT()
+        if not user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(r)):
+            return None
+        return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        return None
 
 
 def force_window_to_primary(hwnd, margin=60):
     """Win32 物理挪回主屏工作区左上角（绕过 Qt 可能过期的坐标映射，挪完 Qt 会自己同步回来）。"""
     try:
         user32 = ctypes.windll.user32
-        hmon = user32.MonitorFromWindow(hwnd, 1)  # MONITOR_DEFAULTTOPRIMARY
+        hmon = user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 1)  # MONITOR_DEFAULTTOPRIMARY
         mi = _MONITORINFO()
         mi.cbSize = ctypes.sizeof(mi)
-        if not hmon or not user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+        if not hmon or not user32.GetMonitorInfoW(ctypes.c_void_p(hmon), ctypes.byref(mi)):
             return False
         x, y = mi.rcWork[0] + margin, mi.rcWork[1] + margin
         SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
-        user32.SetWindowPos(hwnd, 0, x, y, 0, 0,
+        user32.SetWindowPos(ctypes.c_void_p(hwnd), None, x, y, 0, 0,
                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
         return True
     except Exception:
@@ -2880,6 +2900,9 @@ class StealthReader(QWidget):
                 if msg.message == WM_WTSSESSION_CHANGE and msg.wParam in (WTS_SESSION_UNLOCK, WTS_SESSION_LOGON):
                     log_event("检测到解锁/登录，稍后重挂全局热键")
                     QTimer.singleShot(800, lambda: self.recover_hotkeys("解锁/登录后"))
+                    # 解锁时 Windows 可能已经把窗口挪到桌面外（锁屏期间显示器断电/分辨率抖动），
+                    # 窗口当时若还开着，顺手拉回它该在的位置；藏着的话等下次 show 自动处理
+                    QTimer.singleShot(900, self.ensure_on_screen)
         except Exception:
             pass
         return super().nativeEvent(eventType, message)
@@ -3046,15 +3069,56 @@ class StealthReader(QWidget):
         except Exception:
             pass
 
-    def ensure_on_screen(self):
-        """召唤/启动后确保窗口真的在屏幕上。Qt 缓存过期屏幕布局（拔过显示器的机器）
-        会把窗口安排到不存在的屏幕坐标里，看起来就是"唤不出来"。用 Win32 真实布局校验。"""
+    def sync_qt_pos_from_win32(self, hwnd):
+        """Win32 挪完窗口后，把 Qt 缓存的坐标改成同一个点。
+
+        Qt 用的是逻辑像素，系统缩放 150%/200% 时和物理像素差一个倍数。不同步的话
+        Qt 还揣着旧位置，下一次 show / 样式刷新就把窗口拉回屏幕外——日志里
+        "已强制挪回主屏"会在每次显示时重复出现，就是没同步留下的病根。"""
         try:
+            rect = window_rect(hwnd)
+            if not rect:
+                return
+            dpr = float(self.devicePixelRatioF()) or 1.0
+            self.move(int(round(rect[0] / dpr)), int(round(rect[1] / dpr)))
+        except Exception:
+            pass
+
+    def ensure_on_screen(self):
+        """召唤/浮现后确保窗口真的在屏幕上，**并且回到它该在的位置**。
+
+        锁屏解锁、显示器断电、拔过显示器之后，Windows 会把窗口丢到桌面之外（实测见过
+        x = 上次位置 − 一整屏宽），Qt 的缓存屏幕布局也可能是旧的。这里依次尝试：
+          1. 配置里记住的位置（`win_x/win_y`，也就是用户自己摆的地方）；
+          2. 主屏工作区左上角。
+        两步都用 **Qt 的 `move`**：它是逻辑像素，多屏 DPI 由 Qt 自己换算。以前只用
+        Win32 `SetWindowPos` 挪（物理像素），Qt 不知道位置变了，下次 show 又拉回屏幕外，
+        于是"窗口不在任何真实屏幕上，已强制挪回主屏"每次显示都要重来一遍。
+        两步都不行才退回 Win32 物理兜底，并同步 Qt 坐标。
+        """
+        try:
+            if not self.isVisible():
+                return              # 窗口藏着的时候别动它，免得和下一次 show 打架
             hwnd = int(self.winId())
             if window_on_real_screen(hwnd):
                 return
+            candidates = []
+            sx, sy = self.config.get("win_x"), self.config.get("win_y")
+            if isinstance(sx, int) and isinstance(sy, int) and self._point_on_desktop(sx, sy):
+                candidates.append((sx, sy, "上次的位置"))
+            try:
+                avail = QApplication.primaryScreen().availableGeometry()
+                candidates.append((avail.left() + 60, avail.top() + 60, "主屏工作区"))
+            except Exception:
+                pass
+            for x, y, label in candidates:
+                self.move(x, y)     # Qt 坐标：DPI/多屏换算交给 Qt，Win32 只能吃物理像素
+                if window_on_real_screen(hwnd):
+                    log_event(f"窗口被挪到屏幕外，已挪回{label} ({x},{y})")
+                    return
             if force_window_to_primary(hwnd):
-                log_event("窗口不在任何真实屏幕上，已强制挪回主屏")
+                self.sync_qt_pos_from_win32(hwnd)
+                log_event("窗口不在任何真实屏幕上，已用 Win32 挪回主屏并同步 Qt 坐标")
             else:
                 log_event("窗口不在任何真实屏幕上，但挪回主屏失败")
         except Exception as e:
