@@ -12,8 +12,10 @@ linux.do 的盾时开时关），夹具目录里缺哪个文件就是"这次没�
 """
 import json
 import os
+import re
 import sys
 import time
+from urllib.parse import quote
 
 import requests
 
@@ -253,6 +255,101 @@ def _trim_nga_read(obj, keep=3, each=220):
                              for i in ids if isinstance(users.get(i), dict)}}}
 
 
+def _xhs_state(html):
+    """跟适配器同一套抠法（这里只为录夹具，逻辑保持一致）。"""
+    at = str(html or "").find("window.__INITIAL_STATE__")
+    at = html.find("{", at)
+    depth, i, n, in_str, quote, esc = 0, at, len(html), False, "", False
+    while i < n:
+        ch = html[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                in_str = False
+        elif ch in "\"'":
+            in_str, quote = True, ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(re.sub(r"\bundefined\b", "null", html[at:i + 1])
+                                  .replace("new Map([])", "{}").replace("new Set([])", "[]"))
+        i += 1
+    return None
+
+
+def _trim_xhs_explore(state, keep=3):
+    """列表状态：只留 `feed.feeds` 的前几条，每条只留适配器用到的字段。"""
+    feeds = ((state or {}).get("feed") or {}).get("feeds") or []
+    out = []
+    for it in feeds:
+        if not isinstance(it, dict):
+            continue
+        card = it.get("noteCard") or {}
+        if not isinstance(card, dict) or not str(card.get("displayTitle") or "").strip():
+            continue
+        out.append({
+            "id": it.get("id"), "xsecToken": it.get("xsecToken"),
+            "noteCard": {
+                "type": card.get("type"),
+                "displayTitle": card.get("displayTitle"),
+                "user": {"nickName": (card.get("user") or {}).get("nickName")},
+                "interactInfo": {"likedCount": (card.get("interactInfo") or {}).get("likedCount")},
+                "cover": {"infoList": [{"url": u} for u in
+                                       [x.get("url") for x in ((card.get("cover") or {}).get("infoList") or [])[:1]
+                                        if isinstance(x, dict)]]},
+            },
+        })
+        if len(out) >= keep:
+            break
+    return {"feed": {"feeds": out}}
+
+
+def _trim_xhs_note(state, nid, desc_limit=400, imgs=2):
+    """详情状态：正文只留前 400 字、图只留前 2 张、去掉 ipLocation 这类个人信息。"""
+    node = ((state or {}).get("note") or {}).get("noteDetailMap") or {}
+    one = node.get(nid) if isinstance(node, dict) else None
+    if not isinstance(one, dict):
+        return None
+    note = one.get("note") or {}
+    if not isinstance(note, dict):
+        return None
+    info = note.get("interactInfo") or {}
+    keep = {"noteId": note.get("noteId"), "type": note.get("type"),
+            "title": note.get("title"), "desc": (note.get("desc") or "")[:desc_limit],
+            "time": note.get("time"),
+            "user": {"nickname": (note.get("user") or {}).get("nickname")},
+            "interactInfo": {"likedCount": info.get("likedCount"),
+                             "commentCount": info.get("commentCount")},
+            "tagList": [{"name": t.get("name")} for t in (note.get("tagList") or [])
+                        if isinstance(t, dict) and t.get("name")],
+            "imageList": [{"urlDefault": im.get("urlDefault") or im.get("url")}
+                          for im in (note.get("imageList") or [])[:imgs] if isinstance(im, dict)]}
+    raw = ((one.get("comments") or {}).get("list") or [])
+    comments = []
+    for c in raw[:3]:
+        if not isinstance(c, dict):
+            continue
+        subs = []
+        for sc in (c.get("subComments") or [])[:2]:
+            if isinstance(sc, dict):
+                subs.append({"id": sc.get("id"), "content": (sc.get("content") or "")[:80],
+                             "likeCount": sc.get("likeCount"), "createTime": sc.get("createTime"),
+                             "userInfo": {"nickname": (sc.get("userInfo") or {}).get("nickname")}})
+        comments.append({"id": c.get("id"), "content": (c.get("content") or "")[:120],
+                         "likeCount": c.get("likeCount"), "createTime": c.get("createTime"),
+                         "userInfo": {"nickname": (c.get("userInfo") or {}).get("nickname")},
+                         "subComments": subs})
+    return {"note": {"noteDetailMap": {nid: {
+        "note": keep,
+        "comments": {"list": comments, "hasMore": bool((one.get("comments") or {}).get("hasMore"))},
+    }}}}
+
+
 def record(which):
     if which in ("", "ithome"):
         print("IT之家")
@@ -355,6 +452,65 @@ def record(which):
                         print("  录到 nga_old_thread_403.json   %8d 字节（原样，GBK）" % len(raw3))
                     else:
                         print("  老帖这次不是 403（HTTP %s），没录那条" % status3)
+    if which in ("", "xhs"):
+        print("小红书")
+        cred = auth_for("xhs")
+        if not cred:
+            print("  免登录只有空壳，跳过")
+        else:
+            ref = {"Referer": "https://www.xiaohongshu.com/",
+                   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+            raw, status = fetch_raw("https://www.xiaohongshu.com/explore", cred, ref)
+            state = None
+            if raw is None or status != 200:
+                print("  探索页没拿到（HTTP %s），跳过" % status)
+            else:
+                try:
+                    state = _xhs_state(raw.decode("utf-8", "replace"))
+                except Exception as e:
+                    print("  状态解不开（%s），跳过" % e)
+            feeds = ((state or {}).get("feed") or {}).get("feeds") or []
+            if not feeds:
+                print("  探索页里没有 feeds（Cookie 过期了？），跳过")
+            else:
+                save_raw("xhs_explore_state.json", _trim_xhs_explore(state),
+                         note="已裁剪：只留 3 条 + 适配器用到的字段")
+                # 详情页自带几条评论就录几条——实测有时 5 条、有时 0 条（评论是滚动加载的），
+                # 所以多试两条笔记，尽量录到"有评论"的那份，好把评论解析也钉住。
+                notes = [it for it in feeds
+                         if isinstance(it, dict) and str((it.get("noteCard") or {}).get("type")) != "video"]
+                best = None
+                for it in notes[:10]:
+                    nid = str(it.get("id") or "")
+                    token = str(it.get("xsecToken") or "")
+                    if not nid or not token:
+                        continue
+                    u = ("https://www.xiaohongshu.com/explore/%s?xsec_token=%s&xsec_source=pc_feed"
+                         % (nid, quote(token, safe="")))
+                    raw2, st2 = fetch_raw(u, cred, ref)
+                    if raw2 is None or st2 != 200:
+                        print("  详情 %s 没拿到（HTTP %s）" % (nid[:8], st2))
+                        continue
+                    try:
+                        s2 = _xhs_state(raw2.decode("utf-8", "replace"))
+                    except Exception as e:
+                        print("  详情状态解不开（%s）" % e)
+                        continue
+                    one = ((s2.get("note") or {}).get("noteDetailMap") or {}).get(nid) or {}
+                    got = len(((one.get("comments") or {}).get("list") or []))
+                    print("  详情 %s… 自带 %d 条评论" % (nid[:8], got))
+                    if got:
+                        best = (s2, nid)
+                        break
+                    if best is None:
+                        best = (s2, nid)
+                if best:
+                    trimmed = _trim_xhs_note(best[0], best[1])
+                    if trimmed:
+                        save_raw("xhs_note_state.json", trimmed,
+                                 note="已裁剪：正文前 400 字、图前 2 张、去掉 ipLocation")
+                    else:
+                        print("  详情状态里没有这条笔记，没录")
     if which in ("", "weibo"):
         print("微博")
         save("weibo_hotsearch.json", "https://weibo.com/ajax/side/hotSearch",

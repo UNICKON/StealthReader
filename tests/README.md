@@ -60,6 +60,8 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 | `nga_unauth_403.json` | NGA **没登录时**的真响应（GBK，`1:未登录`） |
 | `nga_list.json` / `nga_read.json` | NGA **带 Cookie** 的列表与正文，**裁过**：列表留 6 条（含 1 条它自己的错误提示）、正文留前 3 楼各 220 字，用户表只留 `uid`+`username` |
 | `nga_old_thread_403.json` | NGA **老帖**的真 403（GBK，原样）：`5:帖子发布或回复时间超过限制` |
+| `xhs_explore_state.json` | 小红书探索页 SSR 状态，**裁过**：只留 3 条笔记 + 适配器用到的字段（`id`/`xsecToken`/`noteCard`） |
+| `xhs_note_state.json` | 小红书笔记详情的 SSR 状态，**裁过**：正文前 400 字、图前 2 张、去掉 `ipLocation`（评论那份录的时候就是空的，见下） |
 | `zhihu_answer.json` / `zhihu_comments.json` | 知乎**带 Cookie** 拿到的正文/评论，**裁过**：只留第一段正文、前 3 条评论各前 40 字 |
 | `linuxdo_cf.html` | linux.do 的 Cloudflare `Just a moment...` 拦截页 |
 | `chiphell_567.html` | Chiphell 的非标准 567 防爬占位页 |
@@ -72,6 +74,13 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 **带 Cookie 录的夹具一律裁过**（`_trim_answer` / `_trim_comments`）：知乎的正文和评论是**别人写的
 话**，不是我的代码产物，所以只留"够验形状"的一小段（第一段正文、前 3 条评论各前 40 字），
 长文和头像地址、用户 id 都不进仓库。裁掉的部分不影响验收——要验的是"字段取对了没有"。
+
+**小红书那两份是"状态块"，不是网页**：它的内容不在接口里，在页面的
+`window.__INITIAL_STATE__` 里，所以录的是**裁过的状态 JSON**，探针再照真页面的写法把它包成
+`<script>window.__INITIAL_STATE__=…</script>` 喂给适配器（页面壳是我们包的，状态本身是真响应）。
+`xhs_note_state.json` 里的 `comments.list` 是**空的**——不是忘了裁，是录的时候**连看 10 条笔记
+都没带上评论**（小红书的评论是滚动加载的，评论接口又要前端签名，实测 406）。既然拿不到真夹具，
+适配器里的 `comments()` 就**直接返回空**、并在正文里写明为什么，而不是留一层"猜出来的解析"。
 
 `discourse_*` 那一行的来源要看清楚：**不是 linux.do**。linux.do 前面挂着 Cloudflare 盾，
 本机录不到（403/超时），而 Discourse 适配器（回复树、最后回复时间、广告帖兜底）没有夹具就等于

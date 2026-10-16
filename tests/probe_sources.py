@@ -306,8 +306,9 @@ else:
 
 print("\n=== 7. 来源登记（默认 / 单独开关 / 全关）===")
 made = feed_sources.build_real_sources(cache_root=TMP_CACHE, config={}, log=None)
-check("默认：混流 + 四个免登录来源（微博默认关）",
-      [s.key for s in made] == ["mix", "ithome", "v2ex", "linuxdo", "zhihu"], [s.key for s in made])
+check("默认：混流 + 免登录的和要 Cookie 的都在，微博默认关",
+      [s.key for s in made] == ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs"],
+      [s.key for s in made])
 check("每个来源都有 label / channels / image_base",
       all(s.label and isinstance(s.channels(), list) and isinstance(s.image_base(), str)
           for s in made))
@@ -619,7 +620,116 @@ else:
     check("同一个问题不会为详情和评论各下一次（_ans 共用）",
           len(zok._ans) == 1, list(zok._ans.keys())[:2])
 
-print("\n=== 14. 来源登记认出了新来源 ===")
+print("\n=== 14. 小红书（批次 E）：免登录是空壳，带上 Cookie 后内容在页面的状态块里 ===")
+check("小红书标记为需要凭据", feed_sources.XhsSource.needs_auth is True)
+check("栏目只有 推荐", feed_sources.XhsSource.CHANNELS == ("推荐",))
+xs = feed_sources.XhsSource(FakeHttp(cache=MemCache()))
+check("没配 Cookie 时状态说得明白",
+      "未配置" in xs.auth_state() and "要登录" in xs.auth_state(), xs.auth_state())
+
+
+def _xhs_page(state):
+    """把夹具里的状态包成真页面里的写法（真页面就是 `window.__INITIAL_STATE__={...}`）。"""
+    return ("<html><head><script>window.__INITIAL_STATE__=%s</script></head><body>x</body></html>"
+            % json.dumps(state, ensure_ascii=False)).encode("utf-8")
+
+
+raw_xe = fixture("xhs_explore_state.json")
+raw_xn = fixture("xhs_note_state.json")
+if not raw_xe:
+    skip("小红书真夹具", "缺 xhs_explore_state.json（先跑 tests/record_fixtures.py xhs）")
+else:
+    cred = {"cookie": "web_session=1", "user_agent": "UA"}
+    xs2 = feed_sources.XhsSource(
+        FakeHttp(bytes_routes={"explore": _xhs_page(raw_xe)}, cache=MemCache()), cred)
+    xs_posts, xs_nxt = xs2.list("推荐", 0)
+    want = len([it for it in raw_xe["feed"]["feeds"]
+                if str((it.get("noteCard") or {}).get("type")) != "video"
+                and str((it.get("noteCard") or {}).get("displayTitle") or "").strip()])
+    check("（真夹具）列表出条目、没有下一页", len(xs_posts) == want >= 1 and xs_nxt is None,
+          (len(xs_posts), want))
+    check("（真夹具）标题 / 作者 / 赞数都对得上",
+          all(p.title and p.author and p.url.startswith("https://www.xiaohongshu.com/explore/")
+              for p in xs_posts)
+          and all(p.score >= 0 for p in xs_posts)
+          and xs_posts[0].title == feed_mod.strip_html(
+              raw_xe["feed"]["feeds"][0]["noteCard"]["displayTitle"]),
+          [(p.title[:12], p.author, p.score) for p in xs_posts[:2]])
+    check("（真夹具）地址带着 xsec_token（没有它打不开详情）",
+          all("xsec_token=" in p.url for p in xs_posts), xs_posts[0].url[-40:])
+    check("（真夹具）视频笔记没进来（这个窗口不放视频）",
+          not any(str((it.get("noteCard") or {}).get("type")) == "video"
+                  and str((it.get("noteCard") or {}).get("displayTitle") or "") in
+                  [p.title for p in xs_posts] for it in raw_xe["feed"]["feeds"]))
+
+    # 免登录那张空壳页：要能说清"这是要登录"，而不是甩一句"改版了"
+    xs_shell = feed_sources.XhsSource(
+        FakeHttp(bytes_routes={"explore": b"<html><body>SPA shell</body></html>"}, cache=MemCache()),
+        cred)
+    try:
+        xs_shell.list("推荐", 0)
+        check("空壳页会如实说'要登录'", False, "没抛")
+    except FeedNetError as e:
+        check("空壳页会如实说'要登录'", "feed_auth.json" in str(e) and "登录" in str(e), str(e))
+
+if not raw_xn:
+    skip("小红书正文", "缺 xhs_note_state.json")
+else:
+    nid = list(raw_xn["note"]["noteDetailMap"].keys())[0]
+    note = raw_xn["note"]["noteDetailMap"][nid]["note"]
+    xs3 = feed_sources.XhsSource(
+        FakeHttp(bytes_routes={"/explore/": _xhs_page(raw_xn)}, cache=MemCache()), cred)
+    seed = feed_sources.Post(
+        source="xhs", source_label="小红书", channel="推荐", pid=nid,
+        title=note.get("title") or "", author="", score=0,
+        url="https://www.xiaohongshu.com/explore/%s?xsec_token=tok&xsec_source=pc_feed" % nid)
+    xsd, _ = xs3.detail(seed)
+    d_txt = " ".join(b.text for b in xsd.body)
+    # 正文里的换行会变成 <br/>，所以拿第一行比（不拿带换行的切片去比）
+    head = (note.get("desc") or "").split("\n")[0][:12]
+    check("（真夹具）正文取的是 desc，话题标记清掉了",
+          bool(head) and head in d_txt and "[话题]" not in d_txt, (head, d_txt[:40]))
+    check("（真夹具）标题/作者/标签来自笔记本身",
+          xsd.title == feed_mod.strip_html(note.get("title") or "")
+          and xsd.author == (note.get("user") or {}).get("nickname")
+          and xsd.tags == [t["name"] for t in note.get("tagList") or []][:6],
+          (xsd.title[:12], xsd.author, xsd.tags[:3]))
+    check("（真夹具）毫秒时间戳变成秒了（parse_time 自己认毫秒，不认就会显示成 5 万年后）",
+          xsd.ts == feed_mod.parse_time(note.get("time")) and 1e9 < xsd.ts < 2e9,
+          (xsd.ts, note.get("time")))
+    check("（真夹具）图片落到本地（正文里不留 http 外链）",
+          any(b.kind == feed_mod.BLOCK_IMG for b in xsd.body)
+          and all(not (b.url or "").startswith("http") for b in xsd.body),
+          [(b.kind, (b.url or "")[:20]) for b in xsd.body[:4]])
+    check("画面里明说评论没做（不是装成'没人评论'）",
+          "406" in d_txt and "评论" in d_txt, d_txt[-60:])
+    check("小红书的评论如实为空（接口要前端签名，实测 406）", xs3.comments(seed) == ([], None))
+    # 详情和评论共用一次请求：第二次不该再去拉
+    xs3.http.bytes_routes = {}
+    xs3.http.fail = ["/explore/"]
+    d2, _ = xs3.detail(seed)
+    check("详情只拉一次（评论那层不再重复请求）", d2.title == xsd.title)
+    # token 丢了就打不开——如实说，不去瞎猜
+    xs4 = feed_sources.XhsSource(FakeHttp(cache=MemCache()), cred)
+    seed2 = feed_sources.Post(source="xhs", pid="deadbeef", title="t", url="https://www.xiaohongshu.com/explore/deadbeef")
+    d3, _ = xs4.detail(seed2)
+    check("（手写形状）没有 xsec_token 时如实说 token 丢了",
+          "xsec_token" in " ".join(b.text for b in d3.body))
+    # 状态块是 JS 字面量：手写两处真写法（真页面上就是这么发的），验抠取那一步
+    js = ('<html><script>window.__INITIAL_STATE__='
+          '{"a":undefined,"b":new Map([]),"c":new Set([]),'
+          '"d":"字符串里有 } < 这种东西，非贪婪正则会在这里截断",'
+          '"feed":{"feeds":[{"id":"1","xsecToken":"t","noteCard":'
+          '{"type":"normal","displayTitle":"标题","user":{"nickName":"某人"},'
+          '"interactInfo":{"likedCount":"7"},"cover":{"infoList":[{"url":"http://x/1.jpg"}]}}}]}}'
+          '</script></html>').encode("utf-8")
+    xs5 = feed_sources.XhsSource(FakeHttp(bytes_routes={"explore": js}, cache=MemCache()), cred)
+    js_posts, _ = xs5.list("推荐", 0)
+    check("（手写形状）undefined / new Map([]) / new Set([]) 都当得了 JSON，"
+          "而且不会被字符串里的 '} <' 提前截断",
+          len(js_posts) == 1 and js_posts[0].title == "标题" and js_posts[0].score == 7,
+          [(p.title, p.score) for p in js_posts])
+print("\n=== 15. 来源登记认出了新来源 ===")
 on_nga = feed_sources.build_real_sources(
     cache_root=TMP_CACHE, config={"feed_sources": ["nga", "zhihu"]}, log=None)
 # 顺序由代码里的登记表决定（固定的，不跟着配置串走），这样 `[`/`]` 的顺序永远可预期

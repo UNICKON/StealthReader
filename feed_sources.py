@@ -25,6 +25,7 @@ import os
 import re
 import threading
 import time
+from html import escape as html_escape
 from urllib.parse import quote
 
 import feed as feed_mod
@@ -985,6 +986,244 @@ def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
     return feed_mod.blocks_from_html(text, max_blocks=limit)
 
 
+def _xhs_state(html):
+    """从小红书页面里抠出 `window.__INITIAL_STATE__` 并当 JSON 解。
+
+    两处真坑（都是实测踩到的，不是假想）：
+    1. **不能用非贪婪正则抠**——对象里第一个 `}<` 出现在字符串里（`"...} <..."`），
+       正则会提前截断，实测少 1.5 KB 而且必然解不开。所以按括号配对扫，还得跳过字符串和转义；
+    2. 它是 **JS 字面量**，里面有 `undefined` 和 `new Map([])` / `new Set([])` 这种 JSON 不认的写法，
+       得先替换掉再当 JSON 解。
+    """
+    at = str(html or "").find("window.__INITIAL_STATE__")
+    if at < 0:
+        raise FeedNetError("小红书的页面里没有状态块（改版了，或者返回的是空壳页）")
+    at = html.find("{", at)
+    depth, i, n, in_str, quote, esc = 0, at, len(html), False, "", False
+    text = None
+    while 0 <= at < n and i < n:
+        ch = html[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                in_str = False
+        elif ch in "\"'":
+            in_str, quote = True, ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                text = html[at:i + 1]
+                break
+        i += 1
+    if not text:
+        raise FeedNetError("小红书的页面状态读不出来（括号没配对，多半是改版了）")
+    text = re.sub(r"\bundefined\b", "null", text)
+    text = re.sub(r"\bnew Map\(\[\]\)", "{}", text)
+    text = re.sub(r"\bnew Set\(\[\]\)", "[]", text)
+    text = re.sub(r"\bnew Map\(\[.*?\]\)", "{}", text, flags=re.S)
+    text = re.sub(r"\bnew Set\(\[.*?\]\)", "[]", text, flags=re.S)
+    try:
+        return json.loads(text)
+    except Exception as e:
+        raise FeedNetError("小红书的页面状态解不开（%s）" % type(e).__name__)
+
+
+def _xhs_text(desc):
+    """正文里的 `#话题[话题]#` 标记：去掉标记只留话题名（读得顺，也不会把 `[话题]` 当正文）。"""
+    t = re.sub(r"#([^#\[\]]{1,40})\[话题\]#", r"\1", str(desc or ""))
+    t = html_escape(t)
+    return re.sub(r"\n{2,}", "<br/><br/>", t.replace("\n", "<br/>"))
+
+
+def _xhs_cover(cover):
+    """封面图地址：列表里的 `cover.infoList[0].url`（`url` 字段本身常常是空的）。"""
+    if not isinstance(cover, dict):
+        return ""
+    for k in ("urlDefault", "url"):
+        if cover.get(k):
+            return str(cover[k])
+    for it in (cover.get("infoList") or []):
+        if isinstance(it, dict) and it.get("url"):
+            return str(it["url"])
+    return ""
+
+
+class XhsSource(RealSource):
+    """小红书。**免登录只有空壳**，要贴浏览器 Cookie——这个站把内容服务端渲染在页面里。
+
+    2026-10-16 实测（本机网络、浏览器 Cookie）：
+      - 免登录：`/explore` 是一张没有内容的 SPA 壳（36 KB 左右）；
+      - **带上 Cookie：`/explore` 228 KB，`window.__INITIAL_STATE__` 里 `feed.feeds` 30+ 条**，
+        每条有 `id` / `xsecToken` / `noteCard`（`displayTitle` / `type` / `user.nickName` /
+        `interactInfo.likedCount` / `cover.infoList[0].url`）；
+      - 详情：`/explore/<id>?xsec_token=<token>&xsec_source=pc_feed` 200，
+        `note.noteDetailMap[<id>].note` 里有 `desc`（正文）/ `imageList` / `tagList` /
+        `interactInfo`；`time` 是**毫秒**时间戳（不除 1000 会显示成 5 万年后）；
+      - **评论只有页面自带的那几条**：评论接口 `/api/sns/web/v2/comment/page` 实测
+        **406 `{"code":-1,"success":false}`**（要前端签名），所以不做"滚动加载"，
+        页面里带几条就显示几条，一条都没有就如实说没有。
+      - 视频笔记跳过（`noteCard.type == "video"`）：这个窗口不放视频，收下来也只是个壳。
+    """
+
+    key = "xhs"
+    label = "小红书"
+    base_url = "https://www.xiaohongshu.com"
+    needs_auth = True                  # 免登录拿到的是一张空壳页
+    CHANNELS = ("推荐",)
+    MAX_PAGE_BYTES = 3000000
+
+    def __init__(self, http, auth=None):
+        RealSource.__init__(self, http, auth)
+        self._notes = {}               # note id -> (note, comments, 说明)：详情和评论共用一次请求
+
+    def channels(self):
+        return list(self.CHANNELS)
+
+    def image_base(self):
+        return self.http.cache.img_dir if self.http.cache is not None else ""
+
+    def _page(self, url, ttl, what, timeout=None):
+        raw = self.http.get_bytes(url, ttl=ttl, max_bytes=self.MAX_PAGE_BYTES, timeout=timeout)
+        if isinstance(raw, (bytes, bytearray)):
+            for enc in ("utf-8", "gbk"):
+                try:
+                    return raw.decode(enc)
+                except Exception:
+                    continue
+            return raw.decode("utf-8", "replace")
+        return str(raw)
+
+    def _note_url(self, nid, token):
+        url = "%s/explore/%s" % (self.base_url, nid)
+        if token:
+            url += "?xsec_token=%s&xsec_source=pc_feed" % quote(str(token), safe="")
+        return url
+
+    def list(self, channel=None, cursor=None):
+        channel = channel if channel in self.CHANNELS else self.CHANNELS[0]
+        html = self._page(self.base_url + "/explore", TTL_LIST, "小红书 推荐", timeout=LIST_TIMEOUT)
+        try:
+            state = _xhs_state(html)
+        except FeedNetError as e:
+            # 免登录时拿到的就是一张没有状态块的空壳页——别让人对着"改版了"猜，直接说要 Cookie
+            raise FeedNetError("小红书这会儿没给内容（%s）。它要登录：把浏览器 Cookie 贴到 feed_auth.json" % e)
+        feeds = ((state.get("feed") or {}).get("feeds") or [])
+        posts, videos = [], 0
+        for i, it in enumerate(feeds):
+            card = it.get("noteCard") if isinstance(it, dict) else None
+            if not isinstance(card, dict):
+                continue
+            if str(card.get("type") or "") == "video":
+                videos += 1
+                continue
+            nid = str(it.get("id") or "")
+            title = feed_mod.strip_html(str(card.get("displayTitle") or ""))
+            if not nid or not title:
+                continue
+            user = card.get("user") if isinstance(card.get("user"), dict) else {}
+            info = card.get("interactInfo") if isinstance(card.get("interactInfo"), dict) else {}
+            try:
+                likes = int(str(info.get("likedCount") or "0").replace("+", "") or 0)
+            except Exception:
+                likes = 0
+            cover = _xhs_cover(card.get("cover"))
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=channel, pid=nid,
+                title=title,
+                author=feed_mod.strip_html(str(user.get("nickName") or "")),
+                created="", ts=0,            # 列表页不给发布时间，详情页才给
+                score=likes, score_label="赞",
+                n_comments=0, comment_label="评论",
+                cover=self._cover(cover) if (cover and i < COVER_PER_PAGE) else "",
+                excerpt="",
+                url=self._note_url(nid, it.get("xsecToken")),
+            ))
+        if not posts:
+            if videos:
+                raise FeedNetError("小红书这一页全是视频笔记（这个窗口不放视频），没别的可显示")
+            raise FeedNetError("小红书这会儿没给内容（多半是要登录：把浏览器 Cookie 贴到 feed_auth.json）")
+        return posts, None
+
+    def _note(self, post):
+        """取一条笔记的 `note` 和页面自带的评论（同一份状态，详情和评论共用一次请求）。"""
+        nid = str(post.id or "")
+        if nid in self._notes:
+            return self._notes[nid]
+        url = post.url or self._note_url(nid, "")
+        if "xsec_token" not in url:
+            # 没有 token 的详情地址打不开——列表里给过，这里丢了就只能如实说
+            self._notes[nid] = ({}, [], "这条的 xsec_token 丢了（它必须带着才能打开详情）")
+            return self._notes[nid]
+        html = self._page(url, TTL_DETAIL, "小红书 正文")
+        state = _xhs_state(html)
+        node = ((state.get("note") or {}).get("noteDetailMap") or {}).get(nid) or {}
+        note = node.get("note") if isinstance(node, dict) else None
+        comments = ((node.get("comments") or {}).get("list") or []) if isinstance(node, dict) else []
+        why = ""
+        if not isinstance(note, dict) or not note:
+            why = "页面状态里没有这条笔记（多半是 xsec_token 过期了——它是有有效期的）"
+            note = {}
+        self._notes[nid] = (note, comments, why)
+        return self._notes[nid]
+
+    def detail(self, post, cursor=None):
+        note, _comments, why = self._note(post)
+        out = Post.from_dict(post.to_dict())
+        if not note:
+            out.body = [Block(kind=BLOCK_QUOTE, text=why or "这条笔记的正文没取到。")]
+            return out, None
+        user = note.get("user") if isinstance(note.get("user"), dict) else {}
+        info = note.get("interactInfo") if isinstance(note.get("interactInfo"), dict) else {}
+        if note.get("title"):
+            out.title = feed_mod.strip_html(str(note["title"])) or out.title
+        if user.get("nickname"):
+            out.author = feed_mod.strip_html(str(user["nickname"]))
+        # `feed.parse_time` 自己认毫秒（> 1e11 就除 1000），这里不用再动一次
+        ts = feed_mod.parse_time(note.get("time"))
+        if ts:
+            out.ts, out.created = ts, feed_mod.human_time(ts)
+        if info.get("commentCount") not in (None, ""):
+            try:
+                out.n_comments = max(0, int(str(info["commentCount"]).replace("+", "") or 0))
+            except Exception:
+                pass
+        if str(info.get("likedCount") or "") != "":
+            try:
+                out.score = max(0, int(str(info["likedCount"]).replace("+", "") or 0))
+            except Exception:
+                pass
+        tags = [str(t.get("name")) for t in (note.get("tagList") or [])
+                if isinstance(t, dict) and t.get("name")]
+        if tags:
+            out.tags = tags[:6]
+
+        parts = []
+        if note.get("desc"):
+            parts.append("<p>%s</p>" % _xhs_text(note.get("desc")))
+        for img in (note.get("imageList") or [])[:9]:
+            if isinstance(img, dict) and (img.get("urlDefault") or img.get("url")):
+                parts.append('<img src="%s"/>' % (img.get("urlDefault") or img.get("url")))
+        body = self._localize_images(feed_mod.blocks_from_html("".join(parts), max_blocks=20), limit=9)
+        body.append(Block(kind=BLOCK_QUOTE, text=(
+            "这里只有正文和图片：小红书的评论接口要前端签名（实测 406），"
+            "页面自带的评论时有时无（录夹具时连看 10 条笔记，一条都没带上），"
+            "所以评论这一层没有做——按 O 去原页看评论。")))
+        out.body = body
+        return out, None
+
+    def comments(self, post, cursor=None):
+        # **故意返回空**：评论接口要前端签名（`/api/sns/web/v2/comment/page` 实测
+        # 406 `{"code":-1,"success":false}`），页面自带的 `comments.list` 十次里九次是空的
+        # （录夹具时连看 10 条笔记，一条都没带上）。既然拿不到真数据，就不写"猜出来的解析"：
+        # 宁可明说没有，也不把别人的评论编出来。哪天录到一份真带的，再把这一层打开。
+        return [], None
+
+
 class MixSource(SourceAdapter):
     """混流：把各来源的第一页合起来按时间倒序排，**默认就落在它上面**。
 
@@ -1096,16 +1335,16 @@ def build_real_sources(cache_root=None, config=None, log=None):
     if enabled is None:
         # 配置里没写过 -> 默认这几个；写成空列表 = 用户把它们全关了（只剩离线示例）。
         # 微博不在默认里：它的风控最紧，属于"单独开关"那一档。
-        # NGA 在默认里：它确实要 Cookie，但没配的时候页脚会照实说"这个来源要 Cookie"，
-        # 不会假装成功——比"藏起来让人找不到"更好解释。
-        enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga"]
+        # NGA 和 小红书 也在默认里：它们确实要 Cookie，但没配的时候页脚会照实说
+        # "这个来源要 Cookie"，不会假装成功——比"藏起来让人找不到"更好解释。
+        enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs"]
     elif not isinstance(enabled, list):
         enabled = [str(enabled)]
 
     made = []
     for key, cls in (("ithome", IthomeSource), ("v2ex", V2exSource),
                      ("linuxdo", DiscourseSource), ("zhihu", ZhihuSource),
-                     ("weibo", WeiboSource), ("nga", NgaSource)):
+                     ("weibo", WeiboSource), ("nga", NgaSource), ("xhs", XhsSource)):
         if key not in enabled:
             continue
         cred = auth.get(key) if isinstance(auth.get(key), dict) else {}

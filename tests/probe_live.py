@@ -249,6 +249,32 @@ else:
         except Exception as e:
             note("NGA 这条路这次没走通：%s: %s" % (type(e).__name__, e))
 
+    xs = authed(feed_sources.XhsSource)
+    if not xs.has_auth:
+        note("feed_auth.json 里没有小红书的 Cookie，跳过小红书")
+    else:
+        try:
+            xposts, _ = xs.list("推荐", 0)
+            check("小红书（带 Cookie）：列表拿到了（%d 条）" % len(xposts),
+                  len(xposts) >= 5, len(xposts))
+            check("小红书（带 Cookie）：封面落地了、每条的详情地址都带着 xsec_token",
+                  all("xsec_token=" in p.url for p in xposts)
+                  and any(p.cover for p in xposts),
+                  (sum(1 for p in xposts if p.cover), xposts[0].url[-36:]))
+            check("小红书（带 Cookie）：标题和作者都在",
+                  all(p.title and p.author for p in xposts[:5]),
+                  [(p.title[:12], p.author, p.score) for p in xposts[:3]])
+            xd, _ = xs.detail(xposts[0])
+            check("小红书（带 Cookie）：正文拿到了（%d 字）" % xd.text_length(),
+                  xd.text_length() > 20, xd.title[:16])
+            check("小红书（带 Cookie）：正文不外链",
+                  all(not (b.url or "").startswith("http") for b in xd.body))
+            cms3, _ = xs.comments(xposts[0])
+            check("小红书（带 Cookie）：评论如实为空（接口要前端签名，实测 406）",
+                  cms3 == [], len(cms3))
+        except Exception as e:
+            note("小红书这条路这次没走通：%s: %s" % (type(e).__name__, e))
+
 shutil.rmtree(CACHE, ignore_errors=True)
 print("\n================ 结果 ================")
 print("失败 %d 项%s" % (len(FAILS), ("：" + "；".join(FAILS)) if FAILS else "（无）"))
