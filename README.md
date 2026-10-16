@@ -411,7 +411,8 @@ pyinstaller -F -w -i read.ico -n "StealthReader" main.py
   - **小红书**：免登录不可行（`/explore` 是 36 KB 的空壳 SPA、`api/sns/web/v1/homefeed` 返 500）。
   - **微信读书**（批次 F：书架 → 章节 → 喂进本地的书管线）：不打 Cookie 直连
     `weread.qq.com/web/shelf/sync` 得到的是 `{"errCode":-2010,"errMsg":"用户不存在"}`，
-    也就是"没登录"。管线要等 Cookie 到位再动。
+    也就是"没登录"。管线要等 Cookie 到位再动。（顺带探到它有个免登录的公开**榜单**层，
+    但榜单对读书这件事没用，**不做**。）
   演示数据里 12 条帖子的原帖地址是空的，所以 `O` 对示例数据没反应（真实来源都有真地址）。
 
 ## 🔧 稳定性（本机增补，非上游功能）

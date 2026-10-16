@@ -116,6 +116,11 @@ V2EX 需要科学上网时走系统代理，程序不自建代理。
   52 条，默认关、单独开关）；微博正文/评论和**小红书**都要 Cookie（小红书免登录 `/explore` 只是
   36 KB 的空壳 SPA、`api/sns/web/v1/homefeed` 返 500 `create invoker failed`），留在凭据管线之后。
 - **F 微信读书接进"书"**：书架 → 章节 → 喂进现有本地书管线（进度、划线、翻页全是现成的）。
+  **不做"书单/榜单"那一层**：探测时发现 `weread.qq.com/web/category/rank?type=1` 把 7 个榜单
+  （总榜 / 小说榜 / 热搜榜 / 神作榜…）连同书名、作者、封面、简介、推荐值一起内嵌在页面 HTML 的
+  `window.__INITIAL_STATE__` 里，**免登录就能拿到**；试做了一版之后**用户明确否掉了
+  （"不用这个，榜单没用"），代码已撤**。F 的正题依然只等 Cookie：不打 Cookie 时
+  `weread.qq.com/web/shelf/sync` 返 `{"errCode":-2010,"errMsg":"用户不存在"}`，就是"没登录"。
 
 ### A 轮实现笔记（写代码时踩到的，B 轮起直接沿用）
 
