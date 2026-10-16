@@ -1908,7 +1908,8 @@ class SettingsDialog(QDialog):
         self.original_typography = {
             key: self.config.get(key) for key in
             ("font_size", "font_family", "line_spacing", "paragraph_spacing",
-             "page_margin_chars", "first_line_indent", "paragraph_indent")
+             "page_margin_chars", "first_line_indent", "paragraph_indent",
+             "feed_font_size", "feed_font_family")
         }
 
         self.setWindowTitle("设置")
@@ -2007,6 +2008,35 @@ class SettingsDialog(QDialog):
                                     "0 就是不缩进。")
         self.indent_spin.valueChanged.connect(self.on_typography_change)
         layout.addRow("首行缩进:", self.indent_spin)
+
+        # 社区页（Ctrl+Alt+F）自己的字体：默认跟阅读字体一样，想让它更大/更小可以单独设
+        self.feed_font_check = QCheckBox("社区页用单独字体")
+        self.feed_font_check.setToolTip("社区统一流（Ctrl+Alt+F）的字体和字号默认和书页完全一样。\n"
+                                        "勾上就能单独调：社区流是长文档，一屏里信息多，\n"
+                                        "用比书页小一两号字更合适（书页的字号不受影响）。")
+        self.feed_font_check.setChecked(bool(self.config.get("feed_font_family")
+                                             or self.config.get("feed_font_size")))
+        self.feed_font_check.toggled.connect(self.on_feed_font_change)
+        layout.addRow(self.feed_font_check)
+
+        feed_font_row = QWidget()
+        feed_font_layout = QHBoxLayout(feed_font_row)
+        feed_font_layout.setContentsMargins(0, 0, 0, 0)
+        self.feed_font_spin = QSpinBox()
+        self.feed_font_spin.setRange(8, 60)
+        self.feed_font_spin.setValue(int(self.config.get("feed_font_size")
+                                         or self.config.get("font_size") or 14))
+        self.feed_font_spin.valueChanged.connect(self.on_feed_font_change)
+        self.feed_font_combo = QFontComboBox()
+        self.feed_font_combo.setCurrentFont(QFont(self.config.get("feed_font_family")
+                                                  or self.config.get("font_family", "Microsoft YaHei")))
+        self.feed_font_combo.currentFontChanged.connect(self.on_feed_font_change)
+        feed_font_layout.addWidget(QLabel("字号"))
+        feed_font_layout.addWidget(self.feed_font_spin)
+        feed_font_layout.addWidget(self.feed_font_combo)
+        self.feed_font_row = feed_font_row
+        feed_font_row.setEnabled(self.feed_font_check.isChecked())
+        layout.addRow("社区页字体:", feed_font_row)
 
         self.btn_text_color = QPushButton("文字颜色 (手动)")
         self.btn_text_color.setStyleSheet(f"background-color: {self.temp_text_color};")
@@ -2155,6 +2185,20 @@ class SettingsDialog(QDialog):
             self.main_window.apply_style()
             self.main_window.save_config()
 
+    def on_feed_font_change(self, _value=None):
+        """社区页字体：勾上就写两个键，取消勾选就把键删掉（回到"跟着书页走"）。"""
+        on = self.feed_font_check.isChecked()
+        if on:
+            self.config["feed_font_size"] = self.feed_font_spin.value()
+            self.config["feed_font_family"] = self.feed_font_combo.currentFont().family()
+        else:
+            self.config.pop("feed_font_size", None)
+            self.config.pop("feed_font_family", None)
+        self.feed_font_row.setEnabled(on)
+        if self.main_window:
+            self.main_window.apply_style()      # 社区页正开着的话就地换字体
+            self.main_window.save_config()
+
     def pick_text_color(self):
         color = QColorDialog.getColor()
         if color.isValid():
@@ -2235,6 +2279,12 @@ class SettingsDialog(QDialog):
         self.config["page_margin_chars"] = self.margin_spin.value()
         self.config["first_line_indent"] = self.indent_spin.value()
         self.config["paragraph_indent"] = self.para_indent_check.isChecked()
+        if self.feed_font_check.isChecked():
+            self.config["feed_font_size"] = self.feed_font_spin.value()
+            self.config["feed_font_family"] = self.feed_font_combo.currentFont().family()
+        else:
+            self.config.pop("feed_font_size", None)
+            self.config.pop("feed_font_family", None)
         self.config["boss_key"] = self.boss_key_input.text().strip()
         self.config["peek_key"] = self.peek_key_input.text().strip()
         self.config["safe_key"] = self.safe_key_input.text().strip()
@@ -3470,7 +3520,8 @@ class StealthReader(QWidget):
                 self.enter_safe_mode()
                 return True
             if event.type() == QEvent.MouseButtonDblClick and self.feed_mode:
-                # 社区页：双击 = 进去/折叠（force 一下，不然"已经选中"会被当成第二次单击）
+                # 社区页：双击 = 进去/折叠（列表现在单击就进，双击走 force 直接做动作，
+                # 不会被"已经选中"当成第二次单击）
                 self.feed_click(event.pos(), force=True)
                 self.clear_text_selection()
                 return True
@@ -3811,6 +3862,24 @@ class StealthReader(QWidget):
         else:
             self.enter_safe_mode()
 
+    def _reset_page_layout(self):
+        """把"上一屏留下的排版遗留"清干净：滚动位置、视口留白、页底裁切量。
+
+        为什么必须有这一步：页底裁切量（`page_content_bottom` / 视口下留白）是**按视口算出来的**，
+        而算的时候还会读当前的 `viewportMargins().bottom()`——社区页留的是它自己那一套
+        （实测 19px），于是书页回来重算时会走另一条分支：退出前页底裁切 = 659px、留白 24px，
+        退出后变成 631px、留白 32px，**每进出一次都变一点**，人看到的就是
+        "进出社区页之后，阅读的字体和大小被动了"。归零再算就没有这个回路。
+        """
+        try:
+            self.text_edit.verticalScrollBar().setValue(0)
+            vm = self.text_edit.viewportMargins()
+            if vm.left() or vm.top() or vm.right() or vm.bottom():
+                self.text_edit.setViewportMargins(0, 0, 0, 0)
+            self.page_content_bottom = self.text_edit.viewport().height()
+        except Exception:
+            pass
+
     def snapshot_book_state(self):
         """记下"书现在读到哪儿、正文区显示的是什么"。安全文档与隐形背诵共用这一套。"""
         return {
@@ -3828,6 +3897,13 @@ class StealthReader(QWidget):
             "display_text": self.text_edit.toPlainText(),
         }
 
+    def _settle_page_layout(self):
+        """等一轮事件循环再钉一次页底。滚动条出现/消失会改变视口宽度，页底裁切量要按新几何重算；
+        社区页/卡片页显示时不动——那两页不用书页那套"退到最后一个完整行"的裁切。"""
+        if self.feed_mode or (self.review_mode and not self.safe_mode):
+            return
+        self.apply_page_margins()
+
     def restore_book_state(self, snap, write_progress=True):
         """按快照把书页放回来。
 
@@ -3836,6 +3912,8 @@ class StealthReader(QWidget):
         （安全文档那条路要写，因为它恢复的就是书自己的位置）。"""
         if not snap:
             return
+        # 先从"上一屏"的排版里出来：不清这一层，页底裁切量会一路漂（见 _reset_page_layout）
+        self._reset_page_layout()
         if snap.get("is_local_mode") and snap.get("local_full_text"):
             # 直接把快照里的全文和偏移放回去重渲：位置精确到字，也不用重读文件
             self.is_local_mode = True
@@ -3868,6 +3946,8 @@ class StealthReader(QWidget):
             self.local_start_index = 0
             self.apply_style()
             self.set_display_text(snap.get("display_text", "") or "")
+        # 几何定稿后再钉一次页底（滚动条的有无会改视口宽度）
+        QTimer.singleShot(0, self._settle_page_layout)
 
     def enter_safe_mode(self):
         """切到安全文档：排版沿用当前设置（同一条渲染管线），窗口位置大小不动，
@@ -4123,12 +4203,14 @@ class StealthReader(QWidget):
     def apply_feed_style(self):
         """社区页排版：左对齐、不首行缩进、行距沿用阅读设置；卡片间距和评论缩进由 HTML 自带。
 
+        字体用 `feed_font()`（默认跟书页一样，可单独设），**不能改坏书页**：这里只动
+        text_edit 的字体和文档格式，书页回来时会整套重排（见 restore_book_state / _reset_page_layout）。
+
         **只 merge 这三样，绝不碰 block 的 margin**：`mergeBlockFormat` 会把 modifier 里
         显式设过的属性盖进每个块，一旦这里 setTopMargin(0)/setBottomMargin(0)，
         HTML 里卡片之间、评论之间的间距会被整片抹平，一屏挤成一大坨。
         （卡片页那张卡只有一块内容，所以那边可以这么写，这里不行。）"""
-        self.text_edit.setFont(QFont(self.config.get("font_family", "Microsoft YaHei"),
-                                     self.config["font_size"]))
+        self.text_edit.setFont(self.feed_font())
         bf = QTextBlockFormat()
         bf.setLineHeight(max(100, int(self.config.get("line_spacing", 160))),
                          QTextBlockFormat.ProportionalHeight)
@@ -4165,8 +4247,29 @@ class StealthReader(QWidget):
             col = QColor(216, 216, 216)
         return f"rgba({col.red()}, {col.green()}, {col.blue()}, {col.alpha()})"
 
+    def feed_font(self):
+        """社区页自己的字体：**没配就完全跟着书页走**（和以前一样），配了才单独生效。
+
+        两个键各自独立：只配了字号就只换字号，字体仍跟书页。取值一律夹在合理范围内，
+        免得 config.json 里手写个 0 或 999 把页面弄成一行一个字。
+        """
+        fam = str(self.config.get("feed_font_family") or "").strip() \
+            or self.config.get("font_family", "Microsoft YaHei")
+        try:
+            size = int(self.config.get("feed_font_size") or 0) \
+                or int(self.config.get("font_size", 14))
+        except (TypeError, ValueError):
+            size = 14
+        return QFont(fam, max(6, min(72, size)))
+
     def feed_theme(self):
-        return feed_mod.theme_from_config(self.config, max(240, self.width() - 40),
+        # 主题里的 size/family 就是 HTML 用的那套，所以要把"社区页字体"覆盖进去，
+        # 否则字号只改了 QTextEdit 的默认字体、网页那块还是老字号（两处不一致最难看）。
+        cfg = dict(self.config or {})
+        font = self.feed_font()
+        cfg["font_size"] = font.pointSize()
+        cfg["font_family"] = font.family()
+        return feed_mod.theme_from_config(cfg, max(240, self.width() - 40),
                                           text_color=self.feed_text_color())
 
     def feed_item_blocks(self):
@@ -4210,10 +4313,14 @@ class StealthReader(QWidget):
         return None
 
     def feed_click(self, pos, force=False):
-        """鼠标点在社区页上：选中点到的那一条；**再点同一条**就进去（列表）/折叠（评论）。
+        """鼠标点在社区页上：**列表里点一下就直接进去**；详情里点评论 = 选中，
+        再点同一条 = 折叠/展开。
 
-        reddit 的手感就是这样：单击选中、再单击进去，不用双击（双击也照这个走，force 进来）。
-        点在空白上不动光标，点正文里的字仍然是"选字复制"（走原来的划选路径）。
+        这里以前是"单击只换选中、再单击才进去"，reddit 网页确实是这样，但在这个窗口里
+        它是错的：列表本身就是滚动的一整页，单击换选中会顺手把页面滚一下（见 feed_ensure_visible），
+        人的感受是"点一下没反应、还跳了一下，得再点一次"——所以列表改成点一下就到。
+
+        点在空白上不动光标；点正文里的字仍然是"选字复制"（走原来的划选路径，见 on_viewport_release）。
         """
         nav = self.feed_nav
         if nav is None:
@@ -4229,7 +4336,7 @@ class StealthReader(QWidget):
             return False
         obj, kind = hit
         cur_sel = nav.current_comment() if nav.view == "detail" else nav.selected()
-        # 先把这个条目变成当前条目（单击换条目、双击可能点的就是别的条目）
+        # 先把这个条目变成当前条目（双击可能点的就是别的条目）
         if kind == "comment":
             for i, (c, _d, _p) in enumerate(nav.visible_comments()):
                 if c is obj:
@@ -4240,22 +4347,25 @@ class StealthReader(QWidget):
                 nav.index = nav.posts.index(obj)
             except ValueError:
                 return False
-        # 双击（force）或者"点的就是当前条目"（第二次单击）= 动作；否则只换选中
-        if force or cur_sel is obj:
-            if kind == "comment":
+        if kind == "comment":
+            # 评论：点当前这条 = 折叠/展开；点别的 = 只换选中（不跳页）
+            if force or cur_sel is obj:
                 return self.feed_toggle_collapse()
-            return self.feed_open()
-        self.feed_highlight()
-        if kind != "comment" and nav.near_end():
-            self.feed_load("more")
-        self.update_review_bar()
-        return True
+            self.feed_highlight()
+            self.update_review_bar()
+            return True
+        # 列表：一下就到（force 也就是"双击"，走同一条路，不重复动作）
+        return self.feed_open()
 
     def feed_highlight(self):
         """把选中项提亮一档（extra selections，只改字色，不铺底色块）。
 
         定位文本由 feed.selection_needle 给（列表是标题、评论是表头那一行），每动一次
-        重算一次——所以高亮永远跟着光标走，不依赖上一次渲染出来的标记。"""
+        重算一次——所以高亮永远跟着光标走，不依赖上一次渲染出来的标记。
+
+        **只把目标拉进可见区，不主动改滚动位置**：以前这里是无条件 feed_scroll_to，
+        于是"点一下帖子"整页跟着跳（实测点第 7 条时滚动值从 1017 跳到 1187），
+        看着就像"点击的定位逻辑坏了"。"""
         try:
             nav = self.feed_nav
             if nav is None:
@@ -4272,9 +4382,20 @@ class StealthReader(QWidget):
             fmt.setForeground(QColor(theme["mark"]))
             sel.format = fmt
             self.text_edit.setExtraSelections([sel])
-            self.feed_scroll_to(cur)
+            self.feed_ensure_visible(cur)
         except Exception:
             pass
+
+    def feed_ensure_visible(self, cursor):
+        """目标已经在"看得舒服"的区间里就一个像素都不动；不在才滚到视口 25% 处。"""
+        try:
+            rect = self.text_edit.cursorRect(cursor)
+            vh = max(1, self.text_edit.viewport().height())
+            if int(vh * 0.12) <= rect.top() and rect.bottom() <= int(vh * 0.88):
+                return False
+            return self.feed_scroll_to(cursor)
+        except Exception:
+            return False
 
     def feed_scroll_to(self, cursor):
         """把目标滚到视口靠上的位置。
@@ -4286,6 +4407,14 @@ class StealthReader(QWidget):
             vh = max(1, self.text_edit.viewport().height())
             target = sb.value() + rect.top() - int(vh * 0.25)
             sb.setValue(max(sb.minimum(), min(sb.maximum(), target)))
+            return True
+        except Exception:
+            return False
+
+    def feed_scroll_top(self):
+        """换了一屏内容（进详情/切来源/切栏目）就回到最上面——不然会停在上一屏的位置。"""
+        try:
+            self.text_edit.verticalScrollBar().setValue(0)
         except Exception:
             pass
 
@@ -4308,6 +4437,7 @@ class StealthReader(QWidget):
             return False
         self.feed_gen += 1                  # 视图换代：还在飞的列表结果不许再盖回来
         self.render_feed()              # 先把标题画出来，正文和评论随后台取数回来
+        self.feed_scroll_top()          # 换了一屏内容就从最上面读起（不是停在评论那一行）
         self.feed_load("detail")
         return True
 
@@ -4317,6 +4447,11 @@ class StealthReader(QWidget):
             return False
         self.feed_gen += 1                  # 退回列表了，还在飞的详情结果不许把视图又弹回详情
         self.render_feed()
+        cur = self.feed_current_block()
+        if cur is not None:
+            self.feed_ensure_visible(cur)   # 回到刚才读的那一条（不在可见区里才滚）
+        else:
+            self.feed_scroll_top()
         return True
 
     def feed_toggle_collapse(self):
@@ -4364,6 +4499,7 @@ class StealthReader(QWidget):
         self.feed_nav.channel = self.feed_first_channel()
         self.update_review_bar()
         self.feed_load("list")
+        self.feed_scroll_top()
         log_event(f"社区：切到来源 {getattr(src, 'label', '')}")
         return True
 
@@ -4389,6 +4525,7 @@ class StealthReader(QWidget):
         self.feed_nav.reset()
         self.update_review_bar()
         self.feed_load("list")
+        self.feed_scroll_top()
         return True
 
     def feed_open_original(self):
@@ -6043,7 +6180,7 @@ class StealthReader(QWidget):
             self.save_window_pos()
             return True
         if self.feed_mode:
-            # 社区页：单击 = 选中 / 再点进去（或折叠）。划到了字就仍然算"选字复制"，
+            # 社区页：列表单击就进详情、评论单击选中再点折叠（见 feed_click）。划到了字就仍然算"选字复制"，
             # 交给原来的划选路径——工位上想抄一段走，这条不能堵。
             if (event.button() == Qt.LeftButton
                     and not self.text_edit.textCursor().hasSelection()

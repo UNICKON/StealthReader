@@ -112,6 +112,7 @@ try:
     app_mod._user32.SetWindowsHookExW = lambda *a, **k: 0x5EED
 except Exception:
     pass
+app_mod.set_window_protection = lambda *a, **k: None    # 防截屏那层别真去碰系统窗口
 OPENED = []
 app_mod.os.startfile = lambda url: OPENED.append(url)
 
@@ -120,6 +121,12 @@ w = app_mod.StealthReader()
 w.save_config = lambda *a, **k: None
 w.review_hint = lambda *a, **k: None
 w.progress_save_timer.stop()
+# 跟"人上一轮看到哪"解耦：config.json 里会记住 feed_source（这是真功能，第 1 节末尾单独验一条），
+# 但下面所有"席位/轮转"断言都以"默认落在混流"为前提。以前这里读的是本机 config，
+# 人上次停在知乎，探针就整段飘红——探针不能依赖"上一轮人点过什么"。
+REMEMBERED_SOURCE = str(w.config.get("feed_source") or "")
+STARTUP_SOURCE = w.feed_source().key          # 构造时按 config 里记的来源恢复
+w.feed_source_i = 0
 
 
 def pump(until, seconds=8.0):
@@ -141,6 +148,8 @@ keys = [s.key for s in w.feed_sources]
 ORIG_SOURCES = list(w.feed_sources)          # 第 6 节会把来源换成替身，第 9 节要还原
 check("顺序：混流 / IT之家 / V2EX / linux.do / 知乎 / 微博 / 示例", keys == EXPECT_KEYS, keys)
 check("默认落在混流上", w.feed_source().key == "mix", w.feed_source().key)
+check("启动时按 config 里记的来源恢复（没记过就是混流）",
+      STARTUP_SOURCE == (REMEMBERED_SOURCE or "mix"), (STARTUP_SOURCE, REMEMBERED_SOURCE))
 
 print("\n=== 2. 混流：活着的来源都在第一页，挂了的只写页脚 ===")
 w.enter_feed_mode()
@@ -359,7 +368,156 @@ else:
     check("遮罩模式下不露出这个入口（跟其它书相关项一个规矩）",
           not any("微信读书" in t for t in veiled), veiled)
 
-print("\n=== 8. 退出：书的状态不许被动过 ===")
+print("\n=== 8. 点击 / 落点 / 排版隔离 / 社区页字体（这一轮修的六件事里的四件）===")
+
+# 点选是按像素命中的、按键要先有焦点：离屏窗口也得 show() 一次，光标矩形和焦点才是真的
+# （以前探针只直接调 w.on_feed_key / w.feed_click，所以这两个坑它一个都碰不到）
+w.resize(420, 760)
+w.show()
+qapp.processEvents()
+time.sleep(0.15)
+qapp.processEvents()
+
+# 8.1 列表里**点一下就进**，而且点哪条进哪条。
+# 以前是"单击只换选中、再单击才进"：第一下还会顺手把页面滚一下（feed_scroll_to 无条件执行），
+# 人的感受就是"点一下没反应、还跳了一下，得再点一次"。
+use_sources([make_ithome()])
+w.enter_feed_mode()
+w.feed_load("list")
+pump(lambda: len(w.feed_nav.posts) >= 6 and not w.feed_busy)
+for i in (0, 3, 5):
+    # 每次点击前重铺一页列表：点一下就进详情，旧的光标已经不属于当前文档了
+    # （这个坑在写探针的时候先踩过一次，记在这儿免得以后又拿旧光标去点）
+    w.feed_nav.view = "list"
+    w.feed_nav.detail_loaded = False
+    w.feed_gen += 1
+    w.render_feed()
+    qapp.processEvents()
+    blocks = w.feed_item_blocks()
+    obj, _kind, cur = blocks[i]
+    rect = w.text_edit.cursorRect(cur)
+    w.feed_nav.index = 0
+    w.feed_click(rect.center())
+    qapp.processEvents()
+    check("点第 %d 条：一下就到详情，进的也是这一条" % i,
+          w.feed_nav.view == "detail" and w.feed_nav.post is not None
+          and w.feed_nav.post.id == obj.id,
+          (w.feed_nav.view, w.feed_nav.index,
+           w.feed_nav.post.id if w.feed_nav.post else None, obj.id))
+    pump(lambda: w.feed_nav.detail_loaded or not w.feed_busy, 6.0)
+    check("进详情落在最上面（不是停在正文/评论中间）",
+          w.text_edit.verticalScrollBar().value() == 0,
+          w.text_edit.verticalScrollBar().value())
+    w.feed_back()
+    qapp.processEvents()
+    check("退回列表还停在刚才那一条上", w.feed_nav.view == "list" and w.feed_nav.index == i,
+          (w.feed_nav.view, w.feed_nav.index))
+
+# 8.2 选中已经看得见的那一条，页面一个像素都不该动
+w.feed_nav.view = "list"
+w.feed_gen += 1
+w.render_feed()
+w.feed_scroll_top()
+w.feed_nav.index = 0
+w.feed_highlight()
+qapp.processEvents()
+_v0 = w.text_edit.verticalScrollBar().value()
+w.on_feed_key(Qt.Key_J)
+qapp.processEvents()
+check("选中的下一条本来就看得见，页面不会被带着跳",
+      w.text_edit.verticalScrollBar().value() == _v0,
+      (_v0, w.text_edit.verticalScrollBar().value()))
+
+# 8.3 真按键（走 Qt 事件，不是直接调 on_feed_key——以前探针只验了后者）
+from PyQt5.QtGui import QKeyEvent                                          # noqa: E402
+from PyQt5.QtCore import QEvent                                            # noqa: E402
+use_sources(ORIG_SOURCES)                  # 得有不止一个来源，否则"切过去了"看不出来
+w.feed_load("list")
+pump(lambda: w.feed_nav.posts and not w.feed_busy)
+_key_before = w.feed_source().key
+w.text_edit.setFocus()
+qapp.processEvents()
+_key_target = qapp.focusWidget() or w
+qapp.sendEvent(_key_target, QKeyEvent(QEvent.KeyPress, Qt.Key_BracketRight, Qt.NoModifier, "]"))
+pump(lambda: not w.feed_busy)
+check("真按键 `]` 能切社区（键码真的送到了 on_feed_key）",
+      w.feed_source().key != _key_before, (_key_before, w.feed_source().key))
+qapp.sendEvent(_key_target, QKeyEvent(QEvent.KeyPress, Qt.Key_BracketLeft, Qt.NoModifier, "["))
+pump(lambda: not w.feed_busy)
+check("真按键 `[` 能切回来", w.feed_source().key == _key_before, w.feed_source().key)
+w.exit_feed_mode(reason="probe")
+
+# 8.4 进出社区页不许改坏书页排版，社区页字体又能单独调
+LAYOUT_TEXT = ("第一段用来量排版。" * 40) + "\n" + ("第二段也有点内容。" * 40)
+w.is_local_mode = True
+w.local_file_path = "probe_layout.txt"
+w.local_full_text = LAYOUT_TEXT
+w.local_start_index = 0
+w.local_chapters = []
+w.local_heading_offsets = set()
+w.apply_style()
+w.render_local_page()
+qapp.processEvents()
+
+
+def snap_layout():
+    te = w.text_edit
+    blk = te.document().firstBlock()
+    return {
+        "font": (te.font().family(), round(te.font().pointSizeF(), 1)),
+        "line_height": round(blk.blockFormat().lineHeight(), 1),
+        "indent": round(blk.blockFormat().textIndent(), 1),
+        "margins": (te.viewportMargins().left(), te.viewportMargins().top(),
+                    te.viewportMargins().right(), te.viewportMargins().bottom()),
+        "page_bottom": round(float(getattr(w, "page_content_bottom", 0) or 0), 2),
+    }
+
+
+_layout_before = snap_layout()
+w.enter_feed_mode()
+pump(lambda: w.feed_nav.posts and not w.feed_busy)
+w.exit_feed_mode(reason="probe")
+pump(lambda: w.text_edit.toPlainText()[:12] == LAYOUT_TEXT[:12], 5.0)
+for _ in range(25):                 # 让 singleShot(0) 的页底重算跑掉
+    qapp.processEvents()
+    time.sleep(0.02)
+check("进出社区页之后，书页排版一模一样（字体/行距/缩进/页边距/页底）",
+      snap_layout() == _layout_before, (_layout_before, snap_layout()))
+
+w.config["feed_font_size"] = 22
+w.config["feed_font_family"] = w.config.get("font_family")
+w.enter_feed_mode()
+pump(lambda: w.feed_nav.posts and not w.feed_busy)
+check("社区页字号跟着 feed_font_size 走", w.text_edit.font().pointSizeF() == 22.0,
+      w.text_edit.font().pointSizeF())
+check("社区页 HTML 那一层的字号也换了（两处不能各说各话）",
+      w.feed_theme()["size"] == 22, w.feed_theme()["size"])
+w.exit_feed_mode(reason="probe")
+pump(lambda: w.text_edit.toPlainText()[:12] == LAYOUT_TEXT[:12], 5.0)
+qapp.processEvents()
+check("社区页字号再大，书页字号一个字都没动",
+      int(w.text_edit.font().pointSizeF()) == int(w.config.get("font_size", 14)),
+      (w.text_edit.font().pointSizeF(), w.config.get("font_size")))
+w.config.pop("feed_font_size", None)
+w.config.pop("feed_font_family", None)
+
+# 8.5 设置窗口里真的有这个开关，而且取消勾选是"删掉键"而不是留个 0
+_set_dlg = app_mod.SettingsDialog(w.config, w)
+_set_dlg.feed_font_check.setChecked(True)
+_set_dlg.feed_font_spin.setValue(19)
+qapp.processEvents()
+check("设置里有「社区页用单独字体」，一改就落到 config",
+      w.config.get("feed_font_size") == 19 and bool(w.config.get("feed_font_family")),
+      (w.config.get("feed_font_size"), w.config.get("feed_font_family")))
+_set_dlg.feed_font_check.setChecked(False)
+qapp.processEvents()
+check("取消勾选 = 回到\"跟着书页走\"（键删掉，不是留个 0）",
+      "feed_font_size" not in w.config and "feed_font_family" not in w.config,
+      (w.config.get("feed_font_size"), w.config.get("feed_font_family")))
+_set_dlg.reject()
+qapp.processEvents()
+
+print("\n=== 9. 退出：书的状态不许被动过 ===")
 w.exit_feed_mode(reason="probe")
 check("退得出来", not w.feed_mode)
 check("没有后台取数还在跑", not w.feed_busy)
@@ -368,7 +526,7 @@ check("日志里的失败都是'这个站连不上'，没有代码异常",
           for m in LOGS if "社区取数失败" in m),
       [m for m in LOGS if "社区取数失败" in m][:3])
 
-print("\n=== 9. 离线示例仍是兜底 ===")
+print("\n=== 10. 离线示例仍是兜底 ===")
 w.feed_sources = list(ORIG_SOURCES)          # 把第 6 节换掉的替身来源还原回来
 w.feed_source_i = [i for i, s in enumerate(w.feed_sources) if s.key == "demo"][0] \
     if any(s.key == "demo" for s in w.feed_sources) else 0
