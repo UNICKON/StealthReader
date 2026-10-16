@@ -12,6 +12,8 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 
 & $py -X utf8 tests\check_auth.py        # 凭据自检：我贴的 Cookie 到底管不管用（联网）
 & $py -X utf8 tests\check_auth.py --all  # 连没配 Cookie 的也查一遍（看基线是什么样）
+
+& $py -X utf8 tests\import_touchfish_cookies.py --apply   # 从 VS Code 摸鱼插件搬 Cookie（只读它、只写 feed_auth.json）
 ```
 
 ## 三个探针各管什么
@@ -20,8 +22,13 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 |---|---|---|
 | `probe_sources.py` | **零** | 每个来源的 列表 / 正文 / 评论 映射、统计单位、缓存与断网回落、混流分额与转发、凭据管线、状态码→人话的映射、结构不变量 |
 | `probe_ui.py` | **零** | 真适配器 + 替身 Http 走完整窗：混流席位、`[` `]` 切来源、`,` `.` 切栏目、详情、`O` 开原帖、退出不动书的状态、两个"结果晚到"的竞态 |
-| `probe_live.py` | 真 | 真站能不能拿到、缓存第二次是否 0 秒、混流是否并行、整窗真拉一遍 |
+| `probe_live.py` | 真 | 真站能不能拿到、缓存第二次是否 0 秒、混流是否并行、整窗真拉一遍、**配了 Cookie 的站正文/评论通不通** |
 | `check_auth.py` | 真 | 贴了 Cookie 之后一个站一个站地验证：HTTP 码、返回体顶层键、一句人话结论 |
+
+`import_touchfish_cookies.py` 是给"我自己贴 Cookie"这条路减负的：VS Code 摸鱼插件
+（`ylw.touchfish`）已经把各站 Cookie 明文放在 `%APPDATA%\Code\User\settings.json`，
+这个脚本**只读它、只写 `feed_auth.json`**（gitignored），并且**不打印 Cookie 内容**——只报
+"这个站有没有、多少字符、命中了哪个标记"。加 `--apply` 才真的写。
 
 **"零网络"是可以验证的，不是靠自觉**：`probe_sources.py` / `probe_ui.py` 开头把
 `requests.get / post / Session.get` 全换成抛异常，而所有适配器拿到的是一个读夹具的替身 Http。
@@ -51,6 +58,7 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 | `weibo_hotsearch.json` | 微博 `weibo.com/ajax/side/hotSearch` |
 | `discourse_latest.json` / `discourse_topic.json` | **meta.discourse.org**（官方 Discourse 站） |
 | `nga_unauth_403.json` | NGA **没登录时**的真响应（GBK，`1:未登录`） |
+| `zhihu_answer.json` / `zhihu_comments.json` | 知乎**带 Cookie** 拿到的正文/评论，**裁过**：只留第一段正文、前 3 条评论各前 40 字 |
 | `linuxdo_cf.html` | linux.do 的 Cloudflare `Just a moment...` 拦截页 |
 | `chiphell_567.html` | Chiphell 的非标准 567 防爬占位页 |
 | `zhihu_unauth_answers.json` | 知乎正文接口**没登录时**的真响应（`code 40362` 风控） |
@@ -58,6 +66,10 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 
 后五个是**"失败"的真响应**，专门用来验"连不上/没登录时页面说的是实话"——这类路径最容易
 被写成"假装成功"，所以更要拿真响应盯住。
+
+**带 Cookie 录的夹具一律裁过**（`_trim_answer` / `_trim_comments`）：知乎的正文和评论是**别人写的
+话**，不是我的代码产物，所以只留"够验形状"的一小段（第一段正文、前 3 条评论各前 40 字），
+长文和头像地址、用户 id 都不进仓库。裁掉的部分不影响验收——要验的是"字段取对了没有"。
 
 `discourse_*` 那一行的来源要看清楚：**不是 linux.do**。linux.do 前面挂着 Cloudflare 盾，
 本机录不到（403/超时），而 Discourse 适配器（回复树、最后回复时间、广告帖兜底）没有夹具就等于

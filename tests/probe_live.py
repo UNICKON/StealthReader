@@ -9,6 +9,7 @@
 
 会真下图片和真写缓存（都在 %TEMP% 下，跑完删掉），不会碰 config.json，也不动书架。
 """
+import json
 import os
 import shutil
 import sys
@@ -45,6 +46,24 @@ def note(msg):
 def source(cls):
     """每个来源一个 Http（共用缓存目录，这样跨来源也能看到缓存命中）。"""
     return cls(feed_net.Http(cache=feed_net.Cache(CACHE), headers={"Referer": cls.base_url + "/"}))
+
+
+def authed(cls):
+    """按 build_real_sources 的做法把 feed_auth.json 里的凭据交给来源（配了才带）。"""
+    cred = {}
+    try:
+        with open(os.path.join(SR, "feed_auth.json"), "r", encoding="utf-8") as f:
+            node = (json.load(f) or {}).get(cls.key)
+        cred = node if isinstance(node, dict) else {}
+    except Exception:
+        cred = {}
+    http = feed_net.Http(cache=feed_net.Cache(CACHE),
+                         cookies=feed_sources._cookies_from(cred.get("cookie")),
+                         user_agent=cred.get("user_agent") or feed_net.UA,
+                         headers={"Referer": cls.base_url + "/"})
+    src = cls(http, cred)
+    src.needs_auth = bool(getattr(cls, "needs_auth", False))
+    return src
 
 
 print("=== 1. 免登录的三个站，一个个试（拿不到就如实记下来）===")
@@ -165,6 +184,40 @@ try:
     qapp.processEvents()
 except Exception:
     pass
+
+print("\n=== 4. 贴了 Cookie 的站：正文和评论到底拿不拿得到（有 feed_auth.json 才跑）===")
+AUTH = os.path.join(SR, "feed_auth.json")
+if not os.path.exists(AUTH):
+    note("没有 feed_auth.json：跳过。想验就先把浏览器 Cookie 贴进去，再跑 tests/check_auth.py")
+else:
+    zs = authed(feed_sources.ZhihuSource)
+    if not zs.has_auth:
+        note("feed_auth.json 里没有知乎的 Cookie，跳过知乎正文/评论")
+    else:
+        try:
+            zposts, _ = zs.list("热榜", 0)
+            dp = zposts[0]
+            t0 = time.time()
+            d, _ = zs.detail(dp)
+            body_txt = " ".join(b.text for b in d.body)
+            check("知乎（带 Cookie）：正文真拿到了（%d 字，%.1fs）" % (d.text_length(), time.time() - t0),
+                  d.text_length() > 100 and "用的是 feed_auth.json 里的 Cookie" in body_txt,
+                  body_txt[:40])
+            check("知乎（带 Cookie）：正文不外链（图都落到本地了）",
+                  all(not (b.url or "").startswith("http") for b in d.body))
+            t0 = time.time()
+            cms, _ = zs.comments(dp)
+            # 条数不设下限：这一条回答可能就几条评论（实测遇到过只有 2 条的）。
+            # "评论接对了"由零网络探针拿真夹具验，这里只验"真网络这条路走得通"。
+            check("知乎（带 Cookie）：评论这条路通了（%d 条，%.1fs）" % (len(cms), time.time() - t0),
+                  len(cms) >= 1, len(cms))
+            check("知乎（带 Cookie）：评论作者和正文都在",
+                  all(c.author and c.body for c in cms),
+                  [(c.author, c.body[0].text[:12]) for c in cms[:2]])
+            check("知乎（带 Cookie）：详情和评论共用一次回答请求",
+                  len(zs._ans) == 1, list(zs._ans.keys())[:2])
+        except Exception as e:
+            note("知乎带 Cookie 这条路这次没走通：%s: %s" % (type(e).__name__, e))
 
 shutil.rmtree(CACHE, ignore_errors=True)
 print("\n================ 结果 ================")

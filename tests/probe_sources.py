@@ -160,6 +160,9 @@ else:
 # ---------------------------------------------------------------- 知乎
 print("\n=== 3. 知乎（只有热榜免登录）===")
 raw_z = fixture("zhihu_hot_list.json")
+# 带 Cookie 才录得到的两个（`record_fixtures.py zhihu`）：正文和评论。缺了就在第 13 节跳过。
+raw_za = fixture("zhihu_answer.json")
+raw_zc = fixture("zhihu_comments.json")
 if not raw_z:
     skip("知乎", "缺夹具")
 else:
@@ -462,7 +465,7 @@ check("（手写形状）[img] 变成图片块、[quote] 里的字留着、[b] �
       and "[b]" not in texts and "[/quote]" not in texts,
       (kinds, texts[:60]))
 
-print("\n=== 13. 知乎：贴了 Cookie 才去试正文，试不到就说试不到 ===")
+print("\n=== 13. 知乎：贴了 Cookie 才去试正文，试不到就说试不到（真夹具）===")
 zlist = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache()))
 zp0, _ = zlist.list("热榜", 0)
 d_noauth, _ = zlist.detail(zp0[0])
@@ -475,26 +478,44 @@ zdeny = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, fail=["answers"],
 d_deny, _ = zdeny.detail(zp0[0])
 deny_txt = " ".join(b.text for b in d_deny.body)
 check("配了 Cookie 但接口拦住：实话里带上了失败原因，而不是假装没配",
-      "贴了 Cookie" in deny_txt and "连接超时" in deny_txt, deny_txt[-70:])
-zok = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z, "answers": {"data": [
-    {"id": 123, "content": "<p>这是用 Cookie 拿到的正文。</p><p>第二段。</p>",
-     "voteup_count": 9, "comment_count": 2}]}}, cache=MemCache()), {"cookie": "z_c0=ok"})
-d_ok, _ = zok.detail(zp0[0])
-ok_txt = " ".join(b.text for b in d_ok.body)
-check("（手写形状）Cookie 管用时正文真的显示出来了",
-      "这是用 Cookie 拿到的正文" in ok_txt and "第二段" in ok_txt, ok_txt[:50])
-check("（手写形状）并且标明正文是从哪来的", "Cookie" in ok_txt, ok_txt[-40:])
-zcmt = feed_sources.ZhihuSource(FakeHttp({
-    "hot-list": raw_z,
-    # 顺序有讲究：评论地址里也带 "answers" 这个词，所以 "/comments" 必须排在前面先匹配
-    "/comments": {"data": [{"id": 1, "content": "同意", "vote_count": 3,
-                            "author": {"name": "某人"}, "created_time": 1700000000}]},
-    "answers": {"data": [{"id": 77, "content": "<p>x</p>"}]},
-}, cache=MemCache()), {"cookie": "z_c0=ok"})
-d_c, _ = zcmt.comments(zp0[0])
-check("（手写形状）评论接口通了就显示评论", len(d_c) == 1 and d_c[0].author == "某人",
-      [(c.author, c.body[0].text) for c in d_c])
-check("（手写形状）评论拿不到时如实为空", zdeny.comments(zp0[0]) == ([], None))
+      "这次没拿到正文" in deny_txt and "连接超时" in deny_txt, deny_txt[-70:])
+check("而且不再把'还要前端签名'那句没验证过的猜测写给人看",
+      "x-zse-96" not in deny_txt and "zse" not in deny_txt)
+
+# 真夹具：`record_fixtures.py zhihu` 用浏览器 Cookie 录下来的答案/评论（正文截到 1200 字、去掉头像等字段）
+if raw_za is None or raw_zc is None:
+    skip("知乎正文（zhihu_answer.json 缺失：录一次 record_fixtures.py zhihu 才会有）")
+else:
+    zok = feed_sources.ZhihuSource(
+        # 顺序有讲究：评论地址里也带 "answers" 这个词，所以 "/comments" 必须排在前面先匹配
+        FakeHttp({"/comments": raw_zc, "answers": raw_za, "hot-list": raw_z}, cache=MemCache()),
+        {"cookie": "z_c0=ok"})
+    d_ok, _ = zok.detail(zp0[0])
+    ok_txt = " ".join(b.text for b in d_ok.body)
+    real_html = (raw_za["data"][0].get("content") or "")
+    plain = feed_mod.strip_html(real_html)
+    check("（真夹具）Cookie 管用时正文真的显示出来了",
+          len(plain) > 10 and plain[:20] in ok_txt, (len(plain), ok_txt[:40]))
+    check("（真夹具）正文没有被大段吞掉（块文本 >= 原文的 80%）",
+          len(ok_txt) >= 0.8 * len(plain), (len(ok_txt), len(plain)))
+    check("（真夹具）标明正文是从哪来的", "用的是 feed_auth.json 里的 Cookie" in ok_txt,
+          ok_txt[-40:])
+    d_c, _ = zok.comments(zp0[0])
+    real_c = raw_zc["data"]
+    check("（真夹具）评论真的显示出来了（夹具是裁过的，条数一致即可）",
+          len(d_c) == len(real_c) >= 3, (len(d_c), len(real_c)))
+    check("（真夹具）评论作者取的是 author.member.name（第一版按 author.name 取全是空）",
+          all(c.author for c in d_c) and d_c[0].author == real_c[0]["author"]["member"]["name"],
+          (d_c[0].author, real_c[0]["author"]["member"]["name"]))
+    check("（真夹具）评论的赞数和正文都留住了",
+          d_c[0].score == real_c[0]["vote_count"]
+          and real_c[0]["content"][:8] in " ".join(b.text for b in d_c[0].body),
+          (d_c[0].score, [b.text for b in d_c[0].body][:1]))
+    check("作者整个是 null（匿名/已注销）时给空字符串，不显示 None 那种乱码",
+          feed_sources._zhihu_name(None) == "" and feed_sources._zhihu_name({"role": "normal"}) == "")
+    check("评论拿不到时如实为空", zdeny.comments(zp0[0]) == ([], None))
+    check("同一个问题不会为详情和评论各下一次（_ans 共用）",
+          len(zok._ans) == 1, list(zok._ans.keys())[:2])
 
 print("\n=== 14. 来源登记认出了新来源 ===")
 on_nga = feed_sources.build_real_sources(

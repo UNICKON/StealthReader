@@ -479,19 +479,24 @@ def fair_pages(merged, per_page=PAGE_MIX, cap=0):
 
 
 class ZhihuSource(RealSource):
-    """知乎热榜。**只有列表这一层能免登录拿到**——这是实测出来的结论，不是没试。
+    """知乎：列表免登录，正文/评论**贴了 Cookie 就能拿到**（这一点实测过了）。
 
-    2026-10-16 在本机网络把几条路都走了一遍：
+    2026-10-16 在本机网络把几条路都走了一遍（当时的结论是"只有列表能免登录"）：
       - `api.zhihu.com/topstory/hot-list`（移动端接口）**不看 Cookie**：29 条热榜，
         每条带问题 id / 标题 / 摘要 / 回答数 / 关注数 / 热度文案 / 真原帖地址；
-      - 详情全要签名或登录：`www.zhihu.com/api/v3/...hot-lists` 401「身份未经过验证」、
+      - 免登录时详情全要签名或登录：`www.zhihu.com/api/v3/...hot-lists` 401「身份未经过验证」、
         `www.zhihu.com/hot` 与 `/billboard` 403（返回 `zh-zse-ck` 让你去算签名）、
         `api.zhihu.com/questions/<id>` 403「请求参数异常，请升级客户端」、
-        答案列表 403 风控（试了加 `x-api-version` / App UA 也一样）；
-      - 评论同理拿不到（没有 answer id 可谈）。
+        答案列表 403 风控（试了加 `x-api-version` / App UA 也一样）。
 
-    所以这里**只做列表**：详情页摆出热榜给的摘要 + 一句实话，评论返回空。
-    宁可少显示，也不编造正文——"拿不到就说拿不到"是这一轮反复用到的那条。
+    **贴上浏览器 Cookie 之后结论变了**（2026-10-16 复测）：答案接口
+    `/api/v4/questions/<qid>/answers?include=...&limit=1` 直接 200、正文是 `data[0].content` 的 HTML；
+    评论接口 `/api/v4/answers/<aid>/comments` 也 200（15 条）。所以之前担心的
+    `x-zse-96` 前端签名在这一层**并不需要**——"光有 Cookie 不够"那句猜测已经被实测推翻，
+    代码和文档都不再这么说。
+
+    所以现在的分工：列表免登录；**配了 Cookie 才去试正文和评论**，试到了就显示，
+    试不到就把原因写在页面上（不编正文、不编评论）。
     """
     key = "zhihu"
     label = "知乎"
@@ -499,6 +504,10 @@ class ZhihuSource(RealSource):
     needs_auth = False
     CHANNELS = ["热榜"]
     LIST_URL = "https://api.zhihu.com/topstory/hot-list?limit=50&reverse_order=0"
+
+    def __init__(self, http, auth=None):
+        RealSource.__init__(self, http, auth)
+        self._ans = {}          # 问题 id -> (answer, 失败原因)：详情和评论共用一次请求
 
     def channels(self):
         return list(self.CHANNELS)
@@ -569,32 +578,47 @@ class ZhihuSource(RealSource):
         note = ("知乎的正文和评论要登录才给（接口返回 401/403），这里只显示热榜页给出的摘要。"
                 "按 O 打开原帖看全文。")
         if self.has_auth and why:
-            note = ("贴了 Cookie 也还是没拿到正文：%s。"
-                    "知乎网页接口除了 Cookie 还要前端算 x-zse-96 签名，光有 Cookie 往往不够；"
-                    "这里先显示热榜页给出的摘要，按 O 打开原帖看全文。" % why)
+            # 实测（2026-10-16，用浏览器 Cookie）：带 Cookie 时这个接口是 200，正文和评论都能拿到。
+            # 所以拿不到只可能是 Cookie 过期/被风控，或者这条回答本身只开放摘要——
+            # 不把"还要前端签名"这种没被验证过的说法写给人看。
+            note = ("这次没拿到正文：%s。\n\n"
+                    "常见原因是 Cookie 过期了（重新从浏览器复制一次），"
+                    "或者这条回答本身只开放摘要。这里先显示热榜页给出的摘要，按 O 打开原帖看全文。"
+                    % why)
         body.append(Block(kind=BLOCK_QUOTE, text=note))
         out.body = body
         return out, None
 
     def _answer(self, qid):
-        """向知乎要这个问题的头一条回答。返回 (answer dict 或 None, 失败原因)。"""
+        """向知乎要这个问题的头一条回答。返回 (answer dict 或 None, 失败原因)。
+
+        这个 URL 的形状是**拿真 Cookie 试出来的**（2026-10-16：HTTP 200，`data[0].content` 是正文 HTML）；
+        同一个问题只下一次（详情页和评论都问同一条回答，靠 `self._ans` 共用）。"""
+        qid = str(qid)
+        if qid in self._ans:
+            return self._ans[qid]
         url = ("%s/api/v4/questions/%s/answers"
-               "?include=data[*].content,excerpt,voteup_count,comment_count,author.name"
-               "&limit=1&offset=0&sort_by=default" % (self.base_url, qid))
+               "?include=data[*].content,excerpt,voteup_count,comment_count"
+               "&limit=1&offset=0" % (self.base_url, qid))
         try:
             data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎正文",
                                       headers={"x-requested-with": "fetch"}, timeout=LIST_TIMEOUT)
         except FeedNetError as e:
-            return None, str(e)
+            self._ans[qid] = (None, str(e))
+            return self._ans[qid]
         except Exception as e:
-            return None, type(e).__name__
+            self._ans[qid] = (None, type(e).__name__)
+            return self._ans[qid]
         items = (data or {}).get("data") if isinstance(data, dict) else None
         if not items:
-            return None, "接口没回内容（可能改版了）"
+            self._ans[qid] = (None, "接口没回内容（可能改版了）")
+            return self._ans[qid]
         first = items[0] if isinstance(items, list) else items
         if not isinstance(first, dict):
-            return None, "接口回的形状不认识"
-        return first, ""
+            self._ans[qid] = (None, "接口回的形状不认识")
+            return self._ans[qid]
+        self._ans[qid] = (first, "")
+        return self._ans[qid]
 
     def _fetch_answer(self, qid):
         """正文：返回 (blocks 或 None, 失败原因)。"""
@@ -607,7 +631,10 @@ class ZhihuSource(RealSource):
         return blocks, ""
 
     def comments(self, post, cursor=None):
-        """评论：配了 Cookie 才试。回答 id 要先从正文接口拿（同一个请求有缓存，不会多下一次）。"""
+        """评论：配了 Cookie 才试。回答 id 要先从正文接口拿（`self._ans` 共用，不会多下一次）。
+
+        实测（2026-10-16）：带 Cookie 时返回 200、15 条评论。注意评论作者嵌了一层
+        ——`author.member.name`，第一版按 `author.name` 取，全是空字符串。"""
         if not self.has_auth:
             return [], None
         first, _why = self._answer(str(post.id))
@@ -624,16 +651,28 @@ class ZhihuSource(RealSource):
         for it in (items or []):
             if not isinstance(it, dict):
                 continue
-            au = (it.get("author") or {}).get("name") if isinstance(it.get("author"), dict) else ""
-            ts = feed_mod.parse_time(it.get("created_time"))
             out.append(Comment(
                 cid=str(it.get("id") or len(out)),
-                author=str(au or ""),
-                created=feed_mod.human_time(ts),
+                author=_zhihu_name(it.get("author")),
+                created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
                 score=int(it.get("vote_count") or 0),
                 body=feed_mod.blocks_from_html(it.get("content") or "", max_blocks=40),
             ))
         return out, None
+
+
+def _zhihu_name(author):
+    """知乎的"作者"有两种形状：`{"name": ...}`（回答）和 `{"role":..., "member":{"name":...}}`（评论）。
+
+    认不出来就给空字符串——宁可显示"匿名"，也不显示 `{'role': 'normal'}` 这种给人看的乱码。"""
+    if not isinstance(author, dict):
+        return ""
+    if author.get("name"):
+        return str(author["name"])
+    member = author.get("member")
+    if isinstance(member, dict) and member.get("name"):
+        return str(member["name"])
+    return ""
 
 
 class WeiboSource(RealSource):

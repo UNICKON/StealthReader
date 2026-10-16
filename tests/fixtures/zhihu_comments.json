@@ -1,0 +1,41 @@
+{
+ "data": [
+  {
+   "id": 11598246167,
+   "content": "领导全部问责了，医院直接领导层换人，人民医院托管了",
+   "vote_count": 11,
+   "created_time": 1792146768,
+   "author": {
+    "role": "normal",
+    "member": {
+     "name": "淡淡狼"
+    }
+   }
+  },
+  {
+   "id": 11597778062,
+   "content": "医院领导没换人，你可以自行上网搜索",
+   "vote_count": 1,
+   "created_time": 1792147255,
+   "author": {
+    "role": "normal",
+    "member": {
+     "name": "拽气崽崽"
+    }
+   }
+  },
+  {
+   "id": 11598100407,
+   "content": "问责了，罚酒三杯",
+   "vote_count": 3,
+   "created_time": 1792147288,
+   "author": {
+    "role": "normal",
+    "member": {
+     "name": "拽气崽崽"
+    }
+   }
+  }
+ ],
+ "_trimmed": "只留了前 3 条、每条前 40 字（别人的原话不整段搬进仓库）"
+}

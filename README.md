@@ -348,11 +348,16 @@ pyinstaller -F -w -i read.ico -n "StealthReader" main.py
   - **linux.do**：最新 / 热门。列表是 Discourse 的 `latest.json`，正文取首个帖子的 HTML，
     评论按 `reply_to_post_number` **还原成真正的树**。当前被 Cloudflare 的盾拦着，
     要贴浏览器 Cookie（含 `cf_clearance`，且 UA 必须与浏览器一致）才能过。
-  - **知乎**：热榜。走**移动端接口** `api.zhihu.com/topstory/hot-list`，这个地址**不要 Cookie**，
-    实测拿得到 29 条（标题 / 摘要 / 回答数 / 热度文案都在里面）。但是**正文和评论拿不到**：
-    `www.zhihu.com/api/v3/...` 401「身份未经过验证」、`/hot` 与 `/billboard` 403（返 `zh-zse-ck`
-    要你算签名）、`api.zhihu.com/questions/<id>` 403「请升级客户端」（加 `x-api-version` / App UA 也一样）、
-    答案列表 403 风控。所以详情页就是**热榜给的那段真摘要 + 一句实话**，评论如实为空——
+  - **知乎**：热榜 + **正文 + 评论**（正文/评论要 Cookie）。列表走**移动端接口**
+    `api.zhihu.com/topstory/hot-list`，这个地址**不要 Cookie**，实测拿得到 29~50 条
+    （标题 / 摘要 / 回答数 / 热度文案都在里面）。
+    **贴上浏览器 Cookie 之后正文和评论都是通的**（2026-10-16 实测）：
+    答案接口 `/api/v4/questions/<问题 id>/answers?include=data[*].content,...` 返回 200、
+    正文是 `data[0].content` 的 HTML（真图会落到本地缓存）；
+    评论接口 `/api/v4/answers/<回答 id>/comments` 也 200。
+    之前担心的 `x-zse-96` 前端签名**在这一层并不需要**——那条是免登录时踩到的墙，
+    结论已经按实测改掉了（代码和文档里都不再这么说）。
+    没配 Cookie 时详情页就是**热榜给的那段真摘要 + 一句实话**，评论如实为空——
     宁可少显示，也不编正文。`O` 打开的是真原帖地址（`www.zhihu.com/question/<id>`）。
   - **微博**：热搜。走 `weibo.com/ajax/side/hotSearch`，**不要 Cookie**，实测 52 条
     （词条 / 热度值 / 新·热·爆 标记都在里面）。和知乎同一个道理：**正文和评论要登录**
@@ -373,9 +378,17 @@ pyinstaller -F -w -i read.ico -n "StealthReader" main.py
   上一次拿到的列表比一片空白有用。刚失败过的来源 60 秒内不再去撞，混流的等待时间就是最慢那个站
   （不是四个站相加）。
 - **登录凭据**：`feed_auth.json`（gitignore，**绝不进版本库**），格式
-  `{"linuxdo": {"cookie": "...", "user_agent": "..."}, "nga": {"cookie": "..."}}`；
+  `{"linuxdo": {"cookie": "...", "user_agent": "..."}, "zhihu": {"cookie": "..."}}`；
   没这个文件就当一个都没配，该站连不上时页脚照实说（要登录又没配的来源，页脚会写一句
-  "这个来源要 Cookie"，免得对着空白猜原因）。**贴完怎么知道管不管用**——有个自检：
+  "这个来源要 Cookie"，免得对着空白猜原因）。
+  **懒得手抄**：装了 VS Code 的摸鱼插件（TouchFish）的话，它已经把各站 Cookie 明文存在
+  `%APPDATA%\Code\User\settings.json` 里了，一条命令搬过来（只读插件、只写 feed_auth.json、
+  不打印 Cookie 内容）：
+  ```powershell
+  & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\import_touchfish_cookies.py          # 先看有什么
+  & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\import_touchfish_cookies.py --apply  # 再搬
+  ```
+  **贴完怎么知道管不管用**——有个自检：
   ```powershell
   & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\check_auth.py          # 只查配了的
   & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\check_auth.py --all    # 连没配的也看一眼
@@ -399,20 +412,22 @@ pyinstaller -F -w -i read.ico -n "StealthReader" main.py
   & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\probe_sources.py
   & "$env:APPDATA\WPS 灵犀\python-env\python.exe" -X utf8 tests\probe_ui.py
   ```
-- **已知边界（以及为什么还停在这）**：以下几个站都要浏览器 Cookie，**探测结论都写在
-  `docs/community-feed-design.md` 里**，凭据到手就能接着做——
-  - **知乎**：热榜免登录；**正文/评论要登录**。代码已经会去试（详情页里配了 Cookie 就真发一次请求，
-    试到了就显示正文、试不到就把失败原因写在页面上），但知乎网页接口除了 Cookie **还要前端算
-    `x-zse-96` 签名**，光有 Cookie 往往不够——所以这条要等真 Cookie 试一次才有结论。
-  - **linux.do**：Cookie 里要有 `cf_clearance`，且 **UA 必须和浏览器一致**（自检会把这一点写出来）。
-  - **微博**：热搜免登录（已接）；正文/评论要登录，移动端接口直接返 432。
+- **已知边界（以及为什么还停在这）**：下面这些站的结论都是**实测**的，写在
+  `docs/community-feed-design.md` 里——
+  - **知乎**：热榜免登录；**正文/评论贴上 Cookie 就通**（已接，见上一节）。
+  - **linux.do**：本机网络下 Cloudflare 一律返 `Just a moment...`；光有插件里那份 Cookie 还不够
+    ——里面没有 `cf_clearance`，而且 **UA 必须和当初过盾的浏览器一致**。Python 的 TLS 指纹也过不去，
+    这条要么放弃、要么换做法（自检会把这一点写出来）。
+  - **微博**：热搜免登录（已接）；正文/评论要登录，移动端接口直接返 432。插件里没配微博 Cookie。
+  - **NGA**：贴上 Cookie 后**列表通了**（实测 200）；正文那条 `read.php` 仍返 403，还在查。
   - **Chiphell**：对 `/`、`/portal.php`、`forum.php?mod=guide&view=hot`、`forum.php?mod=rss&fid=36`
     以及移动端变体**一律返非标准 HTTP 567 的防爬占位页**——脚本基本过不去，有 Cookie 也未必。
-  - **小红书**：免登录不可行（`/explore` 是 36 KB 的空壳 SPA、`api/sns/web/v1/homefeed` 返 500）。
-  - **微信读书**（批次 F：书架 → 章节 → 喂进本地的书管线）：不打 Cookie 直连
-    `weread.qq.com/web/shelf/sync` 得到的是 `{"errCode":-2010,"errMsg":"用户不存在"}`，
-    也就是"没登录"。管线要等 Cookie 到位再动。（顺带探到它有个免登录的公开**榜单**层，
-    但榜单对读书这件事没用，**不做**。）
+  - **小红书**：免登录只是空壳（`/explore` 36 KB SPA）；**带上 Cookie 后服务端会渲染出真数据**
+    （实测探索页 229 KB，页面里有 `noteId` / `xsec_token`）——所以它是可做的，排在批次 E 的后半。
+  - **微信读书**（批次 F：书架 → 章节 → 喂进本地的书管线）：免登录时
+    `web/shelf/sync` 返 `{"errCode":-2010,"errMsg":"用户不存在"}`；**带上 Cookie 就 200**
+    （实测 80 KB，带 `bookCount` / `bookProgress`）——F 已经解封，接着做 "读"那一层。
+    （顺带探到它有个免登录的公开**榜单**层，但榜单对读书这件事没用，**不做**。）
   演示数据里 12 条帖子的原帖地址是空的，所以 `O` 对示例数据没反应（真实来源都有真地址）。
 
 ## 🔧 稳定性（本机增补，非上游功能）

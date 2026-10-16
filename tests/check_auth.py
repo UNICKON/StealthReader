@@ -214,6 +214,18 @@ def check_weread(S, save):
           save="shelf" if save else None)
 
 
+def check_xhs(S, save):
+    print("  小红书（免登录只有空壳；带上 Cookie 看服务端渲不渲染）")
+    for label, url in (("探索页", "https://www.xiaohongshu.com/explore"),
+                       ("搜索页", "https://www.xiaohongshu.com/search_result?keyword=%E5%A5%BD%E7%89%A9")):
+        r = S.req(label, url, expect_json=False, save=label if save else None)
+        if r is not None and r.status_code == 200:
+            body = r.content.decode("utf-8", "replace")
+            has = [m for m in ("noteId", "note_id", "xsec_token") if m in body]
+            print("      页面里带真实笔记数据的痕迹: %s"
+                  % (", ".join(has) if has else "没有（还是空壳）"))
+
+
 def check_chiphell(S, save):
     print("  Chiphell（下面每条路径都见过非标准 567 的防爬页）")
     for label, url in (("首页", "https://www.chiphell.com/"),
@@ -223,7 +235,7 @@ def check_chiphell(S, save):
 
 CHECKS = (("zhihu", check_zhihu), ("weibo", check_weibo), ("nga", check_nga),
           ("linuxdo", check_linuxdo), ("v2ex", check_v2ex),
-          ("weread", check_weread), ("chiphell", check_chiphell))
+          ("weread", check_weread), ("xhs", check_xhs), ("chiphell", check_chiphell))
 
 
 def main():

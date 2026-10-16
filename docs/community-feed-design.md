@@ -313,6 +313,30 @@ V2EX 需要科学上网时走系统代理，程序不自建代理。
   `check_auth.py --all` 的基线结论：微博热搜 200、知乎热榜 200 / 正文 403（风控 40362）、
   NGA 403（GBK 未登录）、linux.do CF 403、V2EX 超时、微信读书 `errCode -2010`、Chiphell 567。
 
+### C 轮实现笔记（知乎正文与评论：真 Cookie 一到手就通了）
+
+- **之前那句"光有 Cookie 往往不够"被实测推翻了。** 免登录时答案接口确实 403（风控），
+  于是推测"网页接口除了 Cookie 还要前端算 `x-zse-96` 签名"；**贴上浏览器 Cookie 后直接 200**：
+  `/api/v4/questions/<qid>/answers?include=data[*].content,excerpt,voteup_count,comment_count&limit=1`
+  返回正文 HTML（`data[0].content`），评论接口 `/api/v4/answers/<aid>/comments` 也 200。
+  代码、README、探针里那句猜测全部删掉了——**没验证过的推测不许留在给人看的地方**。
+- **Cookie 从哪来**：装了 VS Code 摸鱼插件（`ylw.touchfish`）的话，它把各站 Cookie 明文存在
+  `%APPDATA%\Code\User\settings.json`。新增 `tests/import_touchfish_cookies.py`：只读插件、
+  只写 `feed_auth.json`、**不打印 Cookie 内容**（只报长度和命中标记），加 `--apply` 才落盘。
+  这条把"我自己贴 Cookie"从"手抄几 KB"降到一条命令。
+- **踩到的真形状**：评论作者嵌了一层——`author.member.name`，第一版按 `author.name` 取，
+  拿到的全是空字符串；而且 `author` 整个可能是 `null`（匿名/已注销）。现在两种形状都认，
+  认不出来给空字符串（绝不把 `{'role': 'normal'}` 这种给人看的乱码显示出去）。
+- **只下一次请求**：详情和评论都要"这条回答"，用 `self._ans` 按问题 id 共用一次请求，
+  探针里有一条专门盯它（`len(zs._ans) == 1`）。
+- **带 Cookie 的夹具要裁**：知乎正文和评论是别人写的话。`record_fixtures.py` 里
+  `_trim_answer` 只留第一段正文、`_trim_comments` 只留前 3 条各前 40 字，头像地址和用户 id
+  一概不进仓库。要验的是"字段取对了没有"，不是把别人的文章搬回家。
+- **验收**：`probe_sources.py` **126 项全过**（知乎那节从"手写形状"升级成真夹具驱动：
+  正文没被吞、作者取的是 `member.name`、赞数与正文都在、匿名不显示乱码、共用一次请求）；
+  `probe_live.py` 新增第 4 节"贴了 Cookie 的站"——实测正文 1000 字（0.4 s）、评论拿到、
+  图全部落地不外链；`probe_ui.py` 仍 28 项全过。
+
 ## 8. 这轮明确不做
 
 视频、音频、发帖/点赞/转发等写操作、多账号、整站离线下载、自建代理、云同步阅读进度。
