@@ -30,7 +30,7 @@ from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject
                           QThread, QTimer, QEvent, QUrl)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
                          QFontMetrics, QTextCursor, QTextBlockFormat, QWheelEvent,
-                         QPixmap, QIcon, QPainterPath, QTextCharFormat)
+                         QPixmap, QIcon, QPainterPath, QTextCharFormat, QPalette)
 
 # 隐形背诵：AnkiConnect 客户端。缺文件也不能让整个阅读器起不来，所以单独兜一层。
 try:
@@ -3094,6 +3094,11 @@ class StealthReader(QWidget):
                 # 偷瞄时双击正文 = 换成安全文档（窗口继续亮着、偷瞄状态保持，只换内容）
                 self.enter_safe_mode()
                 return True
+            if event.type() == QEvent.MouseButtonDblClick and self.feed_mode:
+                # 社区页：双击 = 进去/折叠（force 一下，不然"已经选中"会被当成第二次单击）
+                self.feed_click(event.pos(), force=True)
+                self.clear_text_selection()
+                return True
             if event.type() == QEvent.MouseButtonPress and self.on_viewport_press(event):
                 return True
             if event.type() == QEvent.MouseMove and self.on_viewport_move(event):
@@ -3653,7 +3658,7 @@ class StealthReader(QWidget):
         if not FEED_OK or self.feed_nav is None:
             return
         nav = self.feed_nav
-        theme = feed_mod.theme_from_config(self.config, max(240, self.width() - 40))
+        theme = self.feed_theme()
         if nav.view == "detail":
             html = feed_mod.render_detail(nav.post, nav, theme)
         else:
@@ -3689,6 +3694,115 @@ class StealthReader(QWidget):
         cur.mergeBlockFormat(bf)
         self.apply_page_margins(cut=False)   # 社区流是滚动的，不做书页那种"退到整行"的底部裁切
 
+    def feed_text_color(self):
+        """社区页要用的正文颜色 = **正文此刻实际在用的颜色**。
+
+        透明窗口下这个值不能只看 config 里的初始值：auto（变色龙）模式会把正文换成纯黑或
+        纯白（按背景亮度定），幽灵模式还带透明度——浅灰字压在浅色背景上就是"看不清"。
+        取值顺序：正文控件当前调色板 → auto 模式按背景亮度算黑/白 → config.text_color。
+        """
+        col = None
+        try:
+            col = self.text_edit.palette().color(QPalette.Text)
+            if (not col.isValid()) or col.alpha() == 0:
+                col = None
+        except Exception:
+            col = None
+        if col is None and self.config.get("auto_mode"):
+            bg = getattr(self.content_frame, "auto_bg_fill", None)
+            if bg is not None and bg.isValid():
+                bright = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
+                col = QColor(0, 0, 0) if bright > 128 else QColor(255, 255, 255)
+                col.setAlpha(int(self.config.get("opacity", 0.9) * 255))
+        if col is None:
+            col = QColor(str(self.config.get("text_color") or ""))
+        if not col.isValid():
+            col = QColor(216, 216, 216)
+        return f"rgba({col.red()}, {col.green()}, {col.blue()}, {col.alpha()})"
+
+    def feed_theme(self):
+        return feed_mod.theme_from_config(self.config, max(240, self.width() - 40),
+                                          text_color=self.feed_text_color())
+
+    def feed_item_blocks(self):
+        """把"每条一段定位文本"落成文档里的光标，按文档顺序：[(对象, 类型, 光标)]。
+
+        **顺序查找**（每次从上一处接着往下找）而不是全文 find：两条同名作者、同一时间的
+        评论表头一模一样，全文 find 永远只命中最早那条——高亮就会一直粘在它上面。
+        鼠标点选也吃这份序列，于是"哪一条在哪儿"只有一份答案。
+        """
+        if not FEED_OK or self.feed_nav is None:
+            return []
+        doc = self.text_edit.document()
+        out = []
+        cur = QTextCursor(doc)
+        cur.movePosition(QTextCursor.Start)
+        for obj, kind, needle in feed_mod.item_needles(self.feed_nav):
+            if not needle:
+                continue
+            hit = doc.find(needle, cur)
+            if hit.isNull():
+                # 兜一层：来源文本里的空白可能被 Qt 折成半角空格（`　`→` `）
+                flat = " ".join(needle.split())
+                if flat and flat != needle:
+                    hit = doc.find(flat, cur)
+            if hit.isNull():
+                continue
+            out.append((obj, kind, hit))
+            cur = hit
+        return out
+
+    def feed_current_block(self):
+        nav = self.feed_nav
+        if nav is None:
+            return None
+        target = nav.current_comment() if nav.view == "detail" else nav.selected()
+        if target is None:
+            return None
+        for obj, _kind, cur in self.feed_item_blocks():
+            if obj is target:
+                return cur
+        return None
+
+    def feed_click(self, pos, force=False):
+        """鼠标点在社区页上：选中点到的那一条；**再点同一条**就进去（列表）/折叠（评论）。
+
+        reddit 的手感就是这样：单击选中、再单击进去，不用双击（双击也照这个走，force 进来）。
+        点在空白上不动光标，点正文里的字仍然是"选字复制"（走原来的划选路径）。
+        """
+        nav = self.feed_nav
+        if nav is None:
+            return False
+        block_no = self.text_edit.cursorForPosition(pos).blockNumber()
+        hit = None
+        for obj, kind, cur in self.feed_item_blocks():
+            if cur.blockNumber() <= block_no:
+                hit = (obj, kind)
+            else:
+                break
+        if hit is None:
+            return False
+        obj, kind = hit
+        cur_sel = nav.current_comment() if nav.view == "detail" else nav.selected()
+        if cur_sel is obj and not force:
+            return self.feed_toggle_collapse() if kind == "comment" else self.feed_open()
+        if kind == "comment":
+            for i, (c, _d, _p) in enumerate(nav.visible_comments()):
+                if c is obj:
+                    nav.c_index = i
+                    break
+            self.feed_highlight()
+        else:
+            try:
+                nav.index = nav.posts.index(obj)
+            except ValueError:
+                return False
+            self.feed_highlight()
+            if nav.near_end():
+                self.feed_load("more")
+        self.update_review_bar()
+        return True
+
     def feed_highlight(self):
         """把选中项提亮一档（extra selections，只改字色，不铺底色块）。
 
@@ -3699,16 +3813,9 @@ class StealthReader(QWidget):
             if nav is None:
                 self.text_edit.setExtraSelections([])
                 return
-            theme = feed_mod.theme_from_config(self.config, max(240, self.width() - 40))
-            needle = feed_mod.selection_needle(nav)
-            cur = self.text_edit.document().find(needle) if needle else QTextCursor()
-            if cur.isNull() and needle:
-                # 兜一层：来源文本里的空白可能被 Qt 折成半角空格（`　`→` `），
-                # 原样找不到就按折过的空白再找一次
-                flat = " ".join(needle.split())
-                if flat and flat != needle:
-                    cur = self.text_edit.document().find(flat)
-            if cur.isNull():
+            theme = self.feed_theme()
+            cur = self.feed_current_block()
+            if cur is None:
                 self.text_edit.setExtraSelections([])
                 return
             sel = QTextEdit.ExtraSelection()
@@ -5429,6 +5536,15 @@ class StealthReader(QWidget):
             self.text_edit.set_pinned_cursor(Qt.ArrowCursor)   # 拖动结束，正文区回箭头
             self.save_window_pos()
             return True
+        if self.feed_mode:
+            # 社区页：单击 = 选中 / 再点进去（或折叠）。划到了字就仍然算"选字复制"，
+            # 交给原来的划选路径——工位上想抄一段走，这条不能堵。
+            if (event.button() == Qt.LeftButton
+                    and not self.text_edit.textCursor().hasSelection()
+                    and self.feed_click(event.pos())):
+                self.clear_text_selection()   # 点选之后不留光标/残影
+                return True
+            return False
         if self.review_mode:
             # 背诵时：单击一下（没划到字）＝ 翻面，和 Anki 里点卡片同义；拖选只用来复制
             if event.button() == Qt.LeftButton and not self.text_edit.textCursor().hasSelection():

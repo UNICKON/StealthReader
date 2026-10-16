@@ -11,9 +11,11 @@
 批次 A 只有 DemoSource（读 feed_demo/ 里的 JSON）：零配置、离线、给真人看效果用。
 """
 
+import colorsys
 import html
 import json
 import os
+import re
 
 # 正文块的种类（Block.kind）
 BLOCK_P = "p"
@@ -43,6 +45,8 @@ class Block(object):
 
     @classmethod
     def from_dict(cls, d):
+        if isinstance(d, Block):        # 适配器直接给 Block 也收（批次 B 的每个来源都这么写）
+            return cls(d.kind, d.text, d.url, d.lang)
         if isinstance(d, str):          # 容错：来源只给了纯文本
             return cls(BLOCK_P, d)
         d = d or {}
@@ -70,6 +74,8 @@ class Comment(object):
 
     @classmethod
     def from_dict(cls, d):
+        if isinstance(d, Comment):      # 同上：适配器直接给 Comment 也收
+            return cls(d.id, d.author, d.created, d.score, d.body, d.replies)
         d = d or {}
         return cls(
             d.get("id", ""), d.get("author", ""), d.get("created", ""), d.get("score", 0),
@@ -343,7 +349,7 @@ class FeedNav(object):
         self.roots = list(comments or [])
         self.flat = comment_forest(self.roots)
         self.detail_loaded = True
-        if self.c_index >= len(self.flat):
+        if self.c_index >= len(self.visible_comments()):
             self.c_index = 0
 
     def back(self):
@@ -359,17 +365,24 @@ class FeedNav(object):
         return True
 
     def move_comment(self, step):
-        if not self.flat:
+        """上下移动光标——**在"看得见的评论"里移动**，不是在整个拍平序列里。
+
+        `c_index` 一律指 `visible_comments()`（屏幕上那串）的下标：折叠之后被藏起来的
+        子树不该还能被选中（原来按 `flat` 取下标，折叠后往下按一格就会停到一条看不见的
+        评论上，高亮跟着消失——"高亮不见了"那类怪毛病就是这么来的）。"""
+        vis = self.visible_comments()
+        if not vis:
             return False
-        new = max(0, min(len(self.flat) - 1, self.c_index + step))
+        new = max(0, min(len(vis) - 1, self.c_index + step))
         if new == self.c_index:
             return False
         self.c_index = new
         return True
 
     def current_comment(self):
-        if 0 <= self.c_index < len(self.flat):
-            return self.flat[self.c_index][0]
+        vis = self.visible_comments()
+        if 0 <= self.c_index < len(vis):
+            return vis[self.c_index][0]
         return None
 
     def toggle_collapse(self):
@@ -431,16 +444,28 @@ def _nl(text):
     return esc(text).replace("\n", "<br>")
 
 
-def theme_from_config(cfg, width_px=420):
-    """把阅读器的排版设置折成渲染主题：社区页和书页**同一套字号/配色**，
-    换字号、改透明度时社区页跟着一起变——"接进现有排版"就是这个意思。"""
-    base = cfg.get("text_color", "#d8d8d8")
+def theme_from_config(cfg, width_px=420, text_color=None):
+    """把阅读器的排版设置折成渲染主题：社区页和书页**同一套字号/配色**，换字号、改透明度时
+    社区页跟着一起变——"接进现有排版"就是这个意思。
+
+    颜色一律从**正文此刻实际用的颜色**派生（`text_color` 由界面层传进来：auto/幽灵模式会把
+    正文换成纯黑或纯白，透明窗口下这个值不能靠 config 猜）。派生规则只有一条：
+
+        往中等灰靠近 = 弱化，离开中等灰 = 强调
+
+    而且只在**亮度**上推，不在 RGB 上乘系数——原来 `216 * 0.45 = 97`（深灰），压在透明/
+    半透明窗口上就是看不见（真人反馈的"字体颜色导致看不清"）。同一个"弱化"改成亮度上推：
+    216 → 176，仍然清楚，只是不抢眼。不管正文是深色还是浅色，弱化都朝中间、强调都朝两端，
+    两边的可读性都不塌。
+    """
+    p = _parse_color(text_color if text_color is not None else cfg.get("text_color"))
     return {
-        "text": base,
-        "mark": _mix(base, 1.0, boost=38),
-        "dim": _mix(base, 0.62),
-        "faint": _mix(base, 0.45),
-        "accent": _mix(base, 1.0, accent=True),
+        "text": _rgba(p),
+        "mark": _rgba(_toward_mid(p, -0.34)),      # 标题/强调：比正文更抢眼（浅色正文→更白）
+        "dim": _rgba(_toward_mid(p, 0.24)),        # 次要信息（摘要）
+        "faint": _rgba(_toward_mid(p, 0.42)),      # 更次要（时间、统计、来源）
+        "rule": _rgba(_toward_mid(p, 0.66)),       # 评论树的竖线
+        "accent": _rgba(_accent(p)),               # 来源名：色相偏蓝，亮度不动
         "size": int(cfg.get("font_size", 14)),
         "family": cfg.get("font_family", "Microsoft YaHei"),
         "lowkey": bool(cfg.get("feed_lowkey", False)),
@@ -448,22 +473,52 @@ def theme_from_config(cfg, width_px=420):
     }
 
 
-def _mix(color, factor, boost=0, accent=False):
-    """把正文色调成亮/暗档，省得社区页自己硬编码一套配色（换主题时会和正文脱节）。"""
+def _parse_color(value, default=(216, 216, 216, 255)):
+    """吃下 config 里实际会出现的几种写法：#rgb / #rrggbb / rgb() / rgba()。
+
+    原来这里只认 `#rrggbb`，而阅读器默认写的就是 `rgba(200, 200, 200, 255)`——解析失败后
+    静默回落到硬编码灰，于是"跟着阅读设置走"是假的，连真人自己调过的字色都不生效。
+    """
+    s = str(value or "").strip()
     try:
-        c = (color or "#d8d8d8").strip().lstrip("#")
-        if len(c) == 3:
-            c = "".join(ch * 2 for ch in c)
-        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+        if s.startswith("#"):
+            h = s[1:]
+            if len(h) == 3:
+                h = "".join(ch * 2 for ch in h)
+            if len(h) >= 6:
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+        m = re.match(r"rgba?\(([^)]*)\)", s, re.I)
+        if m:
+            nums = [x.strip() for x in m.group(1).split(",")]
+            r, g, b = (int(round(float(nums[i]))) for i in range(3))
+            a = int(round(float(nums[3]))) if len(nums) > 3 else 255
+            clamp = lambda v: max(0, min(255, v))       # noqa: E731
+            return (clamp(r), clamp(g), clamp(b), clamp(a))
     except Exception:
-        r, g, b = 216, 216, 216
-    if accent:
-        r, g, b = r + 8, g + 34, b + 62
-    elif boost:
-        r, g, b = r + boost, g + boost, b + boost
-    else:
-        r, g, b = int(r * factor), int(g * factor), int(b * factor)
-    return "#%02x%02x%02x" % (max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
+        pass
+    return default
+
+
+def _rgba(c):
+    return "rgba(%d, %d, %d, %d)" % (c[0], c[1], c[2], c[3])
+
+
+def _toward_mid(c, k):
+    """按亮度把颜色朝中等灰推进（k>0）或推离（k<0）；色相、饱和度、透明度都不动。"""
+    r, g, b = c[0] / 255.0, c[1] / 255.0, c[2] / 255.0
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    l = max(0.0, min(1.0, l + (0.5 - l) * k))
+    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    return (int(round(r * 255)), int(round(g * 255)), int(round(b * 255)), c[3])
+
+
+def _accent(c):
+    """来源名/链接色：色相拉到偏蓝，**亮度保持原样**（亮度一动，可读性就跟着动）。"""
+    r, g, b = c[0] / 255.0, c[1] / 255.0, c[2] / 255.0
+    _h, l, s = colorsys.rgb_to_hls(r, g, b)
+    l = max(l, 0.64) if l >= 0.5 else min(l, 0.36)     # 别停在中等灰附近，那是最难认的一段
+    r, g, b = colorsys.hls_to_rgb(210 / 360.0, l, max(0.35, min(0.7, s or 0.45)))
+    return (int(round(r * 255)), int(round(g * 255)), int(round(b * 255)), c[3])
 
 
 def _meta_line(post, theme):
@@ -484,48 +539,57 @@ def _img_tag(src, theme, max_w):
 
 
 def render_list(posts, nav, theme):
-    """混流卡片列表。
+    """混流列表，按 reddit 那套版式语法排：
 
-    **一律不用底色块**：靠缩进和字色区分。真人前面反馈过"这个区块不要用背景色，
-    太显眼"——那条同样适用于这里，而且在工位上更像一份文档。
+        标题（加粗、比正文大 3px）
+        来源 · 栏目 · 作者 · 时间          ← 小一号、次要色
+        摘要                              ← 一行预览，正文色弱一档
+        [图]
+        428 赞 · 6 条评论                  ← 统计行压在卡片底部（reddit 的招牌就是它）
+
+    **一律不用底色块**：真人反馈过"这个区块不要用背景色，太显眼"，所以卡片之间靠留白
+    和字号层级分开，一条分隔线都不画（新版 reddit 的列表也是留白分行）。
 
     这里也**不画"当前选中"的标记**：HTML 是上一次渲染的产物，光标一动标记就成了过期
     信息（"高亮跟着光标走"这件事只有 extra selection 做得到）。文档本身与选中无关，
     于是上下移动不必重排整篇 HTML。"""
     if not posts:
         return _wrap(theme, f'<p style="color:{theme["dim"]};">这个来源还没有内容。</p>')
+    small = max(10, theme["size"] - 3)
     parts = []
     for p in posts:
         parts.append(f'<a name="post-{esc(p.id)}"></a>')
         parts.append(
-            f'<p style="margin:13px 0 1px 0; color:{theme["text"]};'
-            f' font-size:{theme["size"] + 1}px; font-weight:bold;">{esc(p.title)}</p>'
+            f'<p style="margin:16px 0 0 0; color:{theme["mark"]};'
+            f' font-size:{theme["size"] + 3}px; font-weight:bold;">{esc(p.title)}</p>'
         )
         meta = _meta_line(p, theme)
-        extra = []
-        if p.score:
-            extra.append(f'{p.score} 赞')
-        if p.n_comments:
-            extra.append(f'{p.n_comments} 评论')
-        if extra:
-            meta += (" · " if meta else "") + " · ".join(esc(e) for e in extra)
         if meta:
-            # 缩进用 margin-left，不用前导空格：全角空格会被 Qt 折成半角，缩进等于没有
             parts.append(
-                f'<p style="margin:0 0 1px 0; margin-left:14px; color:{theme["faint"]};'
-                f' font-size:{max(11, theme["size"] - 2)}px;">{meta}</p>'
+                f'<p style="margin:2px 0 0 0; color:{theme["faint"]};'
+                f' font-size:{small}px;">{meta}</p>'
             )
         if p.excerpt:
             parts.append(
-                f'<p style="margin:0 0 2px 0; margin-left:14px; color:{theme["dim"]};'
+                f'<p style="margin:5px 0 0 0; color:{theme["dim"]};'
                 f' font-size:{max(11, theme["size"] - 1)}px;">{_nl(p.excerpt)}</p>'
             )
         if p.cover:
             if theme["lowkey"]:
-                parts.append(f'<p style="margin:0 0 0 14px; color:{theme["faint"]};'
-                             f' font-size:11px;">[图]</p>')
+                parts.append(f'<p style="margin:4px 0 0 0; color:{theme["faint"]};'
+                             f' font-size:{small}px;">[图]</p>')
             else:
-                parts.append(f'<p style="margin:5px 0 2px 14px;">{_img_tag(p.cover, theme, 320)}</p>')
+                parts.append(f'<p style="margin:6px 0 0 0;">{_img_tag(p.cover, theme, 320)}</p>')
+        stats = []
+        if p.score:
+            stats.append(f'{p.score} 赞')
+        if p.n_comments:
+            stats.append(f'{p.n_comments} 条评论')
+        if stats:
+            parts.append(
+                f'<p style="margin:6px 0 0 0; color:{theme["faint"]};'
+                f' font-size:{small}px;">{esc(" · ".join(stats))}</p>'
+            )
     return _wrap(theme, "".join(parts))
 
 
@@ -534,24 +598,30 @@ def render_detail(post, nav, theme):
     if post is None:
         return _wrap(theme, f'<p style="color:{theme["dim"]};">没有选中帖子。</p>')
     parts = [
-        f'<p style="margin:0 0 3px 0; color:{theme["mark"]}; font-size:{theme["size"] + 3}px;'
+        f'<p style="margin:0 0 3px 0; color:{theme["mark"]}; font-size:{theme["size"] + 4}px;'
         f' font-weight:bold;">{esc(post.title)}</p>',
-        f'<p style="margin:0 0 10px 0; color:{theme["faint"]};'
-        f' font-size:{max(11, theme["size"] - 2)}px;">{_meta_line(post, theme)}</p>',
+        f'<p style="margin:0 0 12px 0; color:{theme["faint"]};'
+        f' font-size:{max(10, theme["size"] - 3)}px;">{_meta_line(post, theme)}</p>',
     ]
     parts.extend(_block_paragraphs(post.body, theme))
     total, _shown, nfold = nav.comment_stats() if nav.detail_loaded else (0, 0, 0)
     if total:
-        head = f'评论 {total} 条' + (f'　已折叠 {nfold} 处' if nfold else "")
+        head = f'评论 {total} 条' + (f' · 折叠 {nfold} 处' if nfold else "")
+        # 一条短横线分开正文和评论区（reddit 也是这么分的）。用字符画而不是 <hr>：
+        # Qt 的 <hr> 颜色不走主题，在透明窗口上可能正好看不见。
         parts.append(
-            f'<p style="margin:18px 0 2px 0; color:{theme["dim"]};'
-            f' font-size:{max(11, theme["size"] - 1)}px;">—— {esc(head)} ——</p>'
+            f'<p style="margin:20px 0 0 0; color:{theme["rule"]};'
+            f' font-size:{max(10, theme["size"] - 3)}px;">──────────</p>'
+        )
+        parts.append(
+            f'<p style="margin:4px 0 0 0; color:{theme["faint"]};'
+            f' font-size:{max(10, theme["size"] - 3)}px;">{esc(head)}</p>'
         )
         parts.append(render_comment_tree(nav, theme))
     elif nav.detail_loaded:
         parts.append(
-            f'<p style="margin:18px 0 2px 0; color:{theme["faint"]};'
-            f' font-size:{max(11, theme["size"] - 1)}px;">—— 没有评论 ——</p>'
+            f'<p style="margin:20px 0 0 0; color:{theme["faint"]};'
+            f' font-size:{max(10, theme["size"] - 3)}px;">没有评论</p>'
         )
     return _wrap(theme, "".join(parts))
 
@@ -569,8 +639,18 @@ def _comment_header(c):
     return " · ".join(bits)
 
 
+def comment_guide(depth):
+    """评论树的线程线：一层一根竖线。
+
+    用字符画（`│ ` 重复）而不是缩进 + 边框：Qt 的富文本没有"段落左边框"这种属性，
+    能画出竖线的只有表格边框或者 1px 宽的底色格——前者颜色不跟主题、后者就是"底色块"
+    （真人反复说过不要）。字符画的竖线在任何字体、任何背景上都一定显示，
+    而且正文跟着表头一起走，层级一眼看得出来。"""
+    return "│ " * max(0, int(depth))
+
+
 def render_comment_tree(nav, theme):
-    """树状评论：层级用缩进表示，折叠的节点显示"还藏着几条"。
+    """树状评论：一层一根竖线，折叠的节点显示"还藏着几条"。
 
     和列表一样，**"哪一条是当前的"不画在 HTML 里**（那是 extra selection 的事）；
     折叠角是数据本身的状态，所以照画。"""
@@ -578,19 +658,21 @@ def render_comment_tree(nav, theme):
     if not vis:
         return f'<p style="color:{theme["faint"]};">（评论都折叠了）</p>'
     parts = []
+    small = max(10, theme["size"] - 3)
     for c, depth, _p in vis:
-        indent = 14 * depth
+        guide = esc(comment_guide(depth))
+        bars = f'<span style="color:{theme["rule"]};">{guide}</span>'
         head = _comment_header(c)
         if c.replies:
             head += " · " + ("▸ 展开（藏着 %d 条）" % len(descendant_ids(c))
                              if c.id in nav.collapsed else "▾")
         parts.append(
-            f'<p style="margin:9px 0 0 {indent}px; color:{theme["dim"]};'
-            f' font-size:{max(11, theme["size"] - 2)}px;">{esc(head)}</p>'
+            f'<p style="margin:11px 0 0 0; color:{theme["faint"]};'
+            f' font-size:{small}px;">{bars}{esc(head)}</p>'
         )
         inner = "".join(
-            f'<p style="margin:1px 0 0 {indent + 12}px; color:{theme["text"]};'
-            f' font-size:{max(11, theme["size"] - 1)}px;">{_block_inline(b, theme)}</p>'
+            f'<p style="margin:2px 0 0 0; color:{theme["text"]};'
+            f' font-size:{max(11, theme["size"] - 1)}px;">{bars}{_block_inline(b, theme)}</p>'
             for b in (c.body or [])
         )
         parts.append(inner)
@@ -676,6 +758,29 @@ def status_text(nav, source_label=""):
     return "　".join(bits)
 
 
+def post_needle(post):
+    """列表里定位一条帖子用的文本（就是标题那一行）。"""
+    return post.title if post is not None else ""
+
+
+def comment_needle(comment):
+    """详情里定位一条评论用的文本（表头那一行）。"""
+    return _comment_header(comment) if comment is not None else ""
+
+
+def item_needles(nav):
+    """当前视图里"每条一段定位文本"，按**文档顺序**排列：[(对象, 类型, 文本)]。
+
+    界面层拿它做两件事：把 extra selection 落到当前这一条上；把鼠标点到的块号换算成
+    "点的是哪一条"。共用同一个序列，就不会出现"渲染里找得到、定位里找不到"这种漂移。
+    """
+    if nav is None:
+        return []
+    if nav.view == "detail":
+        return [(c, "comment", _comment_header(c)) for c, _d, _p in nav.visible_comments()]
+    return [(p, "post", p.title) for p in nav.posts]
+
+
 def selection_needle(nav):
     """当前选中项在文档里的定位文本——界面层靠它把 extra selection 落到那一条上。
 
@@ -690,7 +795,5 @@ def selection_needle(nav):
         拼出来的定位文本在文档里根本找不到。
     """
     if nav.view == "detail":
-        c = nav.current_comment()
-        return _comment_header(c) if c is not None else ""
-    p = nav.selected()
-    return p.title if p is not None else ""
+        return comment_needle(nav.current_comment())
+    return post_needle(nav.selected())
