@@ -2942,7 +2942,7 @@ class StealthReader(QWidget):
         # 多余空间也分给它（实测占了半个窗口高），正文区就被压掉一半。
         self.review_bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         bar_layout = QVBoxLayout(self.review_bar)
-        bar_layout.setContentsMargins(7, 3, 7, 5)
+        bar_layout.setContentsMargins(6, 2, 6, 2)
         bar_layout.setSpacing(2)
         plan_row = QHBoxLayout()
         plan_row.setContentsMargins(0, 0, 0, 0)
@@ -2974,10 +2974,6 @@ class StealthReader(QWidget):
         self.review_btn_grid.setSpacing(4)
         self._review_bar_per_row = 0
         btn_row.addWidget(self.review_buttons_area)
-        self.review_hint_label = QLabel("")
-        self.review_hint_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
-        self.review_hint_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        btn_row.addWidget(self.review_hint_label, 1)
         bar_layout.addLayout(btn_row)
         self.review_bar.setVisible(False)
         self.content_layout.addWidget(self.review_bar)
@@ -3736,14 +3732,13 @@ class StealthReader(QWidget):
         return QFontMetrics(font)
 
     def fill_review_bar(self):
-        """页脚的文字内容：学习计划 + 评分按钮 + 右侧提示。
+        """页脚的内容：学习计划（必要信息）+ 评分按钮（带 Anki 给的间隔）。
 
-        单独拆出来是为了**缩放时能只重跑文字**（不重套样式表）。
+        只有这两样——**没有操作提示**（真人明确说"不用操作提示，只要必要的信息"）。
 
-        窗口窄了怎么办：**折行，不砍间隔**。`1 重来 <1 分` 里那个 `<1 分` 是这张卡按下去
-        的结果（真人明确说"这个很重要"），所以窄窗宁可把四个按钮排成两行（429 宽下是 2+2），
-        也不把间隔省掉；同时给右侧提示留出位置，宁可再多折一行，也不让提示被挤成半截。
-        只有当"一行连着间隔的一个按钮都放不下"（窗口极窄）时，才退到不带间隔的短文字。
+        窗口窄了**折行，不砍间隔**：`1 重来 <1 分` 里那个 `<1 分` 是这张卡按下去会变成什么
+        （真人明确说"这个很重要"），宁可排成两行也不省；只有一行连一个带间隔的按钮都放不下
+        （窗口极窄）时才退到短文字。页脚高度完全由内容决定，不设固定高度。
         """
         if not hasattr(self, "review_bar") or not self.review_bar.isVisible():
             return
@@ -3760,15 +3755,6 @@ class StealthReader(QWidget):
             when = REVIEW_TEXT_JUNK.sub("", str(times[i])) if i < len(times) else ""
             full.append(f"{buttons[i]} {name}" + (f" {when}" if when else ""))
             short.append(f"{buttons[i]} {name}")
-        # 提示分三档：放得下就全写，放不下退一档，最后一档只剩动作——
-        # 关键是不出现"半截字"（"空格翻面 · Ctrl+D 收"这种），也不要动不动就把提醒整句拿掉。
-        if not card:
-            hints = ("今天清完了", "今天清完了", "今天清完了")
-        elif s.get("shown"):
-            hints = ("1-4 评分 · R 重听 · U 撤销", "1-4 评分 R 重听", "1-4 评分")
-        else:
-            hints = ("空格翻面 · Ctrl+D 收起", "空格翻面 Ctrl+D", "空格翻面")
-        hint_short = hints[-1]
         fm = self._review_bar_metrics()
         avail = max(140, self.width() - 22)
         maxw = max([fm.horizontalAdvance(t) + 22 for t in full] or [0])
@@ -3776,9 +3762,7 @@ class StealthReader(QWidget):
         texts = short if compact else full
         if compact:
             maxw = max([fm.horizontalAdvance(t) + 22 for t in short] or [maxw])
-        # 给提示留位（按中间那档量，最多留三分之一宽度），再算一行放几个
-        reserve = min(fm.horizontalAdvance(hints[1]) + 12, avail // 3)
-        per_row = max(1, min(len(buttons), int((max(120, avail - reserve) + 4) // (maxw + 4)))) if maxw else 1
+        per_row = max(1, min(len(buttons), int((avail + 4) // (maxw + 4)))) if maxw else 1
         self._layout_review_buttons(per_row, len(buttons))
         for i, btn in enumerate(self.review_buttons):
             if i < len(buttons):
@@ -3797,17 +3781,10 @@ class StealthReader(QWidget):
             tail.append(f"今日已 {s['reviewed_today']}")
         if s.get("counted"):
             tail.append(f"本次 {s['counted']}")
-        self.review_plan_label.setText("　".join(x for x in [plan, " · ".join(tail)] if x))
-        # 最后一行还剩多少地方：从长到短挑第一句放得下的（而不是让它被挤成半截字）
-        used_last = (len(buttons) - 1) % per_row + 1 if buttons else 0
-        room = avail - used_last * (maxw + 4)
-        hint = hint_short
-        if not compact:
-            for candidate in hints:                     # 6px 就够：网格本身还有 4px 间距
-                if room >= fm.horizontalAdvance(candidate) + 6:
-                    hint = candidate
-                    break
-        self.review_hint_label.setText(hint)
+        plan_text = "　".join(x for x in [plan, " · ".join(tail)] if x)
+        # 没有计数就把这一行收起来（空 QLabel 也会占掉一行高度，页脚高度只跟着内容走）
+        self.review_plan_label.setText(plan_text)
+        self.review_plan_label.setVisible(bool(plan_text))
 
     def _layout_review_buttons(self, per_row, count):
         """把 count 个评分按钮按每行 per_row 个重排（窄窗折行，不省间隔）。
@@ -3830,14 +3807,6 @@ class StealthReader(QWidget):
             if col >= per_row:
                 col = 0
                 row += 1
-        # 提示跟在最后一行的按钮后面；那一行正好排满就挤在同一行的末尾（省一行高度），
-        # 而不是另起一行——页脚每多一行就多吃掉 24px 正文高度。
-        if col == 0 and row > 0:
-            row -= 1
-            col = per_row
-        grid.addWidget(self.review_hint_label, row, col, 1, 1)
-        for c in range(per_row + 1):
-            grid.setColumnStretch(c, 1 if c == col else 0)
 
     def apply_counts(self, stats, reviewed):
         """把 Anki 给的计数装进会话（数据都由后台线程取来，这里一次网都不连）。
