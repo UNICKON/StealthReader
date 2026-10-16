@@ -107,11 +107,11 @@ V2EX 需要科学上网时走系统代理，程序不自建代理。
 - **C 知乎正文与评论**（Cookie；入口已经探明是 `www.zhihu.com/api/v3` 与 App 签名）。
   **前置已做**：凭据管线 + 自检工具（见 C/D 轮笔记），代码会在配了 Cookie 时真去试正文，
   并把结果（成功 / 401 / 403）直接写在详情页上——真正的解析等一次真 Cookie 的响应。
-- **D NGA + Chiphell**（论坛 HTML/接口解析）。**NGA 已实现**（默认关，`__output=8` 约定 + 要 Cookie），
-  **Chiphell 仍然过不去**。免登录的探测结论：NGA 连 `__output=8` 都返 403 `1:未登录`
-  （GBK JSON），首页直接写游客不能访问；Chiphell 对 `/`、`/portal.php`、
-  `forum.php?mod=guide&view=hot`、`forum.php?mod=rss&fid=36` 以及移动端变体
-  **一律返非标准 HTTP 567 的防爬占位页**。
+- **D NGA + Chiphell**（论坛 HTML/接口解析）。**NGA 已实现**（默认开，`__output=8` 约定 + 要 Cookie），
+  **Chiphell 确认过不去、不做**，实测与结论见下面的「D.2 Chiphell」一节。免登录的探测结论：NGA 连
+  `__output=8` 都返 403 `1:未登录`（GBK JSON），首页直接写游客不能访问；Chiphell 对 `/`、
+  `/portal.php`、`forum.php?mod=guide&view=hot`、`forum.php?mod=rss&fid=36` 以及移动端变体
+  **一律返非标准 HTTP 567 的 JS 安全验证页**（真响应存在 `tests/fixtures/chiphell_567.html`）。
 - **E 微博 + 小红书**（单独开关 + 降级路径）。**微博热搜已做**（免登录，`weibo.com/ajax/side/hotSearch`，
   52 条，默认关、单独开关）；微博正文/评论和**小红书**都要 Cookie（小红书免登录 `/explore` 只是
   36 KB 的空壳 SPA、`api/sns/web/v1/homefeed` 返 500 `create invoker failed`），留在凭据管线之后。
@@ -377,6 +377,19 @@ V2EX 需要科学上网时走系统代理，程序不自建代理。
   列表筛选、`__T` 两种含义、GBK+strict、`lou=0` 取楼主帖、相对路径图落地、
   BBCode 清理、UID 占位名不显示、老帖 403 翻译成人话且不谎称"要登录"）；
   `probe_live.py` 的第 4 节同时验知乎和 NGA（真网络：列表 49 条、正文、评论）。
+
+### D.2 Chiphell：走不通，记在这里（别再花时间试了）
+
+- 试过的入口（都带浏览器 UA、都带同一份 Cookie）：`/`、`/portal.php`、
+  `forum.php?mod=guide&view=hot`、`forum.php?mod=rss&fid=36`，以及移动端变体。
+  **一律返回非标准 HTTP 567，体是同一张 7.3 KB 的 JS"安全验证"页**：没有标题、
+  `<style>` 里全是 `a1`…`a9` 这种定位类名、`<script>` 里 17 处 JS 痕迹——滑块/风控那种
+  **要跑 JS 才过得去**的挑战页（Discuz 本体一眼都没看到）。
+- 真响应原样存成了 `tests/fixtures/chiphell_567.html`（不裁：它本来就不含任何用户数据）。
+  留着是因为它能证明"不是我们没试，是它不让过"，也让下一个想加 Chiphell 的人从这份文件看起。
+- 结论：**不做**。要过它就得在本地跑它的 JS 或者逆它的滑块，那已经不在"一个阅读器"的边界里，
+  而且这种挑战页随时会换。linux.do 的 Cloudflare 盾属于同一类（`cf_clearance` 必须和 UA 一致，
+  本机拿不到），也一并不做。
 
 ### E 轮实现笔记（小红书：内容不在接口里，在页面里）
 

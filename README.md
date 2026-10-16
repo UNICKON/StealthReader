@@ -456,7 +456,9 @@ pyinstaller -F -w -i read.ico -n "StealthReader" main.py
   - **NGA**：列表与正文都通（要 Cookie）。**老帖子是它自己不让看**
     （`5:帖子发布或回复时间超过限制`），页面上照它原话说是"老帖"，不推给"登录"。
   - **Chiphell**：对 `/`、`/portal.php`、`forum.php?mod=guide&view=hot`、`forum.php?mod=rss&fid=36`
-    以及移动端变体**一律返非标准 HTTP 567 的防爬占位页**——脚本基本过不去，有 Cookie 也未必。
+    以及移动端变体**一律返非标准 HTTP 567 的 JS"安全验证"页**（7.3 KB、要跑 JS 的滑块风控，
+    Discuz 本体一眼都没看到；真响应存在 `tests/fixtures/chiphell_567.html`）。**不做**——
+    要过它得在本地跑它的 JS 或逆滑块，那已经不在"一个阅读器"的边界里。
   - **小红书**：**已经做成一个来源（要 Cookie）**，见上面那节——这里留一句结论：
     免登录只是空壳（`/explore` 36 KB 的 SPA），**带上 Cookie 后服务端会把内容渲染进页面**，
     所以它是"能做"的，不是"要签名就没辙"。
