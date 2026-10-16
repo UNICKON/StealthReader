@@ -817,7 +817,11 @@ def _meta_line(post, theme):
     bits = [b for b in [post.channel, post.author, post.created] if b]
     head = f'<span style="color:{theme["accent"]};">{esc(src)}</span>' if src else ""
     tail = " · ".join(esc(b) for b in bits)
-    return (head + (" · " if head and tail else "") + tail)
+    # 标签（V2EX 的节点、微博的"新/热/爆"）用强调色跟在最后：这些是来源给的真信息，
+    # 拿到了就该显示，而不是收进对象里永远不露面。最多三条，别让元信息行比标题还长。
+    tags = " · ".join(f'<span style="color:{theme["accent"]};">{esc(t)}</span>'
+                      for t in (post.tags or [])[:3] if t)
+    return " · ".join([b for b in (head, tail, tags) if b])
 
 
 def _img_tag(src, theme, max_w):

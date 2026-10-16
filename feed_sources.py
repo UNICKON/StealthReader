@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
-"""社区统一流的真实来源适配器（批次 B）。
+"""社区统一流的真实来源适配器（批次 B / D / E）。
 
 每个来源只做三件事：列表 / 正文 / 评论，全部返回 feed.py 的 Post / Comment。
 界面层一行都不用改——这就是批次 A 定下的契约。
 
-当前四个来源：
+当前来源：
 - **IT之家**：免登录，本机实测可用（移动端接口 + 正文接口）；
 - **V2EX**：免登录的公开 API，但**本机网络到不了**（TCP 443 超时，见 README），代码按官方
   文档写、用夹具验；网络恢复即可用；
 - **linux.do**：标准 Discourse，站前挂着 Cloudflare 盾，**必须贴浏览器 Cookie**
   （含 cf_clearance，且 UA 要一致）才能过；
+- **知乎**：免登录只能拿热榜（移动端 `api.zhihu.com/topstory/hot-list`），正文/评论要登录；
+- **微博**：免登录只能拿热搜榜，正文/评论要登录（**默认关闭**，属于"单独开关"那一档）；
 - **混流**：把上面几个合页成一条，"混流为主"就靠它。
 另有 feed.py 里的 DemoSource（离线示例）垫底。
 
@@ -23,6 +25,7 @@ import os
 import re
 import threading
 import time
+from urllib.parse import quote
 
 import feed as feed_mod
 from feed import Block, Comment, Post, SourceAdapter, BLOCK_IMG, BLOCK_P, BLOCK_QUOTE
@@ -340,6 +343,10 @@ class DiscourseSource(RealSource):
                 tags=[str(x) for x in (t.get("tags") or [])],
             ))
         posts = [p for p in posts if p.title]
+        # API 把置顶公告排在数组最前，而置顶公告的 last_posted_at 可能停在很多年前
+        # （meta.discourse.org 那条 "New to Discourse? Start here!" 是 2013）——不重排的话，
+        # 单看 linux.do 时最上面永远是一条陈旧公告。混流里它会自然沉下去，这里补上同一条规矩。
+        posts.sort(key=lambda p: (p.ts or 0), reverse=True)
         nxt = page + 1 if posts and page + 1 < MAX_PAGES else None
         return posts, nxt
 
@@ -535,6 +542,83 @@ class ZhihuSource(RealSource):
         return [], None                     # 拿不到就是拿不到，不造评论
 
 
+class WeiboSource(RealSource):
+    """微博热搜。**只有"榜单"这一层免登录**——和知乎是同一类情况，但更薄。
+
+    2026-10-16 实测：
+      - `weibo.com/ajax/side/hotSearch` **不要 Cookie**：52 条词条，带 `num`（热度）、
+        `label_name`（新 / 热 / 爆）、`word_scheme`（能直接拼搜索地址）；
+      - 正文和评论都要登录：`m.weibo.cn/api/container/getIndex...` 返回 **HTTP 432**（空体），
+        网页版接口要前端签名，`m.weibo.cn` 还要 `X-Requested-With` + 签名参数。
+    所以这里是"热榜"形态：一条就是**一个词条**，详情页给的是热度 + 一句实话 + 搜索地址，
+    不编造正文和评论。
+
+    **默认关闭**（设计文档里微博属于"单独开关"的那一档）：`feed_sources` 里写
+    `["ithome","v2ex","linuxdo","zhihu","weibo"]` 才会出现在来源列表里。
+    """
+    key = "weibo"
+    label = "微博"
+    base_url = "https://weibo.com"
+    needs_auth = False
+    CHANNELS = ("热搜",)
+    HOT_URL = "https://weibo.com/ajax/side/hotSearch"
+
+    def channels(self):
+        return list(self.CHANNELS)
+
+    def image_base(self):
+        return self.http.cache.img_dir if self.http.cache is not None else ""
+
+    def list(self, channel=None, cursor=None):
+        data = self._get(self.HOT_URL, TTL_LIST, "微博热搜", timeout=LIST_TIMEOUT)
+        items = ((data or {}).get("data") or {}).get("realtime") or []
+        now = time.time()
+        posts = []
+        for i, it in enumerate(items):
+            if not isinstance(it, dict):
+                continue
+            word = feed_mod.strip_html(it.get("word") or "").strip()
+            if not word:
+                continue
+            # 热榜没有"发布时间"——它本来就是此刻的榜单，所以按"现在"参与混流排序，
+            # 不然 ts=0 会让它永远沉在混流最后（这是个诚实的选择，不是拍脑袋）。
+            tags = []
+            label = str(it.get("label_name") or "").strip()
+            if label:
+                tags.append(label)
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel="热搜", pid=word,
+                title=word, author="",
+                created=feed_mod.human_time(now), ts=now,
+                score=int(it.get("num") or 0), score_label="热度",
+                n_comments=0,                     # 评论数拿不到，就不显示这一项
+                excerpt="",                       # note 字段和 word 基本重复，不拿它凑摘要
+                url=self._search_url(it.get("word_scheme") or word),
+                tags=tags,
+            ))
+        return posts, None                        # 热搜就这一页
+
+    @staticmethod
+    def _search_url(word):
+        """热搜词条给人点的地址。用 s.weibo.com 的搜索页：它认话题（#xx#）也认普通词。"""
+        return "https://s.weibo.com/weibo?q=" + quote(str(word or ""), safe="")
+
+    def detail(self, post, cursor=None):
+        """微博给不了正文：把热度摆出来，直说为什么只有这么点，搜索地址留着给 O。"""
+        out = Post.from_dict(post.to_dict())
+        body = []
+        if out.score:
+            body.append(Block(kind=BLOCK_P, text="热度 %s（微博热搜榜）" % feed_mod._num(out.score)))
+        body.append(Block(kind=BLOCK_QUOTE,
+                          text="微博的正文和评论要登录才给（移动端接口返回 432、网页接口要前端签名），"
+                               "这里只给热搜词条。按 O 去微博搜这个词看原帖。"))
+        out.body = body
+        return out, None
+
+    def comments(self, post, cursor=None):
+        return [], None                           # 拿不到就是拿不到，不造评论
+
+
 class MixSource(SourceAdapter):
     """混流：把各来源的第一页合起来按时间倒序排，**默认就落在它上面**。
 
@@ -651,7 +735,8 @@ def build_real_sources(cache_root=None, config=None, log=None):
 
     made = []
     for key, cls in (("ithome", IthomeSource), ("v2ex", V2exSource),
-                     ("linuxdo", DiscourseSource), ("zhihu", ZhihuSource)):
+                     ("linuxdo", DiscourseSource), ("zhihu", ZhihuSource),
+                     ("weibo", WeiboSource)):
         if key not in enabled:
             continue
         cred = auth.get(key) if isinstance(auth.get(key), dict) else {}
