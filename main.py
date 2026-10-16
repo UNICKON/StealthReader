@@ -1935,9 +1935,12 @@ class SettingsDialog(QDialog):
 # ================= 主程序 =================
 class StealthReader(QWidget):
     update_text_signal = pyqtSignal(str, bool)
-    # 只有偷瞄键是全局热键（keyboard 库的回调在它自己的线程上，所以走信号回主线程）。
-    # 老板键/安全文档键/背诵键都是窗口内 QShortcut，直接连处理函数，不需要信号。
+    # 四个模式键（老板键/偷瞄/安全文档/背诵）都走全局热键注册（keyboard 库），窗口不在前台
+    # 也能按；库的回调跑在它自己的分发线程上，所以一律发信号回主线程做事。
+    hotkey_signal = pyqtSignal()
     peek_hotkey_signal = pyqtSignal()
+    safe_hotkey_signal = pyqtSignal()
+    review_hotkey_signal = pyqtSignal()
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
     peek_wheel_signal = pyqtSignal(int)
     peek_exit_signal = pyqtSignal(str)
@@ -2043,7 +2046,10 @@ class StealthReader(QWidget):
         self.initTray()
 
         self.update_text_signal.connect(self.on_update_text_safe)
+        self.hotkey_signal.connect(self.toggle_window)
         self.peek_hotkey_signal.connect(self.toggle_peek)
+        self.safe_hotkey_signal.connect(self.toggle_safe_mode)
+        self.review_hotkey_signal.connect(self.toggle_review_mode)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
@@ -2632,49 +2638,71 @@ class StealthReader(QWidget):
         peek_key_str = self.config.get("peek_key", "ctrl+e")
         safe_key_str = (self.config.get("safe_key", "ctrl+alt+d") or "").strip()
         review_key_str = (self.config.get("anki_key", "ctrl+alt+a") or "").strip()
+        taken = set()
         try:
-            keyboard.unhook_all()
-            # **只有偷瞄键是全局的**（你说的 ce 全局）。老板键、安全文档键、背诵键全部只做
-            # 窗口内 QShortcut：窗口不是当前活动窗口就收不到，别的软件里的 Ctrl+D / Ctrl+Alt+A
-            # 照常是它自己的功能。老板键藏起来之后用托盘图标叫回来（藏起来的窗口不可能是前台）。
-            keyboard.add_hotkey(peek_key_str, self.on_peek_hotkey_triggered)
-            taken = {peek_key_str.lower()}
+            keyboard.unhook_all()   # 只拆 keyboard 库自己的钩子；偷瞄/背诵的 ctypes 钩子是独立管理的
         except Exception as e:
-            log_event(f"全局热键注册失败: {e}")
+            log_event(f"热键解绑失败: {e}")
+
+        def _reg_global(key_str, callback, label):
+            """注册一个全局热键，返回是否成功。失败（极少见）时由窗口内 QShortcut 兜底。"""
+            low = (key_str or "").strip().lower()
+            if not low:
+                return False
+            if low in taken:
+                log_event(f"{label}热键与已有热键重复，已跳过: {key_str}")
+                return False
+            try:
+                keyboard.add_hotkey(key_str, callback)
+                taken.add(low)
+                return True
+            except Exception as e:
+                log_event(f"{label}热键注册失败: {e}")
+                return False
+
+        # **四个模式键都注册成全局热键**：老板键、偷瞄、安全文档、背诵。窗口不在前台时也得
+        # 能按——尤其老板键，窗口藏起来之后它更不可能是前台窗口，只能靠全局热键叫回来。
+        # 库的回调跑在 keyboard 库自己的分发线程上（那里不能碰界面），所以一律发信号回主线程。
+        g_boss = _reg_global(hotkey_str, self.on_global_hotkey_triggered, "老板键")
+        g_peek = _reg_global(peek_key_str, self.on_peek_hotkey_triggered, "偷瞄")
+        g_safe = _reg_global(safe_key_str, self.on_safe_hotkey_triggered, "安全文档")
+        g_review = _reg_global(review_key_str, self.on_review_hotkey_triggered, "背诵")
+        # 说明：全局热键和 QShortcut 只能留一条路。两条都留的话，窗口是前台时同一个键会被
+        # 触发两次（老板键收起又立刻弹出），所以下面只在"全局注册失败"时才建 QShortcut。
         try:
             if self.local_shortcut:
                 self.local_shortcut.setKey(QKeySequence())
                 self.local_shortcut = None
-            self.local_shortcut = QShortcut(QKeySequence(hotkey_str), self)
-            self.local_shortcut.activated.connect(self.toggle_window)
+            if not g_boss:
+                self.local_shortcut = QShortcut(QKeySequence(hotkey_str), self)
+                self.local_shortcut.activated.connect(self.toggle_window)
         except:
             pass
         try:
             if self.peek_shortcut:
                 self.peek_shortcut.setKey(QKeySequence())
                 self.peek_shortcut = None
-            self.peek_shortcut = QShortcut(QKeySequence(peek_key_str), self)
-            self.peek_shortcut.activated.connect(self.toggle_peek)
+            if not g_peek:
+                self.peek_shortcut = QShortcut(QKeySequence(peek_key_str), self)
+                self.peek_shortcut.activated.connect(self.toggle_peek)
         except:
             pass
         try:
             if self.safe_shortcut:
                 self.safe_shortcut.setKey(QKeySequence())
                 self.safe_shortcut = None
-            if safe_key_str and safe_key_str.lower() not in taken:
+            if not g_safe and safe_key_str:
                 self.safe_shortcut = QShortcut(QKeySequence(safe_key_str), self)
                 self.safe_shortcut.activated.connect(self.toggle_safe_mode)
-                taken.add(safe_key_str.lower())
         except:
             pass
         try:
             if self.review_shortcut:
                 self.review_shortcut.setKey(QKeySequence())
                 self.review_shortcut = None
-            if review_key_str and review_key_str.lower() not in taken:
+            if not g_review and review_key_str:
                 self.review_shortcut = QShortcut(QKeySequence(review_key_str), self)
                 self.review_shortcut.activated.connect(self.toggle_review_mode)
-                taken.add(review_key_str.lower())
         except:
             pass
 
@@ -2689,16 +2717,45 @@ class StealthReader(QWidget):
             except Exception:
                 self.marks_shortcuts = []
 
-    def on_peek_hotkey_triggered(self):
-        # 这个回调跑在 keyboard 库的分发线程上，那里没有兜底 try：回调抛异常（比如日志
+    def on_global_hotkey_triggered(self):
+        # 这四个回调都跑在 keyboard 库的分发线程上，那里没有兜底 try：回调抛异常（比如日志
         # 写盘失败）会把分发线程直接打死，此后线程活着、listening 仍是 True，热键却一个都不响。
-        # 所以自己兜住，绝不把异常抛回库里。老板键/安全文档键/背诵键都是窗口内 QShortcut，
-        # 走 Qt 自己的事件分发，不需要这一层。
+        # 所以自己兜住，绝不把异常抛回库里。
+        try:
+            log_event(f"老板键触发 boss_key={self.config.get('boss_key')}")
+            self.hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"老板键回调异常: {e}")
+            except Exception:
+                pass
+
+    def on_peek_hotkey_triggered(self):
         try:
             self.peek_hotkey_signal.emit()
         except Exception as e:
             try:
                 log_event(f"偷瞄键回调异常: {e}")
+            except Exception:
+                pass
+
+    def on_safe_hotkey_triggered(self):
+        try:
+            log_event("安全文档热键触发")
+            self.safe_hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"安全文档键回调异常: {e}")
+            except Exception:
+                pass
+
+    def on_review_hotkey_triggered(self):
+        try:
+            log_event("隐形背诵热键触发")
+            self.review_hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"背诵键回调异常: {e}")
             except Exception:
                 pass
 
