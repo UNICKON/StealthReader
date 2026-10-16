@@ -4,18 +4,25 @@
 设计见 docs/community-feed-design.md：**所有来源只写一个适配器**（列表 / 正文 / 评论三件事），
 界面层只认 Post / Comment / Block 这三个结构，所以加一个来源 = 加一个适配器，界面一行不改。
 
-这一层刻意**不 import Qt、不发任何网络请求**：
-- 探针可以在没有界面、没有网络的情况下反复跑（批次 A 就是这么验收的）；
-- main.py 只做两件事：把这里渲染出的 HTML 塞进 text_edit，把 baseUrl 钉到图片目录。
+分层（批次 B 起）：
+- `feed.py`（本文件）：模型 / 排版 / 导航，外加"HTML 正文 → Block"这个所有来源都要用的转换器；
+- `feed_net.py`：网络 + 磁盘缓存 + 图片落地（超时、限速、失败兜底都在那）；
+- `feed_sources.py`：每个站一个适配器 + 混流适配器。
+本文件**导入时不发任何请求**，渲染也绝不发请求——取数只发生在 main.py 的后台线程里。
 
 批次 A 只有 DemoSource（读 feed_demo/ 里的 JSON）：零配置、离线、给真人看效果用。
+批次 B 加了 IT之家 / V2EX / linux.do（Discourse）三个真实来源 + 混流。
 """
 
 import colorsys
+import hashlib
 import html
 import json
 import os
 import re
+import time
+from datetime import datetime, timezone
+from html.parser import HTMLParser
 
 # 正文块的种类（Block.kind）
 BLOCK_P = "p"
@@ -99,11 +106,12 @@ class Post(object):
     """一条帖子。列表页只用前半截字段，详情页才有 body；图片一律走本地缓存目录。"""
 
     __slots__ = ("source", "source_label", "channel", "id", "title", "author", "created",
-                 "score", "n_comments", "cover", "excerpt", "url", "body", "tags", "comments")
+                 "score", "n_comments", "cover", "excerpt", "url", "body", "tags", "comments",
+                 "ts")
 
     def __init__(self, source="", channel="", pid="", title="", author="", created="", score=0,
                  n_comments=0, cover="", excerpt="", url="", body=None, tags=None, comments=None,
-                 source_label=""):
+                 source_label="", ts=0):
         self.source = source
         self.source_label = source_label or source
         self.channel = channel or ""
@@ -119,6 +127,7 @@ class Post(object):
         self.body = [Block.from_dict(b) for b in (body or [])]
         self.tags = list(tags or [])
         self.comments = [Comment.from_dict(c) for c in (comments or [])]
+        self.ts = float(ts or 0)          # 发布时刻（epoch 秒）：混流排序、相对时间都靠它
 
     @classmethod
     def from_dict(cls, d):
@@ -129,7 +138,7 @@ class Post(object):
             author=d.get("author", ""), created=d.get("created", ""), score=d.get("score", 0),
             n_comments=d.get("n_comments", 0), cover=d.get("cover", ""),
             excerpt=d.get("excerpt", ""), url=d.get("url", ""), body=d.get("body", []),
-            tags=d.get("tags", []), comments=d.get("comments", []),
+            tags=d.get("tags", []), comments=d.get("comments", []), ts=d.get("ts", 0),
         )
 
     def to_dict(self):
@@ -137,7 +146,7 @@ class Post(object):
             "source": self.source, "source_label": self.source_label, "channel": self.channel,
             "id": self.id, "title": self.title, "author": self.author, "created": self.created,
             "score": self.score, "n_comments": self.n_comments, "cover": self.cover,
-            "excerpt": self.excerpt, "url": self.url,
+            "excerpt": self.excerpt, "url": self.url, "ts": self.ts,
             "body": [b.to_dict() for b in self.body], "tags": self.tags,
             "comments": [c.to_dict() for c in self.comments],
         }
@@ -166,6 +175,239 @@ def descendant_ids(node):
     for r in node.replies:
         out.append(r.id)
         out.extend(descendant_ids(r))
+    return out
+
+
+# --------------------------------------------------------------------------- 通用转换
+
+def parse_time(value):
+    """各种时间写法 → epoch 秒。认不出来就返回 0（排序时排最后，不会瞎编时间）。"""
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        v = float(value)
+        # 有的站给毫秒时间戳，超过这个量级就当毫秒
+        return v / 1000.0 if v > 1e11 else v
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    if re.match(r"^\d+(\.\d+)?$", text):
+        return parse_time(float(text))
+    iso = text.replace("Z", "+00:00")
+    # "2026-10-15T16:11:03.047"（IT之家）这种没有时区，当本地时间更贴近真人的感觉
+    for candidate in (iso, text.replace(" ", "T", 1)):
+        try:
+            dt = datetime.fromisoformat(candidate)
+            if dt.tzinfo is None:
+                return dt.timestamp()
+            return dt.astimezone().timestamp()
+        except Exception:
+            continue
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).timestamp()
+        except Exception:
+            continue
+    return 0.0
+
+
+def human_time(ts, now=None):
+    """相对时间：列表页写"3 小时前"比写 "2026-10-15T16:11" 好读得多。"""
+    try:
+        ts = float(ts or 0)
+    except Exception:
+        return ""
+    if ts <= 0:
+        return ""
+    now = time.time() if now is None else now
+    d = now - ts
+    if d < -60:
+        return "刚刚"
+    if d < 60:
+        return "刚刚"
+    if d < 3600:
+        return "%d 分钟前" % int(d // 60)
+    if d < 86400:
+        return "%d 小时前" % int(d // 3600)
+    dt = datetime.fromtimestamp(ts)
+    if d < 172800:
+        return "昨天 %02d:%02d" % (dt.hour, dt.minute)
+    if dt.year == datetime.fromtimestamp(now).year:
+        return "%02d-%02d %02d:%02d" % (dt.month, dt.day, dt.hour, dt.minute)
+    return "%04d-%02d-%02d" % (dt.year, dt.month, dt.day)
+
+
+class _BlocksHTMLParser(HTMLParser):
+    """HTML → Block 列表。用标准库（不引 bs4/lxml），IT之家和 Discourse 共用一套。"""
+
+    BLOCK = {"p": BLOCK_P, "div": BLOCK_P, "section": BLOCK_P, "article": BLOCK_P,
+             "main": BLOCK_P, "table": BLOCK_P, "tr": BLOCK_P, "td": BLOCK_P,
+             "figure": BLOCK_P, "figcaption": BLOCK_P, "dt": BLOCK_P, "dd": BLOCK_P,
+             "blockquote": BLOCK_QUOTE, "pre": BLOCK_CODE,
+             "h1": BLOCK_H, "h2": BLOCK_H, "h3": BLOCK_H, "h4": BLOCK_H,
+             "h5": BLOCK_H, "h6": BLOCK_H, "li": BLOCK_LIST}
+    SKIP = ("script", "style", "head", "title", "noscript", "svg", "iframe", "button",
+            "form", "input", "select", "template", "nav", "footer", "aside")
+    # 这些标签没有结束标签，不能靠 handle_endtag 把 skip 计数减回来
+    SKIP_VOID = ("input",)
+
+    def __init__(self, max_blocks=400):
+        HTMLParser.__init__(self, convert_charrefs=True)
+        self.out = []
+        self.buf = []
+        self.kind = BLOCK_P
+        self.stack = []
+        self.skip = 0
+        self.pre = 0
+        self.max_blocks = max_blocks
+
+    # -- 内部 -------------------------------------------------------------
+    def flush(self):
+        text = "".join(self.buf)
+        self.buf = []
+        if self.pre:
+            text = text.strip("\n")
+            while "\n\n\n" in text:
+                text = text.replace("\n\n\n", "\n\n")
+        else:
+            text = re.sub(r"[ \t\r\f\v]+", " ", text)
+            text = re.sub(r"\s*\n\s*", " ", text)
+        text = text.strip()
+        if text:
+            self.out.append(Block(self.kind, text))
+        if len(self.out) >= self.max_blocks:
+            self.buf = []
+
+    def add_img(self, raw_attrs):
+        src = _pick_img_src(raw_attrs)
+        if src:
+            self.flush()
+            if len(self.out) < self.max_blocks:
+                self.out.append(Block(BLOCK_IMG, "", url=src))
+
+    # -- HTMLParser 回调 ---------------------------------------------------
+    def handle_starttag(self, tag, attrs):
+        tag = (tag or "").lower()
+        if tag in self.SKIP:
+            if tag not in self.SKIP_VOID:
+                self.skip += 1
+            return
+        if self.skip:
+            return
+        if tag == "img":
+            self.add_img(attrs)
+            return
+        if tag == "br":
+            self.buf.append("\n")
+            return
+        if tag in self.BLOCK:
+            self.flush()
+            self.stack.append(self.kind)
+            self.kind = self.BLOCK[tag]
+            if tag == "pre":
+                self.pre += 1
+            return
+        # 行内标签都不用管：文本自己会流进 buf
+
+    def handle_startendtag(self, tag, attrs):
+        if (tag or "").lower() == "img":
+            self.add_img(attrs)
+        elif (tag or "").lower() == "br":
+            self.buf.append("\n")
+
+    def handle_endtag(self, tag):
+        tag = (tag or "").lower()
+        if tag in self.SKIP:
+            self.skip = max(0, self.skip - 1)
+            return
+        if self.skip:
+            return
+        if tag in self.BLOCK:
+            if tag == "pre" and self.pre:
+                self.pre -= 1
+            self.flush()
+            self.kind = self.stack.pop() if self.stack else BLOCK_P
+
+    def handle_data(self, data):
+        if self.skip or not data or len(self.out) >= self.max_blocks:
+            return
+        self.buf.append(data)
+
+    def finish(self):
+        self.flush()
+        return self.out
+
+
+def _pick_img_src(attrs):
+    """留内容图、丢头像/表情/图标——表情图在正文里就是一行小图片，纯噪音。"""
+    a = {}
+    for k, v in (attrs or []):
+        a[(k or "").lower()] = v or ""
+    src = a.get("src") or a.get("data-src") or a.get("data-original") or a.get("data-lazy-src") or ""
+    cls = (a.get("class") or "").lower()
+    if not src or src.lower().startswith("data:"):
+        return ""
+    if any(k in cls for k in ("emoji", "avatar", "smiley", "icon")) or "avatar" in (a.get("alt") or "").lower():
+        return ""
+    if re.search(r"(emoji|avatar|smiley|/icon)", src, re.I):
+        return ""
+    for key in ("width", "w", "data-w"):
+        try:
+            w = int(float(a.get(key) or 0))
+        except Exception:
+            w = 0
+        if w and w <= 48:
+            return ""
+    return src
+
+
+def blocks_from_html(text, max_blocks=400):
+    """HTML 正文 → Block 列表。任何异常都退化成一个纯文本段落（正文绝不能因为解析炸掉）。"""
+    if not text:
+        return []
+    try:
+        p = _BlocksHTMLParser(max_blocks=max_blocks)
+        p.feed(str(text))
+        return p.finish()
+    except Exception:
+        plain = strip_html(str(text))
+        return [Block(BLOCK_P, plain)] if plain else []
+
+
+def strip_html(text):
+    """HTML → 一行纯文本（摘要、评论预览、备份都用它）。"""
+    if not text:
+        return ""
+    try:
+        p = _BlocksHTMLParser(max_blocks=600)
+        p.feed(str(text))
+        p.finish()
+        parts = [b.text for b in p.out if b.kind != BLOCK_IMG and b.text]
+        return re.sub(r"\s+", " ", " ".join(parts)).strip()
+    except Exception:
+        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(text))).strip()
+
+
+def merge_posts(post_lists, limit=0):
+    """混流：把各来源的列表合并成一条。
+
+    - 按 (时间倒序, 热度倒序) 排；没有时间的排最后（不瞎编时间）；
+    - (来源, id) 去重：同一页被拉两次也不会出现两条；
+    - 标题为空的丢掉（导航和书签都靠标题认人）。"""
+    seen = set()
+    out = []
+    for lst in (post_lists or []):
+        for p in (lst or []):
+            if not p or not (p.title or "").strip():
+                continue
+            key = (p.source, p.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+    out.sort(key=lambda p: (p.ts or 0, p.score or 0), reverse=True)
+    if limit:
+        return out[:limit]
     return out
 
 
@@ -259,9 +501,26 @@ class DemoSource(SourceAdapter):
         return os.path.join(self.root, "img")
 
 
-def build_sources(demo_root):
-    """以后每加一个来源就在这里登记一个适配器；界面的来源筛选直接由它生成。"""
-    return [DemoSource(demo_root)]
+def build_sources(demo_root, cache_root=None, config=None, log=None):
+    """登记所有来源：**混流打头**（默认落在它上面），然后是各真实来源，最后是离线示例。
+
+    真实来源住在 feed_sources.py：那个文件（或它依赖的 requests）出问题时**只退回示例源**，
+    社区页照样打得开——一个站改接口不该把整页弄瘫。"""
+    sources = [DemoSource(demo_root)]
+    if cache_root is None:
+        cache_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "feed")
+    try:
+        import feed_sources
+        real = feed_sources.build_real_sources(cache_root=cache_root, config=config, log=log)
+        if real:
+            sources = list(real) + sources
+    except Exception as e:
+        if log:
+            try:
+                log("社区真实来源加载失败，只用离线示例: %s" % e)
+            except Exception:
+                pass
+    return sources
 
 
 # --------------------------------------------------------------------------- 导航（纯逻辑）

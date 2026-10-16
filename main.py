@@ -2067,13 +2067,24 @@ class StealthReader(QWidget):
         self.feed_sources = []          # 已登记的来源适配器（批次 B 起每加一个站就在这里多一个）
         self.feed_source_i = 0
         self.feed_busy = False          # 后台取数中（同一次取数不重复发）
+        self.feed_pending = None        # 忙着的时候来的取数请求，等回来补上（见 feed_load）
         if FEED_OK:
             try:
                 self.feed_sources = feed_mod.build_sources(
-                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_demo"))
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_demo"),
+                    cache_root=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "cache", "feed"),
+                    config=self.config, log=log_event)
             except Exception as _e:
                 log_event(f"社区源登记失败: {_e}")
             self.feed_nav = feed_mod.FeedNav()
+            # 上次停在哪个来源就回到哪个（配置里记的是 key；找不到就回默认的混流）
+            want = str(self.config.get("feed_source") or "")
+            if want:
+                for _i, _s in enumerate(self.feed_sources):
+                    if getattr(_s, "key", "") == want:
+                        self.feed_source_i = _i
+                        break
 
         # 老板键看门狗：keyboard 库的监听线程偶尔会静默死亡（锁屏/睡眠/钩子被系统强拆），
         # 每 45 秒查一次，死了就重新注册
@@ -3666,13 +3677,32 @@ class StealthReader(QWidget):
         except Exception:
             return ""
 
+    def feed_source_note(self):
+        """来源自己的"这次少了谁"提示（混流里某个站没连上时，页脚要说清为什么）。
+
+        这不是错误弹窗：缺的那一条就是"这个站现在拿不到"，其余内容照常看。"""
+        src = self.feed_source()
+        if src is None:
+            return ""
+        errs = list(getattr(src, "errors", None) or [])
+        if not errs:
+            one = getattr(src, "last_error", "")
+            errs = [one] if one else []
+        if not errs:
+            return ""
+        if len(errs) == 1:
+            return errs[0]
+        return "%d 个来源没连上（%s）" % (len(errs), errs[0])
+
     def feed_status_text(self):
         if not FEED_OK or self.feed_nav is None:
             return FEED_IMPORT_HINT or "社区统一流不可用"
         err = getattr(self, "feed_error", "")
         if err:
             return f"取数失败：{err}"
-        return feed_mod.status_text(self.feed_nav, self.feed_source_label())
+        base = feed_mod.status_text(self.feed_nav, self.feed_source_label())
+        note = self.feed_source_note()
+        return f"{base}｜{note}" if note else base
 
     def feed_load(self, what, post=None):
         """社区页取数：一律后台线程 + 信号回主线程。
@@ -3690,22 +3720,29 @@ class StealthReader(QWidget):
         target = (post or nav.selected()) if what == "detail" else None
         if what == "detail" and target is None:
             return
+        if self.feed_busy:
+            # 上一次还没回来。**不能直接丢**：切换来源或者快速连按的时候丢掉一次，
+            # 页面就空着（或停在上一家的内容上）而且没有任何机制会再补一次——实测踩到过。
+            # 记下来，等这次回来立刻补上。
+            self.feed_pending = (what, target)
+            return
         self.feed_busy = True
         channel = nav.channel if what in ("list", "more") else None
         cursor = nav.cursor if what == "more" else None
+        tag = getattr(src, "key", "")     # 这次取的是哪一家：回来时要核对
 
         def work():
             try:
                 if what in ("list", "more"):
                     posts, nxt = src.list(channel, cursor)
-                    self.feed_data_signal.emit("list", (posts, nxt, what == "more"))
+                    self.feed_data_signal.emit("list", (posts, nxt, what == "more", tag))
                 else:
                     p, _ = src.detail(target)
                     cmts, _ = src.comments(target)
-                    self.feed_data_signal.emit("detail", (p, cmts))
+                    self.feed_data_signal.emit("detail", (p, cmts, tag))
             except Exception as e:
                 try:
-                    self.feed_data_signal.emit("error", str(e))
+                    self.feed_data_signal.emit("error", (str(e), tag))
                 except Exception:
                     pass
 
@@ -3714,24 +3751,41 @@ class StealthReader(QWidget):
     def on_feed_data(self, kind, payload):
         """取数回来了（QueuedConnection 保证这里是主线程）。"""
         self.feed_busy = False
-        if not self.feed_mode:
-            return          # 人已经切走了，结果直接丢，别去改别的页面的内容
-        if kind == "error":
-            self.feed_error = str(payload)
-            log_event(f"社区取数失败: {payload}")
-            self.update_review_bar()
-            return
-        self.feed_error = ""
-        nav = self.feed_nav
         if kind == "list":
-            posts, nxt, append = payload
-            if not append:
-                nav.reset()
-            nav.add_page(posts, nxt)
+            posts, nxt, append, tag = payload
         elif kind == "detail":
-            post, cmts = payload
-            nav.set_detail(post, cmts)
-        self.render_feed()
+            post, cmts, tag = payload
+        else:
+            msg, tag = payload
+        # 来源对不上就是"上一次来源的结果"：它的 post 属于上一家，套到新来源上会张冠李戴，
+        # 直接丢（切换来源时旧请求还在飞，这种情况一定会发生）。
+        gone = bool(tag) and tag != getattr(self.feed_source(), "key", "")
+        if not self.feed_mode:
+            self.feed_pending = None
+            return                                  # 人已经切走了，结果和排队一起丢
+        if gone:
+            self.feed_pending = None
+            self.feed_load("detail" if self.feed_nav.view == "detail" else "list")
+            return
+        if kind == "error":
+            self.feed_error = str(msg)
+            log_event(f"社区取数失败: {msg}")
+        else:
+            self.feed_error = ""
+            nav = self.feed_nav
+            if kind == "list":
+                if not append:
+                    nav.reset()
+                nav.add_page(posts, nxt)
+            elif kind == "detail":
+                nav.set_detail(post, cmts)
+            self.render_feed()
+        # 排队的那次现在补上（切来源、快速按键都靠它才不丢内容）
+        pend = self.feed_pending
+        self.feed_pending = None
+        if pend is not None:
+            self.feed_load(pend[0], pend[1])
+        self.update_review_bar()
 
     def render_feed(self):
         """社区页唯一的渲染入口：列表和详情都从这里出去，排版统一由 apply_feed_style 兜。"""
@@ -3864,22 +3918,25 @@ class StealthReader(QWidget):
             return False
         obj, kind = hit
         cur_sel = nav.current_comment() if nav.view == "detail" else nav.selected()
-        if cur_sel is obj and not force:
-            return self.feed_toggle_collapse() if kind == "comment" else self.feed_open()
+        # 先把这个条目变成当前条目（单击换条目、双击可能点的就是别的条目）
         if kind == "comment":
             for i, (c, _d, _p) in enumerate(nav.visible_comments()):
                 if c is obj:
                     nav.c_index = i
                     break
-            self.feed_highlight()
         else:
             try:
                 nav.index = nav.posts.index(obj)
             except ValueError:
                 return False
-            self.feed_highlight()
-            if nav.near_end():
-                self.feed_load("more")
+        # 双击（force）或者"点的就是当前条目"（第二次单击）= 动作；否则只换选中
+        if force or cur_sel is obj:
+            if kind == "comment":
+                return self.feed_toggle_collapse()
+            return self.feed_open()
+        self.feed_highlight()
+        if kind != "comment" and nav.near_end():
+            self.feed_load("more")
         self.update_review_bar()
         return True
 
@@ -3964,16 +4021,35 @@ class StealthReader(QWidget):
         self.feed_load("detail" if nav.view == "detail" else "list")
         return True
 
-    def feed_cycle_channel(self, step):
-        """`[` `]` 切栏目（来源内的"热榜/技术/最新"这类，位置相当于 Reddit 的 subreddit）。
+    def feed_cycle_source(self, step):
+        """`[` `]` 切来源：全部来源（混流）→ IT之家 → V2EX → linux.do → 离线示例。
 
-        来源本身也是一个维度，但批次 A 只有一个演示源，所以这里先把栏目这一维做出来；
-        来源一多，同一套键在它上面再加一层就行。"""
+        批次 B 之后"来源"才真的成了可切的一维：默认落在混流上（真人要的是"一个窗口看所有站"），
+        想只看某一个站就按 `]`；栏目是来源内部的再一层，用 `,` `.` 切（见 feed_cycle_channel）。"""
+        if not self.feed_sources:
+            return False
+        n = len(self.feed_sources)
+        self.feed_source_i = (self.feed_source_i + step) % n
+        src = self.feed_source()
+        self.config["feed_source"] = getattr(src, "key", "")     # 记 key，别记对象
+        self.feed_error = ""
+        self.feed_nav.reset()               # 换来源就回列表页：详情是上一家的帖子，留着没意义
+        self.update_review_bar()
+        self.feed_load("list")
+        log_event(f"社区：切到来源 {getattr(src, 'label', '')}")
+        return True
+
+    def feed_cycle_channel(self, step):
+        """`,` `.` 切栏目（来源内的"热榜/最新"这类，位置相当于 Reddit 的 subreddit）。
+
+        混流只有"全部"这一栏，所以按了没反应——那是正常的，不是坏了。"""
         src = self.feed_source()
         if src is None:
             return False
         try:
-            channels = ["全部"] + list(src.channels() or [])
+            # 去重：来源自己就把"全部"写在 channels 里时，别拼成 ["全部", "全部"]——
+            # 那样按一次 `,` 会白白清空列表再重取一遍（看着像卡了一下）。
+            channels = ["全部"] + [c for c in (src.channels() or []) if c != "全部"]
         except Exception:
             channels = ["全部"]
         if len(channels) <= 1:
@@ -4032,9 +4108,15 @@ class StealthReader(QWidget):
             self.feed_toggle_collapse()
             return True
         if key == Qt.Key_BracketLeft:
-            self.feed_cycle_channel(-1)
+            self.feed_cycle_source(-1)
             return True
         if key == Qt.Key_BracketRight:
+            self.feed_cycle_source(1)
+            return True
+        if key == Qt.Key_Comma:
+            self.feed_cycle_channel(-1)
+            return True
+        if key == Qt.Key_Period:
             self.feed_cycle_channel(1)
             return True
         if key == Qt.Key_R:
