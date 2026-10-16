@@ -1,0 +1,300 @@
+{
+  "_note": "社区统一流的离线演示数据（DemoSource 读它）。内容纯属示例，用来验证列表/详情/评论树/图片；真实来源见 docs/community-feed-design.md 的批次 B 起。",
+  "posts": [
+    {
+      "id": "demo-1",
+      "source": "zhihu",
+      "source_label": "知乎",
+      "channel": "热榜",
+      "title": "为什么有些项目越优化越慢？",
+      "author": "半路出家",
+      "created": "2 小时前",
+      "score": 428,
+      "n_comments": 6,
+      "excerpt": "先说结论：大部分「优化」其实是在给系统增加耦合，而不是减少工作量。",
+      "body": [
+        {"kind": "p", "text": "先说结论：大部分「优化」其实是在给系统增加耦合，而不是减少工作量。"},
+        {"kind": "p", "text": "我见过一个接口，原本一次数据库查询能出结果，为了「提升性能」加了三级缓存、两个异步刷新任务、一个预热队列。上线之后 P99 确实降了 30%，但发版再也没人敢改那块逻辑了——每次改动都要在脑子里同时模拟四个执行路径。"},
+        {"kind": "quote", "text": "性能不是目标，它是约束。把约束当成目标，就会拿复杂度去换数字。"},
+        {"kind": "p", "text": "真正值得优化的信号只有三个：① 有明确的指标和基线；② 有可复现的瓶颈点；③ 改完之后复杂度没有明显上升。三条缺一条，都建议先不动。"},
+        {"kind": "list", "text": "先量再改：没有火焰图的优化都是猜"},
+        {"kind": "list", "text": "一次只改一个变量，改完立刻回到基准测试"},
+        {"kind": "list", "text": "把「不改」当成一个正当选项写进方案里"}
+      ],
+      "comments": [
+        {
+          "id": "c1", "author": "木子", "created": "1 小时前", "score": 96,
+          "body": [{"kind": "p", "text": "「把不改当成一个正当选项」这句说到心里了。我们评审的时候，提优化方案比提不改方案容易被表扬。"}],
+          "replies": [
+            {
+              "id": "c1-1", "author": "半路出家", "created": "1 小时前", "score": 41,
+              "body": [{"kind": "p", "text": "因为提方案是「看得见的产出」，不改是「看不见的克制」。考核只认前者，这事就无解。"}],
+              "replies": [
+                {"id": "c1-1-1", "author": "路人甲", "created": "50 分钟前", "score": 12,
+                 "body": [{"kind": "p", "text": "所以现在我都让方案里带一条「不做会怎样」的对照，评审时就好谈多了。"}], "replies": []}
+              ]
+            }
+          ]
+        },
+        {
+          "id": "c2", "author": "Arch", "created": "1 小时前", "score": 63,
+          "body": [{"kind": "p", "text": "缓存那一层最要命的是失效逻辑。加缓存的那天往往就是埋 bug 的那天。"}],
+          "replies": []
+        },
+        {
+          "id": "c3", "author": "老兵", "created": "40 分钟前", "score": 18,
+          "body": [
+            {"kind": "p", "text": "补一个我踩过的坑：预热队列和定时刷新同时跑，冷启动时会互相覆盖。"},
+            {"kind": "code", "text": "// 两个写入者，谁后写谁赢\ncache.set(key, v1)   // 预热\ncache.set(key, v2)   // 定时刷新", "lang": "text"}
+          ],
+          "replies": []
+        }
+      ]
+    },
+    {
+      "id": "demo-2",
+      "source": "v2ex",
+      "source_label": "V2EX",
+      "channel": "技术",
+      "title": "你们团队允许用 AI 直接提交代码吗？",
+      "author": "coderlover",
+      "created": "5 小时前",
+      "score": 213,
+      "n_comments": 4,
+      "excerpt": "我们组刚放开，但要求 PR 描述里注明哪些部分是生成的。想知道别的团队怎么定规矩。",
+      "body": [
+        {"kind": "p", "text": "我们组刚放开，但要求 PR 描述里注明哪些部分是生成的。想知道别的团队怎么定规矩。"},
+        {"kind": "p", "text": "目前观察到的两种极端：一种是完全禁止，理由是审核成本比手写还高；另一种是只要 CI 绿了就合，理由是代码所有权在提交者身上，跟怎么写的无关。"},
+        {"kind": "p", "text": "我个人的倾向是：不禁止，但把「能讲清这段代码为什么这么写」当成唯一的准入标准。讲不清就是没写。"}
+      ],
+      "comments": [
+        {"id": "v1", "author": "Lividfans", "created": "4 小时前", "score": 88,
+         "body": [{"kind": "p", "text": "我们只卡一条：reviewer 问任何一行，作者要能当场解释。解释不了就退回。"}],
+         "replies": [
+           {"id": "v1-1", "author": "匿名", "created": "4 小时前", "score": 30,
+            "body": [{"kind": "p", "text": "这条其实是好标准，对不写 AI 的人也一样适用。"}], "replies": []}
+         ]},
+        {"id": "v2", "author": "neo", "created": "3 小时前", "score": 24,
+         "body": [{"kind": "p", "text": "关键不是 AI，而是「谁负责」。署名的人负责就够了。"}], "replies": []}
+      ]
+    },
+    {
+      "id": "demo-3",
+      "source": "linuxdo",
+      "source_label": "LINUX DO",
+      "channel": "最新",
+      "title": "自建 NAS 三年，说几句真实的体验",
+      "author": "homelab",
+      "created": "昨天",
+      "score": 156,
+      "n_comments": 3,
+      "excerpt": "硬盘坏过两块，电费比想象中贵，但照片再也没丢过。",
+      "cover": "demo-cover-1.png",
+      "body": [
+        {"kind": "p", "text": "硬盘坏过两块，电费比想象中贵，但照片再也没丢过。"},
+        {"kind": "p", "text": "三年下来的结论：真正有价值的不是机器，而是那套备份策略。机器随便换，策略不能省。"},
+        {"kind": "list", "text": "重要数据 3-2-1：三份、两种介质、一份异地"},
+        {"kind": "list", "text": "定期做恢复演练，没演练过的备份等于没有"},
+        {"kind": "list", "text": "把「能不能恢复」写成脚本，别靠记忆"},
+        {"kind": "img", "url": "demo-cover-1.png", "text": "机柜照片"}
+      ],
+      "comments": [
+        {"id": "n1", "author": "老王", "created": "昨天", "score": 44,
+         "body": [{"kind": "p", "text": "电费这条太真实了。我 4 盘位跑下来一年电费够买半块硬盘了。"}], "replies": []},
+        {"id": "n2", "author": "vault", "created": "20 小时前", "score": 31,
+         "body": [{"kind": "p", "text": "恢复演练这条最容易被跳过。我第一次真恢复的时候，发现备份里少了一个目录。"}],
+         "replies": []}
+      ]
+    },
+    {
+      "id": "demo-4",
+      "source": "ithome",
+      "source_label": "IT之家",
+      "channel": "业界",
+      "title": "某开源项目宣布将长期支持周期从 2 年延长到 5 年",
+      "author": "IT之家",
+      "created": "3 小时前",
+      "score": 87,
+      "n_comments": 2,
+      "excerpt": "维护者表示，企业用户的升级周期远长于社区预期，短期支持反而推高了碎片化。",
+      "body": [
+        {"kind": "p", "text": "维护者表示，企业用户的升级周期远长于社区预期，短期支持反而推高了碎片化。"},
+        {"kind": "p", "text": "新策略下，每个大版本提供 5 年安全更新，社区版本仍保持 9 个月节奏，两条线并行。"}
+      ],
+      "comments": [
+        {"id": "i1", "author": "路人", "created": "2 小时前", "score": 12,
+         "body": [{"kind": "p", "text": "延长支持对落地方案是好事，就是维护者的负担更重了。"}], "replies": []}
+      ]
+    },
+    {
+      "id": "demo-5",
+      "source": "chiphell",
+      "source_label": "Chiphell",
+      "channel": "装机",
+      "title": "晒一下这次的静音工作站，满载也听不见",
+      "author": "silent",
+      "created": "昨天",
+      "score": 64,
+      "n_comments": 2,
+      "excerpt": "重点不是堆料，而是把风道理顺，转速压到 800 转以下。",
+      "cover": "demo-cover-2.png",
+      "body": [
+        {"kind": "p", "text": "重点不是堆料，而是把风道理顺，转速压到 800 转以下。"},
+        {"kind": "list", "text": "进风用 140mm 低转速，出风比进风略多，保持微负压"},
+        {"kind": "list", "text": "硬盘笼加减震，机械盘的共振比风扇吵得多"},
+        {"kind": "img", "url": "demo-cover-2.png", "text": "整机照片"}
+      ],
+      "comments": [
+        {"id": "s1", "author": "老张", "created": "20 小时前", "score": 15,
+         "body": [{"kind": "p", "text": "微负压这个说法第一次听，受教了。"}], "replies": []}
+      ]
+    },
+    {
+      "id": "demo-6",
+      "source": "weibo",
+      "source_label": "微博",
+      "channel": "关注",
+      "title": "今天的通勤路上读完了半本书",
+      "author": "@某某",
+      "created": "4 小时前",
+      "score": 32,
+      "n_comments": 2,
+      "excerpt": "地铁上手机没信号反而成了最好的专注工具。",
+      "body": [
+        {"kind": "p", "text": "地铁上手机没信号反而成了最好的专注工具。"},
+        {"kind": "p", "text": "读到一句话记下来了：注意力不是靠意志力守住的，是靠把干扰源移开。"}
+      ],
+      "comments": [
+        {"id": "w1", "author": "小陈", "created": "3 小时前", "score": 8,
+         "body": [{"kind": "p", "text": "同感，我现在刻意不带充电宝，手机没电就看书。"}], "replies": []}
+      ]
+    },
+    {
+      "id": "demo-7",
+      "source": "xhs",
+      "source_label": "小红书",
+      "channel": "推荐",
+      "title": "工位改造：把显示器抬高之后脖子不疼了",
+      "author": "打工人日记",
+      "created": "昨天",
+      "score": 512,
+      "n_comments": 3,
+      "excerpt": "显示器上沿和视线齐平就够，不用买很贵的支架。",
+      "cover": "demo-cover-1.png",
+      "body": [
+        {"kind": "p", "text": "显示器上沿和视线齐平就够，不用买很贵的支架。"},
+        {"kind": "p", "text": "另外键盘一定要放低，手腕自然下垂，这个比椅子的调整幅度影响更大。"},
+        {"kind": "img", "url": "demo-cover-1.png", "text": "工位照片"}
+      ],
+      "comments": [
+        {"id": "x1", "author": "柠檬", "created": "22 小时前", "score": 40,
+         "body": [{"kind": "p", "text": "键盘放低这条真的有用，我垫了个抽屉就舒服多了。"}], "replies": []}
+      ]
+    },
+    {
+      "id": "demo-8",
+      "source": "zhihu",
+      "source_label": "知乎",
+      "channel": "热榜",
+      "title": "程序员如何保持长期的学习节奏？",
+      "author": "夜行",
+      "created": "6 小时前",
+      "score": 301,
+      "n_comments": 3,
+      "excerpt": "别定「每天两小时」这种目标，定「每天打开一次」这种下限。",
+      "body": [
+        {"kind": "p", "text": "别定「每天两小时」这种目标，定「每天打开一次」这种下限。"},
+        {"kind": "p", "text": "习惯的关键是启动成本，而不是持续时间。把启动成本压到几乎为零，剩下的会自己长出来。"},
+        {"kind": "quote", "text": "能坚持的计划，都是难看的计划。"}
+      ],
+      "comments": [
+        {"id": "z1", "author": "小满", "created": "5 小时前", "score": 52,
+         "body": [{"kind": "p", "text": "「下限」这个提法好用，我以前都是按上限定的，做不到就干脆放弃。"}], "replies": []},
+        {"id": "z2", "author": "阿宽", "created": "4 小时前", "score": 19,
+         "body": [{"kind": "p", "text": "我的下限是「读一页」。三年下来读完了二十多本。"}],
+         "replies": [
+           {"id": "z2-1", "author": "夜行", "created": "3 小时前", "score": 9,
+            "body": [{"kind": "p", "text": "一页法确实有效，因为翻开了就大概率不止一页。"}], "replies": []}
+         ]}
+      ]
+    },
+    {
+      "id": "demo-9",
+      "source": "v2ex",
+      "source_label": "V2EX",
+      "channel": "创意",
+      "title": "做了个小工具：把终端输出折叠成可读的树",
+      "author": "treeman",
+      "created": "8 小时前",
+      "score": 96,
+      "n_comments": 2,
+      "excerpt": "日志一多就没人看，折叠之后至少能看出结构。",
+      "body": [
+        {"kind": "p", "text": "日志一多就没人看，折叠之后至少能看出结构。"},
+        {"kind": "code", "text": "build/\n├── compile  1.2s\n├── test     8.4s  (3 failed)\n└── package  0.9s", "lang": "text"},
+        {"kind": "p", "text": "实现上没用什么花活，就是按缩进和耗时排序，把超过阈值的行标红。"}
+      ],
+      "comments": [
+        {"id": "t1", "author": "shell", "created": "7 小时前", "score": 21,
+         "body": [{"kind": "p", "text": "建议加个 --json，方便接进 CI。"}], "replies": []}
+      ]
+    },
+    {
+      "id": "demo-10",
+      "source": "linuxdo",
+      "source_label": "LINUX DO",
+      "channel": "热门",
+      "title": "把家里老笔记本装成软路由，一年下来的体会",
+      "author": "router",
+      "created": "2 天前",
+      "score": 74,
+      "n_comments": 2,
+      "excerpt": "省电、安静、够用，但别指望它同时干别的活。",
+      "body": [
+        {"kind": "p", "text": "省电、安静、够用，但别指望它同时干别的活。"},
+        {"kind": "p", "text": "最大的收益是可控：想加什么规则自己加，不用等固件更新。"}
+      ],
+      "comments": [
+        {"id": "r1", "author": "白开水", "created": "2 天前", "score": 11,
+         "body": [{"kind": "p", "text": "请问功耗实测多少？我一直在犹豫要不要换。"}], "replies": []}
+      ]
+    },
+    {
+      "id": "demo-11",
+      "source": "ithome",
+      "source_label": "IT之家",
+      "channel": "业界",
+      "title": "报告称今年开发者最关注的仍是构建速度与依赖管理",
+      "author": "IT之家",
+      "created": "昨天",
+      "score": 55,
+      "n_comments": 2,
+      "excerpt": "在被调查的团队里，超过一半把「等构建」列为日常最大的时间浪费。",
+      "body": [
+        {"kind": "p", "text": "在被调查的团队里，超过一半把「等构建」列为日常最大的时间浪费。"},
+        {"kind": "list", "text": "构建缓存命中率是最被低估的指标"},
+        {"kind": "list", "text": "依赖越少，构建越稳，这条没有例外"}
+      ],
+      "comments": [
+        {"id": "h1", "author": "小罗", "created": "昨天", "score": 14,
+         "body": [{"kind": "p", "text": "我们做了远程缓存之后，人均每天省了四十分钟。"}], "replies": []}
+      ]
+    },
+    {
+      "id": "demo-12",
+      "source": "weibo",
+      "source_label": "微博",
+      "channel": "关注",
+      "title": "公司楼下那家咖啡换老板了，味道居然更好了",
+      "author": "@某某",
+      "created": "30 分钟前",
+      "score": 12,
+      "n_comments": 0,
+      "excerpt": "同一台机器、同一批豆子，手法一变就完全是两杯东西。",
+      "body": [
+        {"kind": "p", "text": "同一台机器、同一批豆子，手法一变就完全是两杯东西。"}
+      ],
+      "comments": []
+    }
+  ]
+}

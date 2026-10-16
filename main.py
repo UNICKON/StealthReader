@@ -48,6 +48,16 @@ except Exception as _anki_import_err:      # pragma: no cover
     class AnkiCommandError(AnkiError): pass
     AnkiClient = None
 
+# 社区统一流：数据模型 / 来源适配器 / HTML 渲染（纯标准库）。缺文件也不该让阅读器起不来。
+try:
+    import feed as feed_mod
+    FEED_OK = True
+    FEED_IMPORT_HINT = ""
+except Exception as _feed_import_err:      # pragma: no cover
+    FEED_OK = False
+    feed_mod = None
+    FEED_IMPORT_HINT = f"社区统一流需要 feed.py（本目录下），当前加载失败：{_feed_import_err}"
+
 # 启用高分屏支持
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
 QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
@@ -116,6 +126,9 @@ DEFAULT_CONFIG = {
     "anki_swallow_keys": True,           # 背诵时吞掉 空格/回车/1-4/U/R/Esc（想正常打字就 Ctrl+D 收起）
     "anki_conceal": True,                # 进背诵时把 Anki 自己的窗口藏起来（SW_HIDE）
     "anki_api_key": "",                  # AnkiConnect 配了 apiKey 时填这里
+    # --- 社区统一流（知乎/V2EX/微博…统一成一种帖子，当第三个内容页，见 docs/community-feed-design.md）---
+    "feed_key": "ctrl+alt+f",            # 进/出社区统一流
+    "feed_lowkey": False,                # 低调显示：社区页不出图、[图] 占位，工位上更不显眼
     "ghost_mode": False,
     "auto_mode": False,
     "antishot_mode": False,
@@ -1753,6 +1766,16 @@ class SettingsDialog(QDialog):
                                        "再按一次退出，书回到原来那一页，阅读进度一个字节都不变。")
         layout.addRow("背诵热键:", self.anki_key_input)
 
+        self.feed_key_input = QLineEdit(self.config.get("feed_key", "ctrl+alt+f"))
+        self.feed_key_input.setToolTip("按这个键：书页换成社区统一流（知乎/V2EX/微博…所有来源都是同一种帖子）。\n"
+                                       "再按一次退出，书回到原来那一页，阅读进度一个字节都不变。")
+        layout.addRow("社区热键:", self.feed_key_input)
+
+        self.feed_lowkey_check = QCheckBox("社区页低调显示（不出图，图片位置显示 [图]）")
+        self.feed_lowkey_check.setChecked(bool(self.config.get("feed_lowkey", False)))
+        self.feed_lowkey_check.setToolTip("工位上比老板键更不显眼的一道保险：只剩文字，字号配色和书页一致。")
+        layout.addRow(self.feed_lowkey_check)
+
         deck_row = QWidget()
         deck_layout = QHBoxLayout(deck_row)
         deck_layout.setContentsMargins(0, 0, 0, 0)
@@ -1926,6 +1949,8 @@ class SettingsDialog(QDialog):
         self.config["safe_key"] = self.safe_key_input.text().strip()
         self.config["safe_doc_path"] = self.safe_doc_input.text().strip()
         self.config["anki_key"] = self.anki_key_input.text().strip() or "ctrl+alt+a"
+        self.config["feed_key"] = self.feed_key_input.text().strip() or "ctrl+alt+f"
+        self.config["feed_lowkey"] = self.feed_lowkey_check.isChecked()
         self.config["anki_deck"] = self.anki_deck_input.text().strip()
         self.config["anki_swallow_keys"] = self.anki_swallow_check.isChecked()
         self.config["anki_conceal"] = self.anki_conceal_check.isChecked()
@@ -1965,6 +1990,9 @@ class StealthReader(QWidget):
     peek_hotkey_signal = pyqtSignal()
     safe_hotkey_signal = pyqtSignal()
     review_hotkey_signal = pyqtSignal()
+    feed_hotkey_signal = pyqtSignal()
+    # 社区页取数一律在后台线程里跑，取回来用这个信号回主线程（payload 一律是普通 Python 对象）
+    feed_data_signal = pyqtSignal(str, object)
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
     peek_wheel_signal = pyqtSignal(int)
     peek_exit_signal = pyqtSignal(str)
@@ -2031,6 +2059,22 @@ class StealthReader(QWidget):
         self.anki_inflight = set()      # 排队/执行中的任务 key（去重：对账不许堆队）
         self.anki_task_seq = 0
 
+        # --- 社区统一流（知乎/V2EX/微博…统一成一种帖子，当第三个内容页）---
+        self.feed_mode = False
+        self.feed_snapshot = None       # 进社区页前的书状态（和安全文档/背诵共用同一套快照函数）
+        self.feed_shortcut = None
+        self.feed_nav = None            # feed.FeedNav：选中/翻页/进详情/折叠全在它里面
+        self.feed_sources = []          # 已登记的来源适配器（批次 B 起每加一个站就在这里多一个）
+        self.feed_source_i = 0
+        self.feed_busy = False          # 后台取数中（同一次取数不重复发）
+        if FEED_OK:
+            try:
+                self.feed_sources = feed_mod.build_sources(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_demo"))
+            except Exception as _e:
+                log_event(f"社区源登记失败: {_e}")
+            self.feed_nav = feed_mod.FeedNav()
+
         # 老板键看门狗：keyboard 库的监听线程偶尔会静默死亡（锁屏/睡眠/钩子被系统强拆），
         # 每 45 秒查一次，死了就重新注册
         self.hotkey_watchdog = QTimer(self)
@@ -2074,6 +2118,8 @@ class StealthReader(QWidget):
         self.peek_hotkey_signal.connect(self.toggle_peek)
         self.safe_hotkey_signal.connect(self.toggle_safe_mode)
         self.review_hotkey_signal.connect(self.toggle_review_mode)
+        self.feed_hotkey_signal.connect(self.toggle_feed_mode)
+        self.feed_data_signal.connect(self.on_feed_data, Qt.QueuedConnection)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
@@ -2415,6 +2461,10 @@ class StealthReader(QWidget):
 
     # --- 本地分页渲染算法 (锚点核心) ---
     def render_local_page(self):
+        if self.feed_mode:
+            # 社区页是一份 HTML 文档（滚动加载），绝不能拿书页那套"切 5000 字缓冲区"来铺：
+            # 滚轮、缩放、偷瞄都会拐到这里，一旦铺下去，社区页当场被书页顶掉。
+            return
         if not self.is_local_mode or not self.local_full_text:
             return
 
@@ -2551,6 +2601,9 @@ class StealthReader(QWidget):
 
     # --- 翻页逻辑 (即时存档 + 几何分页) ---
     def scroll_page(self, direction):
+        if self.feed_mode:
+            # 社区页是滚动文档，不切页；而且绝不能让书页的 local_* 被"翻页"改掉
+            return
         if self.is_local_mode:
             # --- 本地模式 ---
             # 【新增保护】
@@ -2664,6 +2717,7 @@ class StealthReader(QWidget):
         peek_key_str = self.config.get("peek_key", "ctrl+e")
         safe_key_str = (self.config.get("safe_key", "ctrl+alt+d") or "").strip()
         review_key_str = (self.config.get("anki_key", "ctrl+alt+a") or "").strip()
+        feed_key_str = (self.config.get("feed_key", "ctrl+alt+f") or "").strip()
         taken = set()
         try:
             keyboard.unhook_all()   # 只拆 keyboard 库自己的钩子；偷瞄/背诵的 ctypes 钩子是独立管理的
@@ -2693,6 +2747,7 @@ class StealthReader(QWidget):
         g_peek = _reg_global(peek_key_str, self.on_peek_hotkey_triggered, "偷瞄")
         g_safe = _reg_global(safe_key_str, self.on_safe_hotkey_triggered, "安全文档")
         g_review = _reg_global(review_key_str, self.on_review_hotkey_triggered, "背诵")
+        g_feed = _reg_global(feed_key_str, self.on_feed_hotkey_triggered, "社区")
         # 说明：全局热键和 QShortcut 只能留一条路。两条都留的话，窗口是前台时同一个键会被
         # 触发两次（老板键收起又立刻弹出），所以下面只在"全局注册失败"时才建 QShortcut。
         try:
@@ -2729,6 +2784,15 @@ class StealthReader(QWidget):
             if not g_review and review_key_str:
                 self.review_shortcut = QShortcut(QKeySequence(review_key_str), self)
                 self.review_shortcut.activated.connect(self.toggle_review_mode)
+        except:
+            pass
+        try:
+            if self.feed_shortcut:
+                self.feed_shortcut.setKey(QKeySequence())
+                self.feed_shortcut = None
+            if not g_feed and feed_key_str:
+                self.feed_shortcut = QShortcut(QKeySequence(feed_key_str), self)
+                self.feed_shortcut.activated.connect(self.toggle_feed_mode)
         except:
             pass
 
@@ -2782,6 +2846,16 @@ class StealthReader(QWidget):
         except Exception as e:
             try:
                 log_event(f"背诵键回调异常: {e}")
+            except Exception:
+                pass
+
+    def on_feed_hotkey_triggered(self):
+        try:
+            log_event("社区统一流热键触发")
+            self.feed_hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"社区键回调异常: {e}")
             except Exception:
                 pass
 
@@ -3033,6 +3107,9 @@ class StealthReader(QWidget):
             if self.review_mode:
                 # 背诵时滚轮滚的是卡片（交给 Qt 默认逐行滚动），不翻页、不碰书的进度
                 return False
+            if self.feed_mode:
+                # 社区页同理：滚它自己（Qt 默认滚动），不翻页、不碰书页的进度
+                return False
 
             delta = event.angleDelta().y()
             if self.is_local_mode:
@@ -3147,6 +3224,7 @@ class StealthReader(QWidget):
         tray_menu = QMenu()
         tray_menu.addAction("显示/隐藏（老板键）").triggered.connect(self.toggle_window)
         tray_menu.addAction("隐形背诵（Anki 卡片）").triggered.connect(self.toggle_review_mode)
+        tray_menu.addAction("社区统一流（知乎/V2EX…）").triggered.connect(self.toggle_feed_mode)
         tray_menu.addAction("叫回 Anki 窗口").triggered.connect(self.rescue_anki_window)
         tray_menu.addAction("打开本地书籍…").triggered.connect(self.open_local_file_dialog)
         tray_menu.addAction("设置…").triggered.connect(self.open_settings)
@@ -3258,6 +3336,10 @@ class StealthReader(QWidget):
 
         卡片页（背诵）不参与分页：只滚卡片自己——它的 local_* 是空壳，一个字都不许碰。"""
         if self.review_mode:
+            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+            return
+        if self.feed_mode:
+            # 偷瞄里滚轮滚的也是社区流自己（和卡片页一样：只滚，一个字都不碰书的 local_*）
             QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
             return
         if not self.is_local_mode:
@@ -3404,6 +3486,8 @@ class StealthReader(QWidget):
         划线高亮全部藏起来，书的状态先存快照——退出后原位恢复。"""
         if self.safe_mode:
             return
+        if self.feed_mode:
+            self.exit_feed_mode(reason="safe")   # 三个内容页互斥：先进社区页的先把书还原回来
         if self.review_mode:
             # 从背诵里切过来：**不能拍书的快照**——此刻正文区是卡片，拍下来的是卡片的坐标，
             # 退出安全文档时会拿它去恢复书页，把书的位置弄坏。只记一个"我是从卡片来的"。
@@ -3474,7 +3558,363 @@ class StealthReader(QWidget):
           - on_viewport_press / on_viewport_release：在卡片上拖选会把**卡片文字按卡片偏移
             写进这本书的划线存档**（数据被写坏）
         """
-        return bool(self.safe_mode or self.review_mode)
+        return bool(self.safe_mode or self.review_mode or self.feed_mode)
+
+    # --- 社区统一流（第三个内容页：书 / 卡片 / 社区，三者互斥，换页一律靠快照）---
+
+    def feed_source(self):
+        if not self.feed_sources:
+            return None
+        self.feed_source_i = max(0, min(len(self.feed_sources) - 1, self.feed_source_i))
+        return self.feed_sources[self.feed_source_i]
+
+    def feed_source_label(self):
+        s = self.feed_source()
+        return s.label if s else ""
+
+    def feed_image_dir(self):
+        src = self.feed_source()
+        if src is None:
+            return ""
+        try:
+            return str(src.image_base() or "")
+        except Exception:
+            return ""
+
+    def feed_status_text(self):
+        if not FEED_OK or self.feed_nav is None:
+            return FEED_IMPORT_HINT or "社区统一流不可用"
+        err = getattr(self, "feed_error", "")
+        if err:
+            return f"取数失败：{err}"
+        return feed_mod.status_text(self.feed_nav, self.feed_source_label())
+
+    def feed_load(self, what, post=None):
+        """社区页取数：一律后台线程 + 信号回主线程。
+
+        批次 A 的来源是离线夹具（读本地 JSON），但走的**和真实来源完全同一条路**——
+        省得等真网络接上来才发现线程/信号这套接错了地方。"""
+        if not FEED_OK or self.feed_nav is None or self.feed_busy:
+            return
+        nav = self.feed_nav
+        src = self.feed_source()
+        if src is None:
+            return
+        if what == "more" and not nav.more:
+            return
+        target = (post or nav.selected()) if what == "detail" else None
+        if what == "detail" and target is None:
+            return
+        self.feed_busy = True
+        channel = nav.channel if what in ("list", "more") else None
+        cursor = nav.cursor if what == "more" else None
+
+        def work():
+            try:
+                if what in ("list", "more"):
+                    posts, nxt = src.list(channel, cursor)
+                    self.feed_data_signal.emit("list", (posts, nxt, what == "more"))
+                else:
+                    p, _ = src.detail(target)
+                    cmts, _ = src.comments(target)
+                    self.feed_data_signal.emit("detail", (p, cmts))
+            except Exception as e:
+                try:
+                    self.feed_data_signal.emit("error", str(e))
+                except Exception:
+                    pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_feed_data(self, kind, payload):
+        """取数回来了（QueuedConnection 保证这里是主线程）。"""
+        self.feed_busy = False
+        if not self.feed_mode:
+            return          # 人已经切走了，结果直接丢，别去改别的页面的内容
+        if kind == "error":
+            self.feed_error = str(payload)
+            log_event(f"社区取数失败: {payload}")
+            self.update_review_bar()
+            return
+        self.feed_error = ""
+        nav = self.feed_nav
+        if kind == "list":
+            posts, nxt, append = payload
+            if not append:
+                nav.reset()
+            nav.add_page(posts, nxt)
+        elif kind == "detail":
+            post, cmts = payload
+            nav.set_detail(post, cmts)
+        self.render_feed()
+
+    def render_feed(self):
+        """社区页唯一的渲染入口：列表和详情都从这里出去，排版统一由 apply_feed_style 兜。"""
+        if not FEED_OK or self.feed_nav is None:
+            return
+        nav = self.feed_nav
+        theme = feed_mod.theme_from_config(self.config, max(240, self.width() - 40))
+        if nav.view == "detail":
+            html = feed_mod.render_detail(nav.post, nav, theme)
+        else:
+            html = feed_mod.render_list(nav.posts, nav, theme)
+        doc = self.text_edit.document()
+        doc.setDefaultStyleSheet("")
+        base = self.feed_image_dir()
+        if base:
+            doc.setBaseUrl(QUrl.fromLocalFile(base + os.sep))
+        self.text_edit.setHtml(html)
+        if base:
+            doc.setBaseUrl(QUrl.fromLocalFile(base + os.sep))   # setHtml 之后再钉一次（同卡片那套）
+        self.apply_feed_style()
+        self.feed_highlight()
+        self.update_review_bar()
+
+    def apply_feed_style(self):
+        """社区页排版：左对齐、不首行缩进、行距沿用阅读设置；卡片间距和评论缩进由 HTML 自带。
+
+        **只 merge 这三样，绝不碰 block 的 margin**：`mergeBlockFormat` 会把 modifier 里
+        显式设过的属性盖进每个块，一旦这里 setTopMargin(0)/setBottomMargin(0)，
+        HTML 里卡片之间、评论之间的间距会被整片抹平，一屏挤成一大坨。
+        （卡片页那张卡只有一块内容，所以那边可以这么写，这里不行。）"""
+        self.text_edit.setFont(QFont(self.config.get("font_family", "Microsoft YaHei"),
+                                     self.config["font_size"]))
+        bf = QTextBlockFormat()
+        bf.setLineHeight(max(100, int(self.config.get("line_spacing", 160))),
+                         QTextBlockFormat.ProportionalHeight)
+        bf.setAlignment(Qt.AlignLeft)
+        bf.setTextIndent(0)
+        cur = QTextCursor(self.text_edit.document())
+        cur.select(QTextCursor.Document)
+        cur.mergeBlockFormat(bf)
+        self.apply_page_margins(cut=False)   # 社区流是滚动的，不做书页那种"退到整行"的底部裁切
+
+    def feed_highlight(self):
+        """把选中项提亮一档（extra selections，只改字色，不铺底色块）。
+
+        定位文本由 feed.selection_needle 给（列表是标题、评论是表头那一行），每动一次
+        重算一次——所以高亮永远跟着光标走，不依赖上一次渲染出来的标记。"""
+        try:
+            nav = self.feed_nav
+            if nav is None:
+                self.text_edit.setExtraSelections([])
+                return
+            theme = feed_mod.theme_from_config(self.config, max(240, self.width() - 40))
+            needle = feed_mod.selection_needle(nav)
+            cur = self.text_edit.document().find(needle) if needle else QTextCursor()
+            if cur.isNull() and needle:
+                # 兜一层：来源文本里的空白可能被 Qt 折成半角空格（`　`→` `），
+                # 原样找不到就按折过的空白再找一次
+                flat = " ".join(needle.split())
+                if flat and flat != needle:
+                    cur = self.text_edit.document().find(flat)
+            if cur.isNull():
+                self.text_edit.setExtraSelections([])
+                return
+            sel = QTextEdit.ExtraSelection()
+            sel.cursor = cur
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(theme["mark"]))
+            sel.format = fmt
+            self.text_edit.setExtraSelections([sel])
+            self.feed_scroll_to(cur)
+        except Exception:
+            pass
+
+    def feed_scroll_to(self, cursor):
+        """把目标滚到视口靠上的位置。
+
+        不移动插入点：只读页面里留一个闪烁光标，一眼就不像文档了。"""
+        try:
+            rect = self.text_edit.cursorRect(cursor)
+            sb = self.text_edit.verticalScrollBar()
+            vh = max(1, self.text_edit.viewport().height())
+            target = sb.value() + rect.top() - int(vh * 0.25)
+            sb.setValue(max(sb.minimum(), min(sb.maximum(), target)))
+        except Exception:
+            pass
+
+    def feed_move(self, step):
+        nav = self.feed_nav
+        if nav is None:
+            return False
+        moved = nav.move_comment(step) if nav.view == "detail" else nav.move(step)
+        if not moved:
+            return False
+        self.feed_highlight()
+        self.update_review_bar()
+        if nav.view == "list" and nav.near_end():
+            self.feed_load("more")      # 快到底就续下一页（取数在后台，界面不等）
+        return True
+
+    def feed_open(self):
+        nav = self.feed_nav
+        if nav is None or nav.view == "detail" or not nav.open_selected():
+            return False
+        self.render_feed()              # 先把标题画出来，正文和评论随后台取数回来
+        self.feed_load("detail")
+        return True
+
+    def feed_back(self):
+        nav = self.feed_nav
+        if nav is None or not nav.back():
+            return False
+        self.render_feed()
+        return True
+
+    def feed_toggle_collapse(self):
+        nav = self.feed_nav
+        if nav is None or nav.view != "detail" or not nav.toggle_collapse():
+            return False
+        self.render_feed()              # 折叠改变了文档结构，只能重画
+        return True
+
+    def feed_reload(self):
+        nav = self.feed_nav
+        if nav is None:
+            return False
+        self.feed_error = ""
+        self.feed_load("detail" if nav.view == "detail" else "list")
+        return True
+
+    def feed_cycle_channel(self, step):
+        """`[` `]` 切栏目（来源内的"热榜/技术/最新"这类，位置相当于 Reddit 的 subreddit）。
+
+        来源本身也是一个维度，但批次 A 只有一个演示源，所以这里先把栏目这一维做出来；
+        来源一多，同一套键在它上面再加一层就行。"""
+        src = self.feed_source()
+        if src is None:
+            return False
+        try:
+            channels = ["全部"] + list(src.channels() or [])
+        except Exception:
+            channels = ["全部"]
+        if len(channels) <= 1:
+            return False
+        try:
+            i = channels.index(self.feed_nav.channel)
+        except ValueError:
+            i = 0
+        self.feed_nav.channel = channels[(i + step) % len(channels)]
+        self.feed_nav.reset()
+        self.update_review_bar()
+        self.feed_load("list")
+        return True
+
+    def feed_open_original(self):
+        """用系统浏览器打开原帖。第一轮**只读**：不发帖、不点赞、不转发（写操作风险最高）。"""
+        nav = self.feed_nav
+        if nav is None:
+            return False
+        post = nav.post if nav.view == "detail" else nav.selected()
+        url = (post.url if post is not None else "") or ""
+        if not url:
+            return False
+        try:
+            os.startfile(url)           # Windows：交给默认浏览器
+            log_event(f"社区：打开原帖 {url}")
+        except Exception as e:
+            log_event(f"社区：打开原帖失败 {e}")
+        return False                    # 窗口内容没变，不需要重画
+
+    def on_feed_key(self, key):
+        """社区页的窗口内按键（和卡片页同一套机制：只在窗口是活动窗口时响应）。
+
+        翻页键留给滚动——社区流是长文档，滚动比"整屏翻"更合用；书页那套切页逻辑不掺和。"""
+        nav = self.feed_nav
+        if nav is None:
+            return False
+        if key in (Qt.Key_J, Qt.Key_Down):
+            self.feed_move(1)
+            return True
+        if key in (Qt.Key_K, Qt.Key_Up):
+            self.feed_move(-1)
+            return True
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self.feed_open()
+            return True
+        if key == Qt.Key_Backspace:
+            self.feed_back()
+            return True
+        if key == Qt.Key_Escape:
+            if nav.view == "detail":
+                self.feed_back()
+                return True
+            return False                # 不在详情里就不抢 Esc（老板键可能就挂在它上面）
+        if key == Qt.Key_Z:
+            self.feed_toggle_collapse()
+            return True
+        if key == Qt.Key_BracketLeft:
+            self.feed_cycle_channel(-1)
+            return True
+        if key == Qt.Key_BracketRight:
+            self.feed_cycle_channel(1)
+            return True
+        if key == Qt.Key_R:
+            self.feed_reload()
+            return True
+        if key == Qt.Key_O:
+            self.feed_open_original()
+            return True
+        sb = self.text_edit.verticalScrollBar()
+        page = max(1, self.text_edit.viewport().height())
+        if key in (Qt.Key_Space, Qt.Key_PageDown):
+            sb.setValue(min(sb.maximum(), sb.value() + page))
+            return True
+        if key == Qt.Key_PageUp:
+            sb.setValue(max(sb.minimum(), sb.value() - page))
+            return True
+        if key == Qt.Key_Home:
+            sb.setValue(sb.minimum())
+            return True
+        if key == Qt.Key_End:
+            sb.setValue(sb.maximum())
+            return True
+        return False
+
+    def toggle_feed_mode(self):
+        if self.feed_mode:
+            self.exit_feed_mode(reason="hotkey")
+        else:
+            self.enter_feed_mode()
+
+    def enter_feed_mode(self):
+        """切到社区统一流。进之前先把卡片/安全文档收掉（三个内容页互斥），
+        书的状态拍快照——退出后原位回书，一个字节的阅读进度都不写。"""
+        if self.feed_mode:
+            return
+        if not FEED_OK or self.feed_nav is None:
+            log_event(FEED_IMPORT_HINT or "社区统一流不可用")
+            return
+        if self.review_mode:
+            self.exit_review_mode(reason="feed")
+        if self.safe_mode:
+            self.exit_safe_mode()
+        self.feed_snapshot = self.snapshot_book_state()
+        self.dismiss_action_panel(cancelled=True)
+        self.feed_mode = True
+        self.feed_error = ""
+        self.feed_nav.reset()
+        self.apply_style()              # 先刷样式：别让文字停在别的页面留下的透明态
+        self.text_edit.setExtraSelections([])
+        self.render_feed()              # 先落一个空壳，正文随后台取数回来
+        self.feed_load("list")
+        self.update_tray_tooltip()
+        log_event("社区统一流：已进入")
+
+    def exit_feed_mode(self, reason=""):
+        if not self.feed_mode:
+            return
+        self.feed_mode = False
+        snap = self.feed_snapshot
+        self.feed_snapshot = None
+        self.text_edit.setExtraSelections([])
+        if snap:
+            # 书页按快照原样回来；**不写阅读进度**（社区页上的坐标不是书的位置）
+            self.restore_book_state(snap, write_progress=False)
+        self.update_review_bar()
+        self.update_tray_tooltip()
+        log_event(f"社区统一流：已退出（{reason or '未说明'}）")
 
     def anki_client(self):
         """惰性建 AnkiConnect 客户端：不进背诵就完全不碰 Anki。"""
@@ -3648,6 +4088,8 @@ class StealthReader(QWidget):
         # 钩子继续装着，从卡片铺好的那一刻起它会全局捕获卡片交互键（可以不聚焦窗口地背）。
         if self.safe_mode:
             self.exit_safe_mode()              # 从安全文档进来：先把真书放回来，再拍快照
+        if self.feed_mode:
+            self.exit_feed_mode(reason="review")   # 从社区页进来：同上，内容页互斥
         self.review_entering = True
         self.review_hint(f"正在打开牌组「{deck}」…", 1500)
 
@@ -3745,7 +4187,12 @@ class StealthReader(QWidget):
         """
         if not hasattr(self, "review_bar"):
             return
-        visible = bool(self.review_mode and not self.safe_mode)
+        if self.feed_mode:
+            # 社区页复用同一条页脚：给的是状态（第几条 / 评论多少 / 还有没有下一页），
+            # 照样没有按钮、没有键位提示——真人给页脚定的两条规矩原样沿用。
+            visible = True
+        else:
+            visible = bool(self.review_mode and not self.safe_mode)
         self.review_bar.setVisible(visible)
         if not visible:
             return
@@ -3778,6 +4225,10 @@ class StealthReader(QWidget):
         没有固定高度。窗口宽度变了只要重跑这里（`repage_after_resize` 会调）。
         """
         if not hasattr(self, "review_bar") or not self.review_bar.isVisible():
+            return
+        if self.feed_mode:
+            # 社区页那一行：只有状态，没有按钮/提示（内容由 feed.status_text 统一给）
+            self.review_info_label.setText(self.feed_status_text())
             return
         s = self.review_session or {}
         card = s.get("card") or {}
@@ -4286,7 +4737,9 @@ class StealthReader(QWidget):
         # 本地模式下样式改了就得重排重铺（页边距/字号/行距都在这条路上）。
         # 这句原来只写在"非自动挡"分支里，自动挡（变色龙）下去改页边距/字号就不重排，
         # 得等下一次翻页才生效——看着就是"调了没反应"。按锚点重绘，落点不变。
-        if self.review_mode and not self.safe_mode:
+        if self.feed_mode:
+            self.render_feed()     # 社区页跟着字号/字体/颜色一起变（和书页、卡片页同一套设置）
+        elif self.review_mode and not self.safe_mode:
             self.render_card()     # 背诵中改字号/字体：只重渲当前卡（一个字节的进度都不碰）
         elif self.is_local_mode:
             self.repage_to(anchor)
@@ -4545,6 +4998,11 @@ class StealthReader(QWidget):
         if not force and now - self._last_resize_repage < 0.05:
             return
         self._last_resize_repage = now
+        if self.feed_mode:
+            keep = self.text_edit.verticalScrollBar().value()
+            self.render_feed()      # 宽度变了：卡片间距、图片宽度、页脚文字都跟着重排
+            self.text_edit.verticalScrollBar().setValue(keep)
+            return
         if self.review_mode and not self.safe_mode:
             keep = self.text_edit.verticalScrollBar().value()
             self.render_card()      # 里面会 apply_card_style() → apply_page_margins()，几何跟着新高度
@@ -4631,6 +5089,9 @@ class StealthReader(QWidget):
     def apply_highlight_selections(self):
         """把落在当前缓冲区里的划线画成 ExtraSelection。
         绝不动正文——正文一变，翻页的几何测量就跟着错（"已恢复进度"覆盖正文那个坑）。"""
+        if self.feed_mode:
+            # 社区页的选中高亮是它自己的 extra selection：这里一清，卡片上的选中标记就没了
+            return
         if not (self.is_local_mode and self.local_full_text) or self.ghost_veiled or self._book_veiled():
             # 安全文档/背诵模式下一条高亮都不画：页面上那几条彩色横条比书页本身还露馅，
             # 而且在卡片上按卡的偏移画高亮，等于把书的划线挪到别的内容上
@@ -5142,6 +5603,7 @@ class StealthReader(QWidget):
             return cmenu
         cmenu.addAction("📂 打开本地书籍 (TXT/EPUB)").triggered.connect(self.open_local_file_dialog)
         cmenu.addAction("🃏 隐形背诵（Anki 卡片）").triggered.connect(self.toggle_review_mode)
+        cmenu.addAction("🌐 社区统一流（知乎/V2EX/微博…）").triggered.connect(self.toggle_feed_mode)
         marks_action = cmenu.addAction("📑 目录 / 书签 / 划线 (Ctrl+L)")
         marks_action.triggered.connect(lambda: self.open_reading_marks(0))
         marks_action.setEnabled(bool(self.is_local_mode))
@@ -5205,6 +5667,12 @@ class StealthReader(QWidget):
 
     def keyPressEvent(self, event):
         key = event.key()
+        if self.feed_mode:
+            # 社区页的键全在 on_feed_key 里；这里吃掉没处理的键，别让书页那套切页逻辑
+            # 把社区流当成书来翻（两者是不同页面，滚动方式也不一样）
+            if self.on_feed_key(key):
+                event.accept()
+            return
         if self.review_mode and not self.safe_mode:
             # 卡片页的交互键 = **窗口内**（和书页完全同一套机制）：只有窗口是当前活动窗口
             # 时才响应。在这之前这套键走的是全局低级钩子，你在别的软件里打字按到 1-4
@@ -5231,6 +5699,8 @@ class StealthReader(QWidget):
         self.exit_peek("close")  # 窗口关了必须先卸全局钩子，再走保存
         if self.review_mode:
             self.exit_review_mode(reason="close")   # 关窗口＝整套收起（只想藏卡片用 Ctrl+D）
+        if self.feed_mode:
+            self.exit_feed_mode(reason="close")     # 社区页也收起：书页按快照回来
         self.shutdown_anki()     # X 关窗是最常用的退出方式：这里也必须把后台线程停干净
         self.dismiss_action_panel(cancelled=True)
         self.sync_progress_async()
@@ -5241,7 +5711,9 @@ class StealthReader(QWidget):
         super().closeEvent(event)
 
     def quit_app(self):
-        # 退出前强制保存本地进度（安全文档/背诵模式下不存：那些坐标不是书的进度）
+        # 退出前强制保存本地进度（安全文档/背诵/社区模式下不存：那些坐标不是书的进度）
+        if self.feed_mode:
+            self.exit_feed_mode(reason="quit")
         if self.is_local_mode and not self._book_veiled():
             self.config["last_local_pos"] = self.current_top_offset()
             self.save_config()
