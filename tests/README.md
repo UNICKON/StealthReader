@@ -58,6 +58,8 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 | `weibo_hotsearch.json` | 微博 `weibo.com/ajax/side/hotSearch` |
 | `discourse_latest.json` / `discourse_topic.json` | **meta.discourse.org**（官方 Discourse 站） |
 | `nga_unauth_403.json` | NGA **没登录时**的真响应（GBK，`1:未登录`） |
+| `nga_list.json` / `nga_read.json` | NGA **带 Cookie** 的列表与正文，**裁过**：列表留 6 条（含 1 条它自己的错误提示）、正文留前 3 楼各 220 字，用户表只留 `uid`+`username` |
+| `nga_old_thread_403.json` | NGA **老帖**的真 403（GBK，原样）：`5:帖子发布或回复时间超过限制` |
 | `zhihu_answer.json` / `zhihu_comments.json` | 知乎**带 Cookie** 拿到的正文/评论，**裁过**：只留第一段正文、前 3 条评论各前 40 字 |
 | `linuxdo_cf.html` | linux.do 的 Cloudflare `Just a moment...` 拦截页 |
 | `chiphell_567.html` | Chiphell 的非标准 567 防爬占位页 |

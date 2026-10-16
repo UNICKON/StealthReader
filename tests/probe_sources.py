@@ -51,11 +51,23 @@ def fixture(name):
         return json.load(f)
 
 
-class FakeHttp(object):
-    """读夹具的替身 Http。routes: 片段 -> 对象。fail: 命中的片段一律抛错。"""
+def fixture_bytes(name):
+    """原样读字节：NGA 那两份夹具一份是真响应（GBK），一份是裁过的（UTF-8），
+    交给适配器自己去认编码——探针不该替它转好。"""
+    path = os.path.join(FIX, name)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
 
-    def __init__(self, routes=None, fail=(), cache=None):
+
+class FakeHttp(object):
+    """读夹具的替身 Http。routes: 片段 -> 对象；bytes_routes: 片段 -> 原始字节。"""
+
+    def __init__(self, routes=None, fail=(), cache=None, bytes_routes=None, bytes_error=None):
         self.routes = routes or {}
+        self.bytes_routes = bytes_routes or {}
+        self.bytes_error = bytes_error or {}
         self.fail = list(fail)
         self.cache = cache
         self.served_stale = False
@@ -74,7 +86,17 @@ class FakeHttp(object):
         self.image_calls.append(url)
         return ("img_%d.jpg" % (abs(hash(url)) % 100000)) if url else ""
 
-    def get_bytes(self, url, ttl=None, headers=None, max_bytes=0):
+    def get_bytes(self, url, ttl=None, headers=None, max_bytes=0, timeout=None):
+        """按原始字节给（NGA 那条路要的就是字节：它自带编码和裸控制字符）。"""
+        for frag in self.fail:
+            if frag in url:
+                raise FeedNetError("连接超时")
+        for frag, msg in self.bytes_error.items():
+            if frag in url:
+                raise FeedNetError(msg)
+        for frag, data in self.bytes_routes.items():
+            if frag in url:
+                return data
         raise FeedNetError("探针里不下载")
 
 
@@ -430,7 +452,7 @@ check("要登录的来源没配 Cookie 时状态点明这一点（页脚就靠�
       feed_sources.NgaSource(FakeHttp(cache=MemCache())).auth_state()
       == "Cookie 未配置（这个来源要登录）")
 
-print("\n=== 12. NGA（批次 D 的一半）：免登录进不去，要 Cookie；解析认不出来就认认不出来 ===")
+print("\n=== 12. NGA（批次 D）：免登录进不去；贴上 Cookie 后按**真响应**解析 ===")
 check("NGA 标记为需要凭据", feed_sources.NgaSource.needs_auth is True)
 check("栏目只有网事杂谈（fid -7）", feed_sources.NgaSource.CHANNELS == ("网事杂谈",))
 na = feed_sources.NgaSource(FakeHttp(cache=MemCache()))
@@ -438,32 +460,112 @@ check("没配 Cookie 时状态说得明白",
       "未配置" in na.auth_state() and "要登录" in na.auth_state(), na.auth_state())
 try:
     na.list("网事杂谈", 0)
-    check("没登录时如实抛错（不返回空列表假装成功）", False, "没抛")
+    check("连不上/没登录时如实抛错（不返回空列表假装成功）", False, "没抛")
 except FeedNetError as e:
-    check("没登录时如实抛错（不返回空列表假装成功）", True, str(e))
-na2 = feed_sources.NgaSource(FakeHttp(
-    {"thread.php": {"error": {"0": "1:未登录"}}, "read.php": {"error": {"0": "1:未登录"}}},
-    cache=MemCache()))
-try:
-    na2.list("网事杂谈", 0)
-    check("接口回 error 时也不会把 error 当帖子", len(na2.list("网事杂谈", 0)[0]) == 0)
-except Exception:
-    check("接口回 error 时也不会把 error 当帖子", True)
-# 下面这两块用的是**按 NGA 公开约定手写**的响应形状（不是真夹具）——
-# 所以它们只验"我的解析写得自洽"，真响应一到手（tests/check_auth.py 会存下来）要按真形状收紧。
-rows = feed_sources.NgaSource._rows(
-    {"data": {"__T": {"0": {"tid": 11, "subject": "a"}, "1": {"tid": 12, "subject": "b"}},
-              "__ROWS": 2}}, "__T")
-check("（手写形状）__T 的数字键字典收成列表", [r["tid"] for r in rows] == [11, 12], rows)
-check("（手写形状）认不出来时给空列表，不炸", feed_sources.NgaSource._rows({}, "__T") == [])
-bbc = feed_sources._nga_blocks('看这个[img]https://x/a.jpg[/img]<br/>正文[b]加粗[/b]'
-                               '[quote]引用的话[/quote]结束')
-kinds = [b.kind for b in bbc]
-texts = " ".join(b.text for b in bbc)
-check("（手写形状）[img] 变成图片块、[quote] 里的字留着、[b] 这类标记丢掉",
-      feed_mod.BLOCK_IMG in kinds and "引用的话" in texts
-      and "[b]" not in texts and "[/quote]" not in texts,
-      (kinds, texts[:60]))
+    check("连不上/没登录时如实抛错（不返回空列表假装成功）", True, str(e))
+
+# 真夹具：`record_fixtures.py nga` 用浏览器 Cookie 录的（列表、正文各裁过，老帖那条是原样 GBK）
+raw_ngal = fixture_bytes("nga_list.json")
+raw_ngar = fixture_bytes("nga_read.json")
+raw_nga403 = fixture_bytes("nga_old_thread_403.json")
+if raw_ngal is None or raw_ngar is None:
+    skip("NGA 真夹具", "缺 nga_list.json / nga_read.json（先跑 tests/record_fixtures.py nga）")
+else:
+    cred = {"cookie": "ngaPassportUid=1", "user_agent": "UA"}
+    ng = feed_sources.NgaSource(
+        FakeHttp(bytes_routes={"thread.php": raw_ngal}, cache=MemCache()), cred)
+    ng_posts, ng_nxt = ng.list("网事杂谈", 0)
+    check("（真夹具）列表出条目、没有下一页", len(ng_posts) >= 5 and ng_nxt is None, len(ng_posts))
+    check("（真夹具）标题 / 作者 / 时间 / 原帖地址都在",
+          all(p.title and p.author and p.ts > 0 and p.url.startswith("https://bbs.nga.cn/read.php?tid=")
+              for p in ng_posts),
+          [(p.title[:12], p.author, p.url[-10:]) for p in ng_posts[:2]])
+    check("（真夹具）统计单位是'回复'（列表里根本没有赞这个数）",
+          all(p.comment_label == "回复" for p in ng_posts) and any(p.n_comments > 0 for p in ng_posts),
+          [p.n_comments for p in ng_posts[:6]])
+    check("（真夹具）NGA 塞在列表里的那条'错误提示'被筛掉了（它没有作者也没有时间）",
+          all(p.author and p.ts > 0 for p in ng_posts)
+          and not any("时间超过限制" in p.title for p in ng_posts),
+          [p.title[:14] for p in ng_posts])
+    check("（真夹具）按'最后回复'倒序",
+          all((ng_posts[i].ts or 0) >= (ng_posts[i + 1].ts or 0) for i in range(len(ng_posts) - 1)))
+    ng_rows = feed_sources._nga_rows(feed_sources._nga_parse(raw_ngal), "__T")
+    check("（真夹具）thread.php 的 __T 是帖子表，能收成列表（原样 %d 条，筛掉错误提示后 %d 条帖子）"
+          % (len(ng_rows), len(ng_posts)),
+          len(ng_rows) == len(ng_posts) + 1 and len(ng_posts) >= 5, (len(ng_rows), len(ng_posts)))
+    check("（真夹具）GBK 的 json 也解得开（strict=False：它里面有裸控制字符）",
+          isinstance(feed_sources._nga_parse(raw_ngal), dict))
+
+    ng2 = feed_sources.NgaSource(
+        FakeHttp(bytes_routes={"read.php": raw_ngar}, cache=MemCache()), cred)
+    ng_read = feed_sources._nga_parse(raw_ngar)
+    meta = (ng_read.get("data") or {}).get("__T") or {}
+    op = feed_sources._nga_op(ng_read)
+    ngd, _ = ng2.detail(ng_posts[0])
+    body_txt = " ".join(b.text for b in ngd.body)
+    # 真夹具里楼主帖的图是相对路径（`[img]./mon_202610/16/xxx.jpg[/img]`），
+    # 所以算"正文文字"前先把图片段整段去掉，拿第一段真正的话来比对
+    op_text = re.sub(r"\[img\].*?\[/img\]", " ", op.get("content") or "", flags=re.S)
+    op_plain = feed_mod.strip_html(re.sub(r"\[[^\]]{0,60}\]", "", op_text)).strip()
+    check("（真夹具）正文取的是 lou=0 那一楼",
+          len(body_txt) > 40 and op_plain[:16] in body_txt, (len(body_txt), op_plain[:16]))
+    starts_img = (op.get("content") or "").lstrip().startswith("[img]")
+    check("（真夹具）楼主帖开头的相对路径图被补成完整地址、落到本地",
+          (not starts_img)
+          or (bool(ngd.body) and ngd.body[0].kind == feed_mod.BLOCK_IMG
+              and not (ngd.body[0].url or "").startswith("http")),
+          (starts_img, [(b.kind, (b.url or "")[:26]) for b in ngd.body[:3]]))
+    check("（真夹具）正文里不残留任何 http 外链", 
+          all(not (b.url or "").startswith("http") for b in ngd.body))
+    check("（真夹具）标题与作者来自 __T（楼主帖的作者名 NGA 是真给的）",
+          ngd.title == feed_mod.strip_html(meta.get("subject") or "") and ngd.author == meta.get("author"),
+          (ngd.title[:14], ngd.author, meta.get("author")))
+    check("（真夹具）read.php 的 __T 是**平字典**（主题元信息），不会被当成帖子表硬解",
+          feed_sources._nga_rows(ng_read, "__T") == [],
+          list(meta.keys())[:6])
+    check("（真夹具）时间取的是 postdatetimestamp（真 unix 秒），不是那个'2026-10-16 19:29'字符串",
+          ngd.ts == feed_mod.parse_time(op.get("postdatetimestamp")), (ngd.ts, op.get("postdatetimestamp")))
+    ngc, _ = ng2.comments(ng_posts[0])
+    check("（真夹具）评论 = 除 lou=0 之外的那几楼", len(ngc) >= 1, len(ngc))
+    all_txt = " ".join(b.text for c in ngc for b in c.body)
+    check("（真夹具）评论正文在，而且 BBCode 标记被清掉了",
+          all(c.body for c in ngc) and "[b]" not in all_txt and "[pid=" not in all_txt
+          and "[/uid]" not in all_txt,
+          [[b.text[:14] for b in c.body][:1] for c in ngc[:2]])
+    check("（真夹具）NGA 只给 UID 占位名时作者留空，不把 'UID:123' 摆给人看",
+          all("UID:" not in (c.author or "") for c in ngc), [c.author for c in ngc[:3]])
+
+    if raw_nga403 is not None:
+        # 老帖 403 的原因就写在返回体里（GBK）——从真夹具里现抠，不手写这句话
+        ng_msg = mapped("https://bbs.nga.cn/read.php?tid=1&__output=8", 403, raw_nga403)
+        check("（真夹具）老帖 403 的返回体我们自己会带出原因", "时间超过限制" in ng_msg, ng_msg)
+        ng3 = feed_sources.NgaSource(
+            FakeHttp(bytes_error={"read.php": ng_msg}, cache=MemCache()), cred)
+        try:
+            ng3.detail(ng_posts[0])
+            check("老帖被挡时翻译成人话，绝不谎称'要登录'", False, "没抛")
+        except FeedNetError as e:
+            check("老帖被挡时翻译成人话，绝不谎称'要登录'",
+                  "时间超过限制" in str(e) and "登录" not in str(e), str(e))
+        check("老帖看不了时评论如实为空（不造几条出来）", ng3.comments(ng_posts[0]) == ([], None))
+    else:
+        skip("NGA 老帖 403", "缺 nga_old_thread_403.json")
+
+    # 这两条是**按 NGA 的写法手写**的输入（真夹具里不一定恰好有图/引用），
+    # 只验"我们这层标记清理和图片落地写得对"，不代表接口形状。
+    ng4 = feed_sources.NgaSource(FakeHttp(cache=MemCache()), cred)
+    bbc = feed_sources._nga_blocks('看这个[img]https://x/a.jpg[/img]<br/>正文[b]加粗[/b]'
+                                   '[quote]引用的话[/quote]结束')
+    kinds = [b.kind for b in bbc]
+    texts = " ".join(b.text for b in bbc)
+    check("（手写形状）[img] 变成图片块、[quote] 里的字留着、[b] 这类标记丢掉",
+          feed_mod.BLOCK_IMG in kinds and "引用的话" in texts
+          and "[b]" not in texts and "[/quote]" not in texts,
+          (kinds, texts[:60]))
+    pics = ng4._localize_images(feed_sources._nga_blocks("[img]https://img.nga.cn/a.jpg[/img]"), limit=4)
+    check("（手写形状）图会被落到本地（正文里不留 http 外链）",
+          bool(pics) and pics[0].kind == feed_mod.BLOCK_IMG
+          and not (pics[0].url or "").startswith("http"), [(b.kind, b.url) for b in pics])
 
 print("\n=== 13. 知乎：贴了 Cookie 才去试正文，试不到就说试不到（真夹具）===")
 zlist = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache()))

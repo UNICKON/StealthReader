@@ -755,18 +755,96 @@ class WeiboSource(RealSource):
         return [], None                           # 拿不到就是拿不到，不造评论
 
 
+def _nga_parse(raw):
+    """NGA 的 `__output=8` JSON：**必须 `strict=False`**。
+
+    它返回的字符串里有裸换行/制表符（JSON 标准不允许），`json.loads` 默认会
+    `Invalid control character` 直接报错——这不是"接口坏了"，是它就是这么发的。
+    编码按响应里自称的 `encode` 字段走（实测是 `"encode":"gbk"`，按 utf-8 解会成乱码），
+    认不出来就 utf-8 → gbk 逐个试。"""
+    if isinstance(raw, (bytes, bytearray)):
+        head = bytes(raw[:600]).lower()
+        text = None
+        if b'"encode"' in head and b"gbk" in head:
+            text = raw.decode("gbk", "replace")
+        else:
+            for enc in ("utf-8", "gbk"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except Exception:
+                    continue
+            if text is None:
+                text = raw.decode("utf-8", "replace")
+    else:
+        text = str(raw)
+    try:
+        return json.loads(text, strict=False)
+    except Exception as e:
+        raise FeedNetError("NGA 回的 JSON 读不出来（%s）" % type(e).__name__)
+
+
+def _nga_rows(data, key):
+    """把 `data.__T` / `data.__R` 那种"数字键字典"收成按楼层排好的列表。
+
+    `thread.php` 的 `__T` 是**帖子表**（值是 dict）；`read.php` 的 `__T` 是**主题元信息**
+    （平字典，值是字符串）——同一个键名两种含义，所以认不出 dict 就返回空列表，而不是硬解。"""
+    node = (data or {}).get("data") if isinstance(data, dict) else None
+    block = (node or {}).get(key) if isinstance(node, dict) else None
+    if isinstance(block, list):
+        items = list(block)
+    elif isinstance(block, dict):
+        try:
+            items = [block[k] for k in sorted(block.keys(), key=lambda x: int(x))]
+        except Exception:
+            items = list(block.values())
+    else:
+        items = []
+    return [it for it in items if isinstance(it, dict)]
+
+
+def _nga_op(data):
+    """`read.php` 的楼主帖 = `__R` 里 `lou == 0` 的那条（没有就退回第一条）。"""
+    rows = _nga_rows(data, "__R")
+    for it in rows:
+        if int(it.get("lou") or 0) == 0:
+            return it
+    return rows[0] if rows else {}
+
+
+def _nga_author(data, it):
+    """作者名：先用楼里自带的名字，再查 `__U` 用户表。
+
+    实测（2026-10-16）NGA 的接口**对其他用户只给 `UID:12345678` 这种占位串**，不给真昵称
+    （只有楼主帖的 `__T.author` 是真名）。所以这里认不出真名就返回空字符串：
+    页面上宁可少显示作者，也不显示 `UID:67020159` 这种给人看的占位串。"""
+    for k in ("author", "username"):
+        v = it.get(k)
+        if isinstance(v, str) and v.strip() and not v.strip().startswith("UID:"):
+            return v.strip()
+    users = ((data or {}).get("data") or {}).get("__U") if isinstance(data, dict) else None
+    node = (users or {}).get(str(it.get("authorid"))) if isinstance(users, dict) else None
+    name = str((node or {}).get("username") or "").strip() if isinstance(node, dict) else ""
+    return "" if name.startswith("UID:") else name
+
+
 class NgaSource(RealSource):
     """NGA（艾泽拉斯国家地理）。**免登录完全进不去**，必须贴浏览器 Cookie。
 
-    2026-10-16 实测：`thread.php?fid=-7&__output=8` 返回 **HTTP 403 + GBK 的
-    `{"error":{"0":"未登录"}}`**（连 `__output=8` 这条"给程序看的"出口也一样），
-    首页直接写着游客不能访问。所以这个来源默认关闭，写完等 Cookie 到位再验。
+    2026-10-16 实测（本机网络、浏览器 Cookie）：
+      - 免登录：`thread.php?fid=-7&__output=8` 返 **403 + GBK 的 `{"error":{"0":"1:未登录"}}`**，
+        首页也直接写着游客不能访问；
+      - **贴上 Cookie 后列表 200**（49 条）：每条带 `tid / subject / author / postdate / lastpost /
+        replies`；
+      - **正文**走 `read.php?tid=<tid>&__output=8`：`data.__T` 是**主题元信息**（`subject` / `author` /
+        `lastpost`），`data.__R` 是**按楼层**的字典（`lou=0` 是楼主帖，其余是回复），
+        每层有 `content`（HTML 夹 BBCode）/ `authorid` / `postdatetimestamp` / `score`；
+      - **老帖子会 403**，返回体写着 `5:帖子发布或回复时间超过限制`——**这不是登录问题**，
+        是 NGA 自己的规矩（列表第一条恰好就是这种老帖，当时误以为是 Cookie 不对）。
+        这种情况按原话报出来，不谎称"要登录"；
+      - 回复**没有真正的层级**（引用写在正文里），所以按平铺给。
 
-    接口形状按 NGA 公开的 `__output=8` 约定写（社区里长期在用）：
-      - 列表 `thread.php?fid=<fid>&__output=8` → `data.__T` 是帖子的字典（键 "0"、"1"…）；
-      - 正文 `read.php?tid=<tid>&__output=8` → `data.__T` 是楼主帖、`data.__R` 是回复。
-    **没验过的东西不当成验过**：解析写成"认不出来就如实说认不出来"，
-    夹具一到手（`tests/check_auth.py` 会把响应存到临时目录）就按真响应收紧。
+    解析全部按真响应写（`__T` 的两种含义、`strict=False`、GBK、`__U` 占位名都处理了）。
     """
 
     key = "nga"
@@ -775,6 +853,7 @@ class NgaSource(RealSource):
     needs_auth = True                  # 这个是真的要登录：列表都进不去
     CHANNELS = ("网事杂谈",)
     FID = {"网事杂谈": "-7"}
+    MAX_PAGE_BYTES = 4000000
 
     def channels(self):
         return list(self.CHANNELS)
@@ -782,98 +861,127 @@ class NgaSource(RealSource):
     def image_base(self):
         return self.http.cache.img_dir if self.http.cache is not None else ""
 
+    def _json(self, url, ttl, what, timeout=None):
+        raw = self.http.get_bytes(url, ttl=ttl, max_bytes=self.MAX_PAGE_BYTES, timeout=timeout)
+        return _nga_parse(raw)
+
+    @staticmethod
+    def _attach_base(data):
+        """图片的相对路径前缀（响应里自带，实测 `img.nga.cn/attachments`）。"""
+        node = ((data or {}).get("data") or {}).get("__GLOBAL") if isinstance(data, dict) else None
+        base = (node or {}).get("_ATTACH_BASE_VIEW") if isinstance(node, dict) else ""
+        return str(base or "img.nga.cn/attachments").strip("/")
+
     def list(self, channel=None, cursor=None):
         channel = channel if channel in self.FID else self.CHANNELS[0]
         url = "%s/thread.php?fid=%s&__output=8" % (self.base_url, self.FID[channel])
-        data = self._get(url, TTL_LIST, "NGA 列表", timeout=LIST_TIMEOUT)
-        rows = self._rows(data, "__T")
+        data = self._json(url, TTL_LIST, "NGA 列表", timeout=LIST_TIMEOUT)
         posts = []
-        for it in rows:
+        for it in _nga_rows(data, "__T"):
             tid = it.get("tid")
-            if not tid:
+            title = feed_mod.strip_html(it.get("subject") or "")
+            if not tid or not title:
                 continue
-            ts = feed_mod.parse_time(it.get("postdate") or it.get("lastpost"))
+            # 列表上的时间是"最后回复"——板块页本来就是"哪里还在动"，这比发布时间更有用
+            ts = feed_mod.parse_time(it.get("lastpost") or it.get("postdate"))
+            author = feed_mod.strip_html(it.get("author") or "")
+            if ts <= 0 or not author:
+                # 真夹具抓到的：`thread.php` 的 `__T` 里会混进一条**它自己的错误提示**
+                # （`subject` 是"帖子发布或回复时间超过限制"，没有作者也没有时间）。
+                # 当帖子收下的话，列表第一条就会变成一句报错——所以这里按"有没有作者和时间"筛掉。
+                continue
             posts.append(Post(
                 source=self.key, source_label=self.label, channel=channel, pid=str(tid),
-                title=feed_mod.strip_html(it.get("subject") or ""),
-                author=str(it.get("author") or ""),
+                title=title,
+                author=author,
                 created=feed_mod.human_time(ts), ts=ts,
-                score=0,                            # NGA 列表不给"赞"这个数
+                score=0,                       # 列表里没有"赞"这种数，只有回复数
                 n_comments=max(0, int(it.get("replies") or 0)), comment_label="回复",
                 excerpt="",
                 url="%s/read.php?tid=%s" % (self.base_url, tid),
-                tags=[str(it.get("type"))] if it.get("type") else [],
+                tags=[str(it.get("type"))] if str(it.get("type") or "") not in ("", "0") else [],
             ))
-        posts = [p for p in posts if p.title]
         posts.sort(key=lambda p: (p.ts or 0), reverse=True)
         return posts, None
 
     def detail(self, post, cursor=None):
         url = "%s/read.php?tid=%s&__output=8" % (self.base_url, post.id)
-        data = self._get(url, TTL_DETAIL, "NGA 正文")
+        try:
+            data = self._json(url, TTL_DETAIL, "NGA 正文")
+        except FeedNetError as e:
+            if "时间超过限制" in str(e):
+                raise FeedNetError("NGA 不让看这条老帖（它自己说的：帖子发布或回复时间超过限制）")
+            raise
         out = Post.from_dict(post.to_dict())
-        head = self._rows(data, "__T")
-        # 楼主帖可能在 __T 里，也可能是 __R 的第 0 条（两种都见过，所以两种都认）
-        first = head[0] if head else {}
-        if not first.get("content"):
-            replies = self._rows(data, "__R")
-            first = replies[0] if replies else first
-        if first.get("subject"):
-            out.title = feed_mod.strip_html(first["subject"])
-        if first.get("author"):
-            out.author = str(first["author"])
-        ts = feed_mod.parse_time(first.get("postdate"))
+        meta = ((data or {}).get("data") or {}).get("__T")
+        meta = meta if isinstance(meta, dict) else {}
+        first = _nga_op(data)
+        if meta.get("subject"):
+            out.title = feed_mod.strip_html(meta["subject"])
+        name = feed_mod.strip_html(str(meta.get("author") or "")) or _nga_author(data, first)
+        if name:
+            out.author = name
+        ts = feed_mod.parse_time(first.get("postdatetimestamp") or first.get("postdate"))
         if ts:
             out.ts, out.created = ts, feed_mod.human_time(ts)
-        out.body = self._localize_images(_nga_blocks(first.get("content") or ""), limit=8)
+        out.body = self._localize_images(
+            _nga_blocks(first.get("content") or "", limit=40, attach_base=self._attach_base(data)),
+            limit=8)
         if not out.body:
-            out.body = [Block(kind=BLOCK_QUOTE,
-                              text="这条帖子的正文没取到（可能要在浏览器里登录一次 NGA 再复制 Cookie）。")]
+            out.body = [Block(kind=BLOCK_QUOTE, text="这条帖子的正文没取到（可能是权限或者改版了）。")]
         return out, None
 
     def comments(self, post, cursor=None):
         url = "%s/read.php?tid=%s&__output=8" % (self.base_url, post.id)
-        data = self._get(url, TTL_LIST, "NGA 回复")
-        rows = self._rows(data, "__R")
+        try:
+            data = self._json(url, TTL_LIST, "NGA 回复")
+        except FeedNetError:
+            return [], None                    # 拿不到就如实为空（老帖 403 是常态）
         out = []
-        for it in rows[1:] if len(rows) > 1 else []:
-            ts = feed_mod.parse_time(it.get("postdate"))
-            body = _nga_blocks(it.get("content") or "")
+        base = self._attach_base(data)
+        for it in _nga_rows(data, "__R"):
+            if int(it.get("lou") or 0) == 0:
+                continue                       # 楼主帖已经在上面的正文里了
+            body = self._localize_images(
+                _nga_blocks(it.get("content") or "", attach_base=base), limit=6)
             if not body:
                 continue
+            ts = feed_mod.parse_time(it.get("postdatetimestamp") or it.get("postdate"))
             out.append(Comment(
                 cid=str(it.get("pid") or it.get("lou") or len(out)),
-                author=str(it.get("author") or ""),
+                author=_nga_author(data, it),
                 created=feed_mod.human_time(ts),
-                score=0,                       # NGA 回复没有分数
+                score=0,                       # score 这个字段的含义没验证过，不往"赞"上摆
                 body=body,
             ))
-        return out, None                       # NGA 是"引用"式楼层，没有真正的层级，就按平铺给
-
-    @staticmethod
-    def _rows(data, key):
-        """把 `data.__T` / `data.__R` 那种"数字键字典"收成列表。认不出来就返回空列表。"""
-        node = ((data or {}).get("data") or {}) if isinstance(data, dict) else {}
-        block = node.get(key)
-        if isinstance(block, dict):
-            items = [block[k] for k in sorted(block.keys(), key=lambda x: str(x))]
-        elif isinstance(block, list):
-            items = block
-        else:
-            items = []
-        return [it for it in items if isinstance(it, dict)]
+        return out, None
 
 
-def _nga_blocks(html, limit=40):
-    """NGA 的正文是 HTML 里夹 BBCode（`[quote]` / `[b]` / `[img]`）。先做最小清理再交给通用解析。
+def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
+    """NGA 的正文是 HTML 里夹 BBCode（`[quote]` / `[b]` / `[img]` / `[pid=...]`）。
+
+    `[img]` 里的地址常常是**相对路径**（形如 `./mon_202610/16/xxx.jpg`），
+    直接扔给解析层就会变成一条没用的文字。真实前缀由响应里的
+    `__GLOBAL._ATTACH_BASE_VIEW` 给（实测是 `img.nga.cn/attachments`），
+    所以这里先补成完整地址，交给 `_localize_images` 落盘。
 
     只处理"不处理就会看着别扭"的那几种标记，不做完整 BBCode 实现——
     认不出来的标记原样留着也比猜错强。"""
     text = str(html or "")
-    text = re.sub(r"\[img\](.*?)\[/img\]", lambda m: '<img src="%s"/>' % m.group(1), text,
-                  flags=re.I | re.S)
+
+    def _img(m):
+        src = (m.group(1) or "").strip()
+        if src.startswith("./"):
+            src = src[2:]
+        if src and not src.lower().startswith(("http", "//", "data:")):
+            src = "https://%s/%s" % (str(attach_base or "").strip("/"), src.lstrip("/"))
+        elif src.startswith("//"):
+            src = "https:" + src
+        return '<img src="%s"/>' % src
+
+    text = re.sub(r"\[img\](.*?)\[/img\]", _img, text, flags=re.I | re.S)
     text = re.sub(r"\[quote\](.*?)\[/quote\]", r"\1\n", text, flags=re.I | re.S)
-    text = re.sub(r"\[/?[a-z=*\u4e00-\u9fff][^\]]{0,40}\]", "", text)   # 剩下的 [b] [/b] [color=x] 丢掉
+    text = re.sub(r"\[/?[a-z=*\u4e00-\u9fff][^\]]{0,40}\]", "", text)   # [b] [/b] [pid=..] [uid=..]
     return feed_mod.blocks_from_html(text, max_blocks=limit)
 
 
@@ -980,14 +1088,17 @@ class MixSource(SourceAdapter):
 
 def build_real_sources(cache_root=None, config=None, log=None):
     """按配置建好来源。顺序就是界面里 `[`/`]` 的顺序：混流打头，然后 IT之家 / V2EX /
-    linux.do / 知乎。"""
+    linux.do / 知乎 / NGA（顺序由下面这张表定，不跟着配置串的顺序走，这样按键顺序永远可预期）。"""
     config = config or {}
     cache = feed_net.Cache(cache_root) if cache_root else None
     auth = load_auth(os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_auth.json"))
     enabled = config.get("feed_sources", None)
     if enabled is None:
-        # 配置里没写过 -> 四个真来源全开；写成空列表 = 用户把它们全关了（只剩离线示例）
-        enabled = ["ithome", "v2ex", "linuxdo", "zhihu"]
+        # 配置里没写过 -> 默认这几个；写成空列表 = 用户把它们全关了（只剩离线示例）。
+        # 微博不在默认里：它的风控最紧，属于"单独开关"那一档。
+        # NGA 在默认里：它确实要 Cookie，但没配的时候页脚会照实说"这个来源要 Cookie"，
+        # 不会假装成功——比"藏起来让人找不到"更好解释。
+        enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga"]
     elif not isinstance(enabled, list):
         enabled = [str(enabled)]
 

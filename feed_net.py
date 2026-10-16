@@ -152,6 +152,33 @@ class Cache(object):
         return n
 
 
+def _short_reason(r):
+    """从返回体里抠一句**服务器自己说的**短原因（带出来比只说"403"有用得多）。
+
+    NGA 会把原因写在 `{"error":{"0":"5:帖子发布或回复时间超过限制"}}`（GBK），
+    知乎写在 `{"error":{"message":"..."}}`。抠不出来就返回空字符串——不猜。
+
+    解码必须**严格**试：放宽成 `errors="ignore"` 的话，GBK 的中文会被 utf-8"解"成乱码，
+    再拿去给人看就是 `5:ӷظʱ䳬` 这种谁都不认识的东西（这是实测踩到的，不是假想）。"""
+    raw = (r.content or b"")[:2000]
+    for enc in ("utf-8", "gbk"):
+        try:
+            text = raw.decode(enc)
+        except Exception:
+            continue
+        for pat in (r'"error"\s*:\s*\{\s*"0"\s*:\s*"([^"]{2,120})"',
+                    r'"(?:message|msg|errMsg)"\s*:\s*"([^"]{2,120})"'):
+            m = re.search(pat, text)
+            if m:
+                reason = m.group(1).strip()
+                # 丢掉标签、压掉换行，只留一句人话
+                reason = re.sub(r"<[^>]{0,120}>", " ", reason)
+                reason = re.sub(r"\s+", " ", reason).strip()
+                if reason:
+                    return reason[:60] + ("…" if len(reason) > 60 else "")
+    return ""
+
+
 def _says_login(r):
     """返回体里是不是在说"要登录"。utf-8 / gbk / \\uXXXX 转义三种写法都认。
 
@@ -222,10 +249,12 @@ class Http(object):
         if r.status_code == 403:
             # 403 有好几种：Cloudflare 盾（上面那条）、"没登录"、以及"没权限"。
             # 看一眼返回体再下结论——NGA 免登录时返回的就是 GBK 的 {"error":{"0":"1:未登录"}}，
+            # 老帖返回的是 {"error":{"0":"5:帖子发布或回复时间超过限制"}}，
             # 所以这里 utf-8 和 gbk 都试一遍（只按 utf-8 解会解成乱码，关键词就命不中了）。
             if _says_login(r):
                 raise FeedNetError("要登录（403）")
-            raise FeedNetError("被拒绝（403）")
+            reason = _short_reason(r)
+            raise FeedNetError("被拒绝（403）" + ("：" + reason if reason else ""))
         if r.status_code == 404:
             raise FeedNetError("接口不存在（404）")
         if r.status_code >= 400:
@@ -263,12 +292,12 @@ class Http(object):
             self.cache.write_json(url, obj)
         return obj
 
-    def get_bytes(self, url, ttl=TTL_FOREVER, headers=None, max_bytes=MAX_IMAGE_BYTES):
+    def get_bytes(self, url, ttl=TTL_FOREVER, headers=None, max_bytes=MAX_IMAGE_BYTES, timeout=None):
         if self.cache is not None:
             hit = self.cache.read_bytes(url, ttl)
             if hit is not None:
                 return hit
-        r = self._get(url, headers=headers)
+        r = self._get(url, headers=headers, timeout=timeout)
         data = r.content
         if len(data) > max_bytes:
             raise FeedNetError("文件太大")

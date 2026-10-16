@@ -105,6 +105,38 @@ def save_authed(name, url, cred, headers=None, trim=None):
     return obj
 
 
+def fetch_raw(url, cred, headers=None):
+    """带 Cookie 取一次**原始字节**，返回 `(bytes, HTTP 状态码)`。不落盘、不抛。
+
+    NGA 这种站要拿原始字节：它的 JSON 里有裸控制字符、编码还自称 gbk，
+    用 `r.json()` 会直接报错，所以这里只负责取回来。"""
+    h = {"User-Agent": cred.get("user_agent") or UA, "Accept": "*/*",
+         "Cookie": cred.get("cookie") or ""}
+    h.update(headers or {})
+    try:
+        r = S.get(url, headers=h, timeout=25)
+    except Exception as e:
+        print("  取不到 %s：%s: %s" % (url[:64], type(e).__name__, e))
+        return None, 0
+    return r.content, r.status_code
+
+
+def save_raw(name, obj, note=""):
+    """把**已经裁过**的对象存成夹具 JSON。"""
+    body = json.dumps(obj, ensure_ascii=False, indent=1).encode("utf-8")
+    with open(os.path.join(OUT, name), "wb") as f:
+        f.write(body)
+    print("  录到 %-24s %6d 字节%s" % (name, len(body), ("（%s）" % note) if note else ""))
+    return obj
+
+
+def write_bytes(name, data):
+    """原样存字节：NGA 那条 403 是 GBK，转码反而容易失真。"""
+    with open(os.path.join(OUT, name), "wb") as f:
+        f.write(data)
+    return data
+
+
 def _name(a):
     if isinstance(a, dict):
         if a.get("name"):
@@ -166,6 +198,61 @@ def _pick_question(hot):
     return ""
 
 
+def _nga_load(raw):
+    return json.loads(raw.decode("gbk", "replace"), strict=False)
+
+
+def _nga_pick_list(obj):
+    data = (obj or {}).get("data") or {}
+    block = data.get("__T") if isinstance(data.get("__T"), dict) else {}
+    try:
+        keys = sorted(block.keys(), key=lambda x: int(x))
+    except Exception:
+        keys = list(block.keys())
+    return [(k, block[k]) for k in keys if isinstance(block.get(k), dict)]
+
+
+def _trim_nga_list(obj, keep=6):
+    """列表只留几条 + 只留适配器用到的字段（`__U`/`__GLOBAL`/`__CU` 这些一概不留）。"""
+    out = {}
+    for k, it in _nga_pick_list(obj)[:keep]:
+        out[k] = {f: it.get(f) for f in ("tid", "subject", "author", "postdate", "lastpost",
+                                         "replies", "type", "fid")}
+    return {"data": {"__T": out}}
+
+
+def _trim_nga_read(obj, keep=3, each=220):
+    """正文只留前几楼、每楼前 220 字；用户表只留 `uid` + `username`。
+
+    `__U` 里每个人都带着 credit / money / postnum 这些资料，没必要进公开仓库，
+    而夹具要验的只有"作者的 uid 能不能对上用户名"。"""
+    data = (obj or {}).get("data") or {}
+    meta = data.get("__T") if isinstance(data.get("__T"), dict) else {}
+    keep_meta = {f: meta.get(f) for f in ("subject", "author", "fid", "lastpost", "postdate")}
+    rows, ids = {}, []
+    block = data.get("__R") if isinstance(data.get("__R"), dict) else {}
+    try:
+        keys = sorted(block.keys(), key=lambda x: int(x))
+    except Exception:
+        keys = list(block.keys())
+    for k in keys[:keep]:
+        it = block[k]
+        if not isinstance(it, dict):
+            continue
+        rows[k] = {"lou": it.get("lou"), "pid": it.get("pid"), "authorid": it.get("authorid"),
+                   "postdate": it.get("postdate"),
+                   "postdatetimestamp": it.get("postdatetimestamp"),
+                   "score": it.get("score"), "subject": it.get("subject"),
+                   "content": (it.get("content") or "")[:each]}
+        if it.get("authorid") is not None:
+            ids.append(str(it["authorid"]))
+    users = data.get("__U") if isinstance(data.get("__U"), dict) else {}
+    return {"data": {"__T": keep_meta, "__R": rows, "__ROWS": data.get("__ROWS"),
+                     "__U": {i: {"uid": (users.get(i) or {}).get("uid"),
+                                 "username": (users.get(i) or {}).get("username")}
+                             for i in ids if isinstance(users.get(i), dict)}}}
+
+
 def record(which):
     if which in ("", "ithome"):
         print("IT之家")
@@ -222,6 +309,52 @@ def record(which):
                         "?limit=20&offset=0&order=normal&status=open" % aid,
                         cred, headers={"Referer": "https://www.zhihu.com/",
                                        "x-requested-with": "fetch"}, trim=_trim_comments)
+    if which in ("", "nga"):
+        print("NGA")
+        cred = auth_for("nga")
+        if not cred:
+            print("  列表/正文都要 Cookie（feed_auth.json 里没有），跳过")
+        else:
+            ref = {"Referer": "https://bbs.nga.cn/"}
+            raw, status = fetch_raw("https://bbs.nga.cn/thread.php?fid=-7&__output=8", cred, ref)
+            lst = None
+            if raw is None or status != 200:
+                print("  列表没拿到（HTTP %s），跳过" % status)
+            else:
+                try:
+                    lst = _nga_load(raw)
+                except Exception as e:
+                    print("  列表不是能读的 JSON（%s），跳过" % e)
+            rows = _nga_pick_list(lst) if lst is not None else []
+            if rows:
+                save_raw("nga_list.json", _trim_nga_list(lst), note="已裁剪：只留 6 条 + 适配器用到的字段")
+                # 挑最新的（`lastpost` 最大）录正文——老的会被 NGA 用"时间超过限制"挡掉
+                newest = sorted(rows, key=lambda kv: int((kv[1] or {}).get("lastpost") or 0))[-1][1]
+                tid = str(newest.get("tid") or "")
+                if tid:
+                    raw2, status = fetch_raw(
+                        "https://bbs.nga.cn/read.php?tid=%s&__output=8" % tid, cred, ref)
+                    if status == 200 and raw2:
+                        try:
+                            save_raw("nga_read.json",
+                                     _trim_nga_read(_nga_load(raw2)),
+                                     note="已裁剪：%s 的前 3 楼、每楼 220 字；用户表只留 uid+username" % tid)
+                        except Exception as e:
+                            print("  正文 JSON 读不出来（%s），跳过" % e)
+                    else:
+                        print("  正文这条没拿到（HTTP %s）" % status)
+                # 再挑最老的一条：NGA 会回 403「5:帖子发布或回复时间超过限制」——
+                # 这条真响应专门用来验"别把权限问题谎报成登录问题"
+                oldest = sorted(rows, key=lambda kv: int((kv[1] or {}).get("lastpost") or 0))[0][1]
+                otid = str(oldest.get("tid") or "")
+                if otid:
+                    raw3, status3 = fetch_raw(
+                        "https://bbs.nga.cn/read.php?tid=%s&__output=8" % otid, cred, ref)
+                    if status3 == 403 and raw3 and "时间超过限制".encode("gbk") in raw3:
+                        write_bytes("nga_old_thread_403.json", raw3)
+                        print("  录到 nga_old_thread_403.json   %8d 字节（原样，GBK）" % len(raw3))
+                    else:
+                        print("  老帖这次不是 403（HTTP %s），没录那条" % status3)
     if which in ("", "weibo"):
         print("微博")
         save("weibo_hotsearch.json", "https://weibo.com/ajax/side/hotSearch",

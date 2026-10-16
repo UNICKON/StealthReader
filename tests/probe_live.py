@@ -219,6 +219,36 @@ else:
         except Exception as e:
             note("知乎带 Cookie 这条路这次没走通：%s: %s" % (type(e).__name__, e))
 
+    ns = authed(feed_sources.NgaSource)
+    if not ns.has_auth:
+        note("feed_auth.json 里没有 NGA 的 Cookie，跳过 NGA")
+    else:
+        try:
+            nposts, _ = ns.list("网事杂谈", 0)
+            check("NGA（带 Cookie）：列表拿到了（%d 条）" % len(nposts), len(nposts) >= 5, len(nposts))
+            check("NGA（带 Cookie）：列表没有把'错误提示'当帖子",
+                  all(p.author and p.ts > 0 and "时间超过限制" not in p.title for p in nposts),
+                  [(p.title[:12], p.author) for p in nposts[:2]])
+            # 新的帖子才读得动：老的会被 NGA 自己挡（"帖子发布或回复时间超过限制"）
+            picked, derr = None, ""
+            for cand in nposts[:4]:
+                try:
+                    picked, _ = ns.detail(cand)
+                    break
+                except Exception as e:
+                    derr = "%s: %s" % (type(e).__name__, e)
+            check("NGA（带 Cookie）：正文拿到了（%d 字）" % (picked.text_length() if picked else 0),
+                  bool(picked) and picked.text_length() > 20, derr)
+            if picked:
+                check("NGA（带 Cookie）：正文不外链",
+                      all(not (b.url or "").startswith("http") for b in picked.body))
+                cms2, _ = ns.comments(nposts[0])
+                note("NGA 第一条的评论拿到 %d 条（作者名 NGA 只给 UID 占位，所以多半是空的）"
+                     % len(cms2))
+                check("NGA（带 Cookie）：评论这条路通了（%d 条）" % len(cms2), len(cms2) >= 1, len(cms2))
+        except Exception as e:
+            note("NGA 这条路这次没走通：%s: %s" % (type(e).__name__, e))
+
 shutil.rmtree(CACHE, ignore_errors=True)
 print("\n================ 结果 ================")
 print("失败 %d 项%s" % (len(FAILS), ("：" + "；".join(FAILS)) if FAILS else "（无）"))
