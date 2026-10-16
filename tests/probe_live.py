@@ -98,7 +98,8 @@ if "IT之家" in got:
 if "知乎" in got:
     zd, _ = got["知乎"].detail(got["知乎"].list("热榜", 0)[0][0])
     txt = " ".join(b.text for b in zd.body)
-    check("知乎：详情是'真摘要 + 说清正文要登录'", len(txt) > 30 and "登录" in txt, txt[:40])
+    check("知乎：详情只放问题自己的信息，并说清回答要登录",
+          len(txt) > 20 and "登录" in txt, txt[:40])
 
 print("\n=== 2. 混流：连得上的并行合流，连不上的只写页脚 ===")
 live = [feed_sources.IthomeSource(feed_net.Http(cache=feed_net.Cache(CACHE))),
@@ -159,8 +160,14 @@ def pump(until, seconds=40.0):
 w.enter_feed_mode()
 ok = pump(lambda: len(w.feed_nav.posts) >= 6 and not w.feed_busy)
 check("混流第一页出来了", ok, len(w.feed_nav.posts))
-check("页脚给了来源与条数", "全部来源" in w.feed_status_text(), w.feed_status_text())
-note("页脚：" + w.feed_status_text())
+_footer = w.feed_status_text()
+# 页脚写的是**当前**来源（config 里记住上次停在哪，所以不能假定是混流——实测人上次停在知乎）；
+# 分隔用的是全角空格，别拿 "·" 去认。
+check("页脚给了来源与条数",
+      "第 1/" in _footer
+      and any(s in _footer for s in ("全部来源", "知乎", "IT之家", "V2EX", "linux.do", "微博")),
+      _footer)
+note("页脚：" + _footer)
 if "知乎" in got:
     while w.feed_source().key != "zhihu":
         w.feed_cycle_source(1)
@@ -169,8 +176,8 @@ if "知乎" in got:
     w.feed_nav.index = 0
     w.feed_open()
     pump(lambda: w.feed_nav.view == "detail" and w.feed_nav.detail_loaded, 30.0)
-    check("详情打开了并且有正文", len(w.text_edit.toPlainText()) > 50,
-          len(w.text_edit.toPlainText()))
+    check("详情打开了，里面有东西（问题自己的信息 + 回答那一栏）",
+          len(w.text_edit.toPlainText()) > 50, len(w.text_edit.toPlainText()))
     check("O 打开真原帖", w.feed_open_original() is False and OPENED, OPENED[-1:])
 # "没有代码异常"这条要按**两类**看：
 #   ① 话必须是"这个站连不上/不让我看"这类实话（措辞会随站和网络变，所以只认几个关键词；
@@ -209,22 +216,24 @@ else:
             t0 = time.time()
             d, _ = zs.detail(dp)
             body_txt = " ".join(b.text for b in d.body)
-            check("知乎（带 Cookie）：正文真拿到了（%d 字，%.1fs）" % (d.text_length(), time.time() - t0),
-                  d.text_length() > 100 and "用的是 feed_auth.json 里的 Cookie" in body_txt,
-                  body_txt[:40])
-            check("知乎（带 Cookie）：正文不外链（图都落到本地了）",
-                  all(not (b.url or "").startswith("http") for b in d.body))
-            t0 = time.time()
             cms, _ = zs.comments(dp)
-            # 条数不设下限：这一条回答可能就几条评论（实测遇到过只有 2 条的）。
-            # "评论接对了"由零网络探针拿真夹具验，这里只验"真网络这条路走得通"。
-            check("知乎（带 Cookie）：评论这条路通了（%d 条，%.1fs）" % (len(cms), time.time() - t0),
-                  len(cms) >= 1, len(cms))
-            check("知乎（带 Cookie）：评论作者和正文都在",
+            ans_txt = " ".join(b.text for c in cms for b in c.body)
+            check("知乎（带 Cookie）：回答拿到了（%d 条回答 / 正文栏 %d 字，%.1fs）"
+                  % (len(cms), d.text_length(), time.time() - t0),
+                  len(cms) >= 1 and len(ans_txt) > 100, (len(cms), body_txt[:40]))
+            check("知乎（带 Cookie）：正文栏不再塞回答内容（回答归\"评论\"那一栏）",
+                  ans_txt[:20] not in body_txt, (body_txt[:30], ans_txt[:30]))
+            check("知乎（带 Cookie）：正文/回答都不外链（图都落到本地了）",
+                  all(not (b.url or "").startswith("http") for b in d.body)
+                  and all(not (b.url or "").startswith("http")
+                          for c in cms for b in c.body))
+            check("知乎（带 Cookie）：回答作者和正文都在",
                   all(c.author and c.body for c in cms),
                   [(c.author, c.body[0].text[:12]) for c in cms[:2]])
             check("知乎（带 Cookie）：详情和评论共用一次回答请求",
                   len(zs._ans) == 1, list(zs._ans.keys())[:2])
+            if not cms:
+                note("知乎这次一条回答都没拿到，正文栏写的是原因：%s" % body_txt[:80])
         except Exception as e:
             note("知乎带 Cookie 这条路这次没走通：%s: %s" % (type(e).__name__, e))
 

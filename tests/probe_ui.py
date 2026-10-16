@@ -209,9 +209,11 @@ w.feed_open()
 pump(lambda: w.feed_nav.view == "detail" and not w.feed_busy)
 check("进了知乎详情", w.feed_nav.view == "detail", w.feed_nav.view)
 texts = " ".join(b.text for b in w.feed_nav.post.body)
-check("详情给出热榜里的真摘要", len(texts) > 30, texts[:40])
-check("详情直说正文要登录", "登录" in texts)
-check("知乎详情没有伪造评论", w.feed_nav.roots == [])
+check("知乎正文不再拿问题摘要冒充内容（回答归评论那一栏）",
+      w.feed_nav.post.body and (w.feed_nav.posts[0].excerpt or "") != texts.strip(), texts[:40])
+check("没 Cookie 时详情直说回答要登录、去哪儿配",
+      "登录" in texts and "feed_auth.json" in texts, texts[:60])
+check("知乎详情没有伪造评论（回答要真拿到才显示）", w.feed_nav.roots == [])
 check("O 打开的是真原帖地址", w.feed_open_original() is False
       and OPENED and "zhihu.com/question/" in OPENED[-1], OPENED[-1:])
 w.on_feed_key(Qt.Key_Backspace)

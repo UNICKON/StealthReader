@@ -496,8 +496,13 @@ class ZhihuSource(RealSource):
     `x-zse-96` 前端签名在这一层**并不需要**——"光有 Cookie 不够"那句猜测已经被实测推翻，
     代码和文档都不再这么说。
 
-    所以现在的分工：列表免登录；**配了 Cookie 才去试正文和评论**，试到了就显示，
-    试不到就把原因写在页面上（不编正文、不编评论）。
+    所以现在的分工：列表免登录；**配了 Cookie 才去试回答**，试到了就把回答摆进"评论"那一栏，
+    试不到就把原因写在正文里（不编回答、不编评论）。
+
+    **回答就是这一页的"评论"**（真人原话：「知乎显示的应该是评论而不是问题的内容」）。
+    知乎的一个问题底下没有"评论"这种东西，只有回答——所以详情页的评论那一栏就是回答列表，
+    正文那一栏只留问题自己的信息。以前是把热榜页给的问题摘要当正文摆着，那正是"显示的是问题
+    的内容、不是评论"。
     """
     key = "zhihu"
     label = "知乎"
@@ -505,10 +510,14 @@ class ZhihuSource(RealSource):
     needs_auth = False
     CHANNELS = ["热榜"]
     LIST_URL = "https://api.zhihu.com/topstory/hot-list?limit=50&reverse_order=0"
+    # 一次问这么多条回答：它们就是详情页的"评论"那一栏。10 条足够一屏读，文档也不会太沉。
+    ANSWERS_LIMIT = 10
+    # 失败只记这么久。以前失败也缓存一辈子，于是第一次撞上风控之后，这个问题到进程结束都打不开。
+    RETRY_AFTER = 90
 
     def __init__(self, http, auth=None):
         RealSource.__init__(self, http, auth)
-        self._ans = {}          # 问题 id -> (answer, 失败原因)：详情和评论共用一次请求
+        self._ans = {}          # 问题 id -> (回答列表, 失败原因, 取到的时刻)：详情和评论共用一次请求
 
     def channels(self):
         return list(self.CHANNELS)
@@ -560,106 +569,134 @@ class ZhihuSource(RealSource):
         return posts, None                  # 热榜就这一页，没有分页
 
     def detail(self, post, cursor=None):
-        """知乎给不了正文：把列表现成的那段真摘要摆出来，再直说一句为什么只有这么点。
+        """正文栏只放**问题自己**的信息；回答属于"评论"那一栏（见 comments）。
 
-        **配了 Cookie 就真去试一次**——不然"要登录"这句话永远只是我的猜测，人也就不知道
-        自己贴的 Cookie 到底管不管用。试的结果照实写出来：拿到了就显示正文，
-        401/403 就说清楚（网页接口除了 Cookie 还要前端算 `x-zse-96` 签名）。"""
+        真人原话：「知乎显示的应该是评论而不是问题的内容」。知乎的一个问题底下只有回答、
+        没有"评论"，所以这一页的评论栏就是回答列表。正文栏不再把问题摘要当正文摆着，
+        只留一句"回答在下面"或者**没拿到的原因**（401 未登录 / 403 风控是两回事，分开说）。
+
+        **配了 Cookie 就真去试一次**——不然"要登录"永远只是猜测，人也不知道自己贴的 Cookie
+        到底管不管用；试的结果照实写。热榜页给的问题摘要不会丢：它不是回答，所以标成"问题摘要"
+        放在最后一行，方便看这条问题到底在问什么。
+        """
         out = Post.from_dict(post.to_dict())
         body = []
-        if out.excerpt:
-            body.append(Block(kind=BLOCK_P, text=out.excerpt))
-        got, why = None, ""
-        if self.has_auth:
-            got, why = self._fetch_answer(str(post.id))
-        if got is not None:
-            out.body = self._localize_images(got, limit=8) + [
-                Block(kind=BLOCK_QUOTE, text="以上正文来自知乎（用的是 feed_auth.json 里的 Cookie）。")]
-            return out, None
-        note = ("知乎的正文和评论要登录才给（接口返回 401/403），这里只显示热榜页给出的摘要。"
-                "按 O 打开原帖看全文。")
-        if self.has_auth and why:
-            # 实测（2026-10-16，用浏览器 Cookie）：带 Cookie 时这个接口是 200，正文和评论都能拿到。
-            # 所以拿不到只可能是 Cookie 过期/被风控，或者这条回答本身只开放摘要——
-            # 不把"还要前端签名"这种没被验证过的说法写给人看。
-            note = ("这次没拿到正文：%s。\n\n"
-                    "常见原因是 Cookie 过期了（重新从浏览器复制一次），"
-                    "或者这条回答本身只开放摘要。这里先显示热榜页给出的摘要，按 O 打开原帖看全文。"
-                    % why)
-        body.append(Block(kind=BLOCK_QUOTE, text=note))
+        answers, why = self._answers(str(post.id)) if self.has_auth else ([], "")
+        if answers:
+            n_all = int(post.n_comments or 0)
+            body.append(Block(kind=BLOCK_P, text=(
+                "这个问题下有 %s 条回答，下面按知乎的默认排序列出前 %d 条。"
+                % (n_all if n_all else "若干", len(answers)))))
+        elif not self.has_auth:
+            body.append(Block(kind=BLOCK_QUOTE, text=(
+                "知乎的回答要登录才给（这个接口回 401）。把浏览器 Cookie 贴进 feed_auth.json 的 "
+                "\"zhihu\"，回答就会出现在下面这一栏里。\n\n现在这里只放热榜页给出的问题摘要，"
+                "按 O 可以打开原帖看全文。")))
+        else:
+            body.append(Block(kind=BLOCK_QUOTE, text=(
+                "这次没拿到回答：%s\n\n按 R 可以重试；按 O 打开原帖看全文。" % (why or "没给原因"))))
+        if out.excerpt and not _zhihu_junk_excerpt(out.excerpt):
+            # 标清楚它不是回答：真人不要的正是"拿问题内容冒充正文"
+            body.append(Block(kind=BLOCK_QUOTE, text="问题摘要（热榜页给的，不是回答）：%s" % out.excerpt))
         out.body = body
         return out, None
 
-    def _answer(self, qid):
-        """向知乎要这个问题的头一条回答。返回 (answer dict 或 None, 失败原因)。
+    def _answers(self, qid):
+        """问一次这个问题的回答列表。返回 (list[dict], 失败原因)。
 
-        这个 URL 的形状是**拿真 Cookie 试出来的**（2026-10-16：HTTP 200，`data[0].content` 是正文 HTML）；
-        同一个问题只下一次（详情页和评论都问同一条回答，靠 `self._ans` 共用）。"""
+        URL 的形状是**拿真 Cookie 试出来的**（2026-10-16：HTTP 200，`data[i].content` 是正文 HTML）。
+        同一个问题只成功问一次（详情和评论共用这一份）；**失败只记 RETRY_AFTER 秒**——
+        以前失败也缓存一辈子，第一次撞上风控之后这个问题就永远打不开了。
+        """
         qid = str(qid)
-        if qid in self._ans:
-            return self._ans[qid]
+        hit = self._ans.get(qid)
+        if hit is not None:
+            items, why, when = hit
+            if items or (time.time() - when) < self.RETRY_AFTER:
+                return items, why
         url = ("%s/api/v4/questions/%s/answers"
-               "?include=data[*].content,excerpt,voteup_count,comment_count"
-               "&limit=1&offset=0" % (self.base_url, qid))
+               "?include=data[*].content,excerpt,voteup_count,comment_count,created_time,author.name"
+               "&limit=%d&offset=0&order=default" % (self.base_url, qid, self.ANSWERS_LIMIT))
+        items, why = [], ""
         try:
-            data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎正文",
+            data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎回答",
                                       headers={"x-requested-with": "fetch"}, timeout=LIST_TIMEOUT)
         except FeedNetError as e:
-            self._ans[qid] = (None, str(e))
-            return self._ans[qid]
+            why = str(e)
         except Exception as e:
-            self._ans[qid] = (None, type(e).__name__)
-            return self._ans[qid]
-        items = (data or {}).get("data") if isinstance(data, dict) else None
-        if not items:
-            self._ans[qid] = (None, "接口没回内容（可能改版了）")
-            return self._ans[qid]
-        first = items[0] if isinstance(items, list) else items
-        if not isinstance(first, dict):
-            self._ans[qid] = (None, "接口回的形状不认识")
-            return self._ans[qid]
-        self._ans[qid] = (first, "")
-        return self._ans[qid]
-
-    def _fetch_answer(self, qid):
-        """正文：返回 (blocks 或 None, 失败原因)。"""
-        first, why = self._answer(qid)
-        if first is None:
-            return None, why
-        blocks = feed_mod.blocks_from_html(first.get("content") or "")
-        if not blocks:
-            return None, "接口回了内容但正文是空的（这条回答可能只开放摘要）"
-        return blocks, ""
+            why = type(e).__name__
+        else:
+            raw = (data or {}).get("data") if isinstance(data, dict) else None
+            if isinstance(raw, list):
+                items = [it for it in raw if isinstance(it, dict)]
+                if not items:
+                    why = "接口回了 200 但一条回答都没有（可能改版了）"
+            elif isinstance(raw, dict):
+                items = [raw]
+            else:
+                why = "接口回的形状不认识"
+        self._ans[qid] = (items, _zhihu_why(why) if why else "", time.time())
+        return self._ans[qid][0], self._ans[qid][1]
 
     def comments(self, post, cursor=None):
-        """评论：配了 Cookie 才试。回答 id 要先从正文接口拿（`self._ans` 共用，不会多下一次）。
+        """这一栏的"评论"就是**回答列表**——真人要的正是它们，能一条条读、能折叠。
 
-        实测（2026-10-16）：带 Cookie 时返回 200、15 条评论。注意评论作者嵌了一层
-        ——`author.member.name`，第一版按 `author.name` 取，全是空字符串。"""
+        取不到就如实为空（原因写在正文那一栏，不在这里重复）。注意回答作者是 `author.name`
+        那一层（评论才是嵌一层的 `author.member.name`，两种形状 `_zhihu_name` 都认）。
+        """
         if not self.has_auth:
             return [], None
-        first, _why = self._answer(str(post.id))
-        if not first or not first.get("id"):
-            return [], None
-        url = ("%s/api/v4/answers/%s/comments?limit=20&offset=0&order=normal&status=open"
-               % (self.base_url, first["id"]))
-        try:
-            data = self.http.get_json(url, ttl=TTL_LIST, what="知乎评论", timeout=LIST_TIMEOUT)
-        except Exception:
-            return [], None                 # 评论拿不到就如实为空，不编
-        items = (data or {}).get("data") if isinstance(data, dict) else None
+        answers, _why = self._answers(str(post.id))
         out = []
-        for it in (items or []):
-            if not isinstance(it, dict):
-                continue
+        for i, it in enumerate(answers):
+            # 回答里的图也要落地（Qt 读不了 http，`_localize_images` 会把落不下来的直接丢掉，
+            # 所以不会留一排在浏览器里能看、在这儿是裂图的地址）。
+            # 只有第一条允许带 2 张：10 条回答的图全下载就是几十个请求、好几兆，
+            # 而真正会被读完的通常只有最上面那条；其余的图按"落不下来"处理掉。
+            blocks = self._localize_images(
+                feed_mod.blocks_from_html(it.get("content") or "", max_blocks=40),
+                limit=(2 if i == 0 else 0))
+            if not blocks:
+                # 有的回答只开放摘要（content 为空、excerpt 有字）：照实说，不留一条空评论
+                short = feed_mod.strip_html(it.get("excerpt") or "")
+                blocks = [Block(kind=BLOCK_P, text=(short or "（这条回答没给正文，可能是只开放摘要或已删除）"))]
             out.append(Comment(
-                cid=str(it.get("id") or len(out)),
-                author=_zhihu_name(it.get("author")),
+                cid=str(it.get("id") or ("a%d" % i)),
+                author=_zhihu_name(it.get("author")) or "匿名",
                 created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
-                score=int(it.get("vote_count") or 0),
-                body=feed_mod.blocks_from_html(it.get("content") or "", max_blocks=40),
+                score=int(it.get("voteup_count") or 0),
+                body=blocks,
             ))
         return out, None
+
+
+def _zhihu_junk_excerpt(text):
+    """热榜页的"摘要"经常是 `[2 张图片]` 这种，不是内容，不该当问题摘要摆出来。"""
+    s = str(text or "").strip()
+    if len(s) < 6:
+        return True
+    return bool(re.fullmatch(r"[\[【(（]?\s*\d+\s*张图片\s*[\]】)）]?", s))
+
+
+def _zhihu_why(why):
+    """把接口错误说成人话。401 和 403 是两回事，别混成一句"Cookie 过期了"。
+
+    实测（2026-10-16）：风控时返回的是 403 + 「您当前请求存在异常，暂时限制本次访问」+
+    一串十六进制 trace id——**几分钟后就恢复**（同一段代码几分钟前还在正常取 20 条评论）。
+    所以那句"常见原因是 Cookie 过期了"是误导：Cookie 好好的，只是被限流了。
+    """
+    s = str(why or "")
+    low = s.lower()
+    if "401" in s:
+        return "知乎说没登录（401）。feed_auth.json 里 \"zhihu\" 的 Cookie 没了或者不完整。"
+    if "403" in s or "风控" in s or "暂时限制" in s:
+        return ("知乎在风控限流（403「暂时限制本次访问」）。这**不是** Cookie 过期——"
+                "等几分钟再按 R 重试通常就好了。")
+    if "412" in s:
+        return "知乎把这次请求当成脚本了（412）。等一会儿再试，或者换一次 Cookie。"
+    if "超时" in s or "timeout" in low:
+        return "请求超时（网络或者对面慢了）：" + s
+    return s
 
 
 def _zhihu_name(author):

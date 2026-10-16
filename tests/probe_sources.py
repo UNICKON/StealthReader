@@ -206,9 +206,13 @@ else:
         got = feed_sources.ZhihuSource._hot(text)
         check("  热度文案 %-12s -> %s" % (repr(text), want), got == want, got)
     zd, _ = zs.detail(zp[0])
-    check("知乎详情是热榜给的真摘要", any("摘要" in b.text or len(b.text) > 40 for b in zd.body))
-    check("知乎详情直说正文要登录", any("登录" in b.text for b in zd.body))
-    check("知乎评论如实为空", zs.comments(zp[0]) == ([], None))
+    zd_txt = " ".join(b.text for b in zd.body)
+    check("没 Cookie 时正文直说回答要登录（不再拿问题内容冒充正文）",
+          "登录" in zd_txt and "feed_auth.json" in zd_txt, zd_txt[:60])
+    check("热榜给的摘要还在，但标明了它不是回答",
+          (not zp[0].excerpt) or any(zp[0].excerpt in b.text and "不是回答" in b.text for b in zd.body),
+          [b.text[:26] for b in zd.body])
+    check("知乎评论如实为空（没 Cookie 就不编回答）", zs.comments(zp[0]) == ([], None))
 
 # ---------------------------------------------------------------- 微博
 print("\n=== 4. 微博（只有热搜免登录）===")
@@ -379,7 +383,7 @@ if raw_i and raw_d:
 if raw_z:
     zd2, _ = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache())).detail(zp[0])
     check("知乎详情里的摘要是逐字来自响应的（没有加工过的假正文）",
-          (not zp[0].excerpt) or any(b.text == zp[0].excerpt for b in zd2.body),
+          (not zp[0].excerpt) or any(zp[0].excerpt in b.text for b in zd2.body),
           [b.text[:24] for b in zd2.body])
 
 print("\n=== 11. 凭据管线：配了没配、配了管不管用，都要说清楚 ===")
@@ -568,55 +572,92 @@ else:
           bool(pics) and pics[0].kind == feed_mod.BLOCK_IMG
           and not (pics[0].url or "").startswith("http"), [(b.kind, b.url) for b in pics])
 
-print("\n=== 13. 知乎：贴了 Cookie 才去试正文，试不到就说试不到（真夹具）===")
+print("\n=== 13. 知乎：回答就是\"评论\"那一栏，正文只放问题自己的信息（真夹具）===")
 zlist = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache()))
 zp0, _ = zlist.list("热榜", 0)
 d_noauth, _ = zlist.detail(zp0[0])
-check("没配 Cookie：详情是'真摘要 + 去贴 Cookie'的实话",
-      any("摘要" in b.text or len(b.text) > 40 for b in d_noauth.body)
-      and any("登录" in b.text for b in d_noauth.body),
-      [b.text[:26] for b in d_noauth.body])
+noauth_txt = " ".join(b.text for b in d_noauth.body)
+check("没配 Cookie：正文直说回答要登录，并告诉去哪儿配",
+      "登录" in noauth_txt and "feed_auth.json" in noauth_txt, noauth_txt[:60])
+check("没配 Cookie：不编回答", zlist.comments(zp0[0]) == ([], None))
 zdeny = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, fail=["answers"], cache=MemCache()),
                                  {"cookie": "z_c0=expired"})
 d_deny, _ = zdeny.detail(zp0[0])
 deny_txt = " ".join(b.text for b in d_deny.body)
 check("配了 Cookie 但接口拦住：实话里带上了失败原因，而不是假装没配",
-      "这次没拿到正文" in deny_txt and "连接超时" in deny_txt, deny_txt[-70:])
+      "这次没拿到回答" in deny_txt and "连接超时" in deny_txt, deny_txt[-80:])
 check("而且不再把'还要前端签名'那句没验证过的猜测写给人看",
       "x-zse-96" not in deny_txt and "zse" not in deny_txt)
+# 401 和 403 是两回事（403 风控是本机实测撞到过的：同一段代码几分钟前还在正常取 20 条评论）
+_why403 = feed_sources._zhihu_why("HTTP 403 您当前请求存在异常，暂时限制本次访问。e3b0c44298fc")
+_why401 = feed_sources._zhihu_why("HTTP 401 身份未经过验证")
+check("403 风控不会被说成'Cookie 过期了'（错怪 Cookie 是以前的原话）",
+      "不是" in _why403 and "风控" in _why403 and "过期" not in _why401, (_why403, _why401))
+check("401 才说没登录", "登录" in _why401, _why401)
 
-# 真夹具：`record_fixtures.py zhihu` 用浏览器 Cookie 录下来的答案/评论（正文截到 1200 字、去掉头像等字段）
+
+class _CountingHttp(object):
+    """数调用次数。fail_first=True 时第一次必失败，用来验"失败不许缓存一辈子"。"""
+
+    def __init__(self, payload, fail_first=True):
+        self.payload = payload
+        self.calls = 0
+        self.fail_first = fail_first
+        self.cache = None
+
+    def get_json(self, url, ttl=None, what="", headers=None, timeout=None):
+        self.calls += 1
+        if self.fail_first and self.calls == 1:
+            raise FeedNetError("连接超时")
+        return json.loads(json.dumps(self.payload))
+
+
+if raw_za:
+    _ch = _CountingHttp(raw_za)
+    _zr = feed_sources.ZhihuSource(_ch, {"cookie": "z_c0=ok"})
+    _zr._answers("q1")
+    _zr._answers("q1")
+    check("刚失败过的回答请求不重试（免得一点就狂打接口）", _ch.calls == 1, _ch.calls)
+    _items, _why, _when = _zr._ans["q1"]
+    _zr._ans["q1"] = (_items, _why, _when - _zr.RETRY_AFTER - 1)   # 假装过了重试窗口
+    _zr._answers("q1")
+    check("过了重试窗口就允许再问一次（以前失败缓存一辈子，一次限流=这个问题永远打不开）",
+          _ch.calls == 2, _ch.calls)
+
+# 真夹具：`record_fixtures.py zhihu` 用浏览器 Cookie 录下来的回答（正文截到 1200 字、去掉头像等字段）
 if raw_za is None or raw_zc is None:
-    skip("知乎正文（zhihu_answer.json 缺失：录一次 record_fixtures.py zhihu 才会有）")
+    skip("知乎回答（zhihu_answer.json 缺失：录一次 record_fixtures.py zhihu 才会有）")
 else:
-    zok = feed_sources.ZhihuSource(
-        # 顺序有讲究：评论地址里也带 "answers" 这个词，所以 "/comments" 必须排在前面先匹配
-        FakeHttp({"/comments": raw_zc, "answers": raw_za, "hot-list": raw_z}, cache=MemCache()),
-        {"cookie": "z_c0=ok"})
+    zok = feed_sources.ZhihuSource(_CountingHttp(raw_za, fail_first=False), {"cookie": "z_c0=ok"})
+    answers = raw_za.get("data") or []
+    real_html = (answers[0].get("content") or "") if answers else ""
+    plain = feed_mod.strip_html(real_html)
     d_ok, _ = zok.detail(zp0[0])
     ok_txt = " ".join(b.text for b in d_ok.body)
-    real_html = (raw_za["data"][0].get("content") or "")
-    plain = feed_mod.strip_html(real_html)
-    check("（真夹具）Cookie 管用时正文真的显示出来了",
-          len(plain) > 10 and plain[:20] in ok_txt, (len(plain), ok_txt[:40]))
-    check("（真夹具）正文没有被大段吞掉（块文本 >= 原文的 80%）",
-          len(ok_txt) >= 0.8 * len(plain), (len(ok_txt), len(plain)))
-    check("（真夹具）标明正文是从哪来的", "用的是 feed_auth.json 里的 Cookie" in ok_txt,
-          ok_txt[-40:])
     d_c, _ = zok.comments(zp0[0])
-    real_c = raw_zc["data"]
-    check("（真夹具）评论真的显示出来了（夹具是裁过的，条数一致即可）",
-          len(d_c) == len(real_c) >= 3, (len(d_c), len(real_c)))
-    check("（真夹具）评论作者取的是 author.member.name（第一版按 author.name 取全是空）",
-          all(c.author for c in d_c) and d_c[0].author == real_c[0]["author"]["member"]["name"],
-          (d_c[0].author, real_c[0]["author"]["member"]["name"]))
-    check("（真夹具）评论的赞数和正文都留住了",
-          d_c[0].score == real_c[0]["vote_count"]
-          and real_c[0]["content"][:8] in " ".join(b.text for b in d_c[0].body),
-          (d_c[0].score, [b.text for b in d_c[0].body][:1]))
+    got_txt = " ".join(b.text for c in d_c for b in c.body)
+    check("（真夹具）有 Cookie 时正文改说\"回答在下面这一栏\"",
+          "回答" in ok_txt and "下面" in ok_txt, ok_txt[:60])
+    check("（真夹具）正文里**不再**塞回答内容（回答归评论那一栏）",
+          (not plain) or plain[:20] not in ok_txt, (len(plain), ok_txt[:40]))
+    check("（真夹具）回答真的显示出来了，而且一个字没被吞",
+          len(d_c) == len(answers) >= 1 and ((not plain) or plain[:20] in got_txt),
+          (len(d_c), len(answers), got_txt[:40]))
+    check("（真夹具）回答作者和赞同数都留住了",
+          bool(d_c) and d_c[0].author == feed_sources._zhihu_name(answers[0].get("author"))
+          and d_c[0].score == int(answers[0].get("voteup_count") or 0),
+          (d_c[0].author if d_c else None, d_c[0].score if d_c else None,
+           feed_sources._zhihu_name(answers[0].get("author"))))
+    check("（真夹具）同一问题只请求一次（详情和评论共用 `_ans`）",
+          zok.http.calls == 1, zok.http.calls)
+    check("作者的两种形状都认（回答是 author.name，评论才是嵌一层的 member.name）",
+          feed_sources._zhihu_name({"name": "甲"}) == "甲"
+          and feed_sources._zhihu_name({"role": "normal", "member": {"name": "乙"}}) == "乙")
     check("作者整个是 null（匿名/已注销）时给空字符串，不显示 None 那种乱码",
           feed_sources._zhihu_name(None) == "" and feed_sources._zhihu_name({"role": "normal"}) == "")
-    check("评论拿不到时如实为空", zdeny.comments(zp0[0]) == ([], None))
+    check("回答里没给正文时不留一条空评论（漏出原因或摘要）",
+          all(c.body and c.body[0].text for c in d_c))
+    check("回答拿不到时如实为空", zdeny.comments(zp0[0]) == ([], None))
     check("同一个问题不会为详情和评论各下一次（_ans 共用）",
           len(zok._ans) == 1, list(zok._ans.keys())[:2])
 
