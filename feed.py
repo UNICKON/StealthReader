@@ -106,12 +106,12 @@ class Post(object):
     """一条帖子。列表页只用前半截字段，详情页才有 body；图片一律走本地缓存目录。"""
 
     __slots__ = ("source", "source_label", "channel", "id", "title", "author", "created",
-                 "score", "n_comments", "cover", "excerpt", "url", "body", "tags", "comments",
-                 "ts")
+                 "score", "score_label", "n_comments", "comment_label", "cover", "excerpt",
+                 "url", "body", "tags", "comments", "ts")
 
     def __init__(self, source="", channel="", pid="", title="", author="", created="", score=0,
                  n_comments=0, cover="", excerpt="", url="", body=None, tags=None, comments=None,
-                 source_label="", ts=0):
+                 source_label="", ts=0, score_label="", comment_label=""):
         self.source = source
         self.source_label = source_label or source
         self.channel = channel or ""
@@ -120,7 +120,11 @@ class Post(object):
         self.author = author or ""
         self.created = created or ""
         self.score = int(score or 0)
+        # 统计数字的**单位**：知乎给的是"热度"不是赞，IT之家给的是阅读量不是赞。
+        # 同一个数字换个来源含义就变了，所以单位跟着帖子走，不写死在渲染层。
+        self.score_label = score_label or ""
         self.n_comments = int(n_comments or 0)
+        self.comment_label = comment_label or ""
         self.cover = cover or ""          # 相对图片来源目录的文件名
         self.excerpt = excerpt or ""
         self.url = url or ""
@@ -139,6 +143,7 @@ class Post(object):
             n_comments=d.get("n_comments", 0), cover=d.get("cover", ""),
             excerpt=d.get("excerpt", ""), url=d.get("url", ""), body=d.get("body", []),
             tags=d.get("tags", []), comments=d.get("comments", []), ts=d.get("ts", 0),
+            score_label=d.get("score_label", ""), comment_label=d.get("comment_label", ""),
         )
 
     def to_dict(self):
@@ -146,6 +151,7 @@ class Post(object):
             "source": self.source, "source_label": self.source_label, "channel": self.channel,
             "id": self.id, "title": self.title, "author": self.author, "created": self.created,
             "score": self.score, "n_comments": self.n_comments, "cover": self.cover,
+            "score_label": self.score_label, "comment_label": self.comment_label,
             "excerpt": self.excerpt, "url": self.url, "ts": self.ts,
             "body": [b.to_dict() for b in self.body], "tags": self.tags,
             "comments": [c.to_dict() for c in self.comments],
@@ -463,7 +469,12 @@ class DemoSource(SourceAdapter):
         return self._data
 
     def channels(self):
-        seen = []
+        """栏目列表由**来源自己**声明（"全部"要不要算一栏，只有来源知道）。
+
+        演示源支持"全部"（list() 里认这个值），所以它自己把它放在第一个；
+        真实来源大多只有一两个固定栏目，就不该凭空多出一栏——否则按 `,` 会在
+        "全部"和一个等同的栏目之间来回跳，看着像坏了。"""
+        seen = ["全部"]
         for p in self._load():
             label = p.channel or "默认"
             if label not in seen:
@@ -780,6 +791,23 @@ def _accent(c):
     return (int(round(r * 255)), int(round(g * 255)), int(round(b * 255)), c[3])
 
 
+def _num(n):
+    """统计数字的中文口语写法：13270000 -> "1327 万"、23500 -> "2.4 万"。
+
+    知乎的热度动辄上千万，原样打在列表里既占地方又读不出来；这里只做一件事：
+    超过一万就换算成"万 / 亿"，其余原样。"""
+    n = int(n or 0)
+    neg = n < 0
+    n = abs(n)
+    if n >= 100000000:
+        s = ("%.1f" % (n / 100000000.0)).rstrip("0").rstrip(".") + " 亿"
+    elif n >= 10000:
+        s = ("%.1f" % (n / 10000.0)).rstrip("0").rstrip(".") + " 万"
+    else:
+        s = str(n)
+    return ("-" + s) if neg else s
+
+
 def _meta_line(post, theme):
     """列表/详情的元信息行：来源（带色）+ 栏目 · 作者 · 时间。
 
@@ -841,9 +869,9 @@ def render_list(posts, nav, theme):
                 parts.append(f'<p style="margin:6px 0 0 0;">{_img_tag(p.cover, theme, 320)}</p>')
         stats = []
         if p.score:
-            stats.append(f'{p.score} 赞')
+            stats.append(f'{_num(p.score)} {p.score_label or "赞"}')
         if p.n_comments:
-            stats.append(f'{p.n_comments} 条评论')
+            stats.append(f'{_num(p.n_comments)} {p.comment_label or "条评论"}')
         if stats:
             parts.append(
                 f'<p style="margin:6px 0 0 0; color:{theme["faint"]};'

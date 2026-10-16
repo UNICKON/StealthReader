@@ -25,7 +25,7 @@ import threading
 import time
 
 import feed as feed_mod
-from feed import Block, Comment, Post, SourceAdapter, BLOCK_IMG
+from feed import Block, Comment, Post, SourceAdapter, BLOCK_IMG, BLOCK_P, BLOCK_QUOTE
 import feed_net
 from feed_net import FeedNetError, Http, TTL_LIST, TTL_DETAIL, TTL_FOREVER
 
@@ -162,6 +162,7 @@ class IthomeSource(RealSource):
             author=(it.get("newsauthor") or "").strip(),
             created=feed_mod.human_time(ts), ts=ts,
             score=int(it.get("hitcount") or 0),
+            score_label="阅读",                 # hitcount 是阅读量，不是赞
             n_comments=int(it.get("commentcount") or 0),
             cover=self._cover(it.get("image")) if want_cover else "",
             excerpt=feed_mod.strip_html(it.get("description") or it.get("subtitle") or ""),
@@ -248,7 +249,8 @@ class V2exSource(RealSource):
                 title=feed_mod.strip_html(it.get("title") or ""),
                 author=(member.get("username") or "") if isinstance(member, dict) else "",
                 created=feed_mod.human_time(ts), ts=ts,
-                score=n, n_comments=n,
+                # replies 是回复数、不是赞：别把它同时当 score，否则列表会写"12 赞 · 12 回复"
+                score=0, n_comments=n, comment_label="回复",
                 excerpt=feed_mod.strip_html(it.get("content") or it.get("content_rendered") or ""),
                 url=it.get("url") or ("%s/t/%s" % (self.base_url, pid)),
                 tags=list(it.get("tags") or []) if isinstance(it.get("tags"), list) else [],
@@ -331,7 +333,7 @@ class DiscourseSource(RealSource):
                 title=feed_mod.strip_html(t.get("title") or t.get("fancy_title") or ""),
                 author=(t.get("last_poster_username") or ""),
                 created=feed_mod.human_time(ts), ts=ts,
-                score=int(t.get("like_count") or 0), n_comments=n,
+                score=int(t.get("like_count") or 0), n_comments=n, comment_label="回复",
                 cover=self._cover(t.get("image_url")) if i < COVER_PER_PAGE else "",
                 excerpt=feed_mod.strip_html(t.get("excerpt") or ""),
                 url="%s/t/%s/%s" % (self.base_url, slug, pid),
@@ -446,6 +448,93 @@ def fair_pages(merged, per_page=PAGE_MIX, cap=0):
     return pages
 
 
+class ZhihuSource(RealSource):
+    """知乎热榜。**只有列表这一层能免登录拿到**——这是实测出来的结论，不是没试。
+
+    2026-10-16 在本机网络把几条路都走了一遍：
+      - `api.zhihu.com/topstory/hot-list`（移动端接口）**不看 Cookie**：29 条热榜，
+        每条带问题 id / 标题 / 摘要 / 回答数 / 关注数 / 热度文案 / 真原帖地址；
+      - 详情全要签名或登录：`www.zhihu.com/api/v3/...hot-lists` 401「身份未经过验证」、
+        `www.zhihu.com/hot` 与 `/billboard` 403（返回 `zh-zse-ck` 让你去算签名）、
+        `api.zhihu.com/questions/<id>` 403「请求参数异常，请升级客户端」、
+        答案列表 403 风控（试了加 `x-api-version` / App UA 也一样）；
+      - 评论同理拿不到（没有 answer id 可谈）。
+
+    所以这里**只做列表**：详情页摆出热榜给的摘要 + 一句实话，评论返回空。
+    宁可少显示，也不编造正文——"拿不到就说拿不到"是这一轮反复用到的那条。
+    """
+    key = "zhihu"
+    label = "知乎"
+    base_url = "https://www.zhihu.com"
+    needs_auth = False
+    CHANNELS = ["热榜"]
+    LIST_URL = "https://api.zhihu.com/topstory/hot-list?limit=50&reverse_order=0"
+
+    def channels(self):
+        return list(self.CHANNELS)
+
+    def image_base(self):
+        return self.http.cache.img_dir if self.http.cache is not None else ""
+
+    @staticmethod
+    def _hot(text):
+        """把"1327 万热度"读成 13270000。读不出来就给 0（列表里干脆不显示这一项）。"""
+        m = re.search(r"([\d.]+)\s*(亿|万)?", str(text or ""))
+        if not m:
+            return 0
+        try:
+            v = float(m.group(1))
+        except ValueError:
+            return 0
+        unit = m.group(2)
+        if unit == "亿":
+            v *= 100000000
+        elif unit == "万":
+            v *= 10000
+        return int(v)
+
+    def list(self, channel=None, cursor=None):
+        data = self._get(self.LIST_URL, TTL_LIST, "知乎热榜", timeout=LIST_TIMEOUT)
+        items = (data or {}).get("data") or []
+        posts = []
+        for it in items:
+            tgt = it.get("target") if isinstance(it, dict) else None
+            if not isinstance(tgt, dict) or not tgt.get("id"):
+                continue
+            qid = str(tgt["id"])
+            ts = feed_mod.parse_time(tgt.get("created"))
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel="热榜", pid=qid,
+                title=feed_mod.strip_html(tgt.get("title") or ""),
+                author="",                      # 热榜不告诉你这是谁问的
+                created=feed_mod.human_time(ts), ts=ts,
+                score=self._hot(it.get("detail_text")), score_label="热度",
+                n_comments=int(tgt.get("answer_count") or 0), comment_label="回答",
+                excerpt=feed_mod.strip_html(tgt.get("excerpt") or ""),
+                # target.url 是 api.zhihu.com 的接口地址；给人点的必须是网页地址，
+                # 否则 O 打开的是 JSON（这条是探针里对着真实响应逼出来的）
+                url="%s/question/%s" % (self.base_url, qid),
+                tags=[],
+            ))
+        posts = [p for p in posts if p.id and p.title]
+        return posts, None                  # 热榜就这一页，没有分页
+
+    def detail(self, post, cursor=None):
+        """知乎给不了正文：把列表现成的那段真摘要摆出来，再直说一句为什么只有这么点。"""
+        out = Post.from_dict(post.to_dict())
+        body = []
+        if out.excerpt:
+            body.append(Block(kind=BLOCK_P, text=out.excerpt))
+        body.append(Block(kind=BLOCK_QUOTE,
+                          text="知乎的正文和评论要登录才给（接口返回 401/403），"
+                               "这里只显示热榜页给出的摘要。按 O 打开原帖看全文。"))
+        out.body = body
+        return out, None
+
+    def comments(self, post, cursor=None):
+        return [], None                     # 拿不到就是拿不到，不造评论
+
+
 class MixSource(SourceAdapter):
     """混流：把各来源的第一页合起来按时间倒序排，**默认就落在它上面**。
 
@@ -463,6 +552,7 @@ class MixSource(SourceAdapter):
         self.errors = []
         self._skip_until = {}       # key -> 到什么时候为止先别碰它（刚失败过）
         self._lock = threading.Lock()
+        self.stale = set()          # 这次给了"旧缓存顶上"的来源 key
 
     def channels(self):
         return ["全部"]
@@ -481,6 +571,10 @@ class MixSource(SourceAdapter):
             channel = src.channels()[0] if src.channels() else None
             posts, _nxt = src.list(channel, 0)
             out[idx] = posts
+            if getattr(src, "served_stale", False):
+                # 这一家这次给的是"断网时顶上的旧缓存"：记下来，让页脚能说清
+                with self._lock:
+                    self.stale.add(src.key)
         except FeedNetError as e:
             with self._lock:
                 self._skip_until[src.key] = time.time() + FAIL_COOLDOWN
@@ -497,6 +591,7 @@ class MixSource(SourceAdapter):
         并行之后最慢的那个决定等待时间，而且**它失败过就会被跳过 60 秒**，不会再挡路。"""
         page = int(cursor or 0)
         self.errors = []
+        self.stale = set()
         now = time.time()
         todo = [s for s in self.sources if self._skip_until.get(s.key, 0) <= now]
         for s in self.sources:
@@ -542,19 +637,21 @@ class MixSource(SourceAdapter):
 
 
 def build_real_sources(cache_root=None, config=None, log=None):
-    """按配置建好来源。顺序就是界面里 `[`/`]` 的顺序：混流打头，然后 IT之家 / V2EX / linux.do。"""
+    """按配置建好来源。顺序就是界面里 `[`/`]` 的顺序：混流打头，然后 IT之家 / V2EX /
+    linux.do / 知乎。"""
     config = config or {}
     cache = feed_net.Cache(cache_root) if cache_root else None
     auth = load_auth(os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_auth.json"))
     enabled = config.get("feed_sources", None)
     if enabled is None:
-        # 配置里没写过 -> 三个真来源全开；写成空列表 = 用户把它们全关了（只剩离线示例）
-        enabled = ["ithome", "v2ex", "linuxdo"]
+        # 配置里没写过 -> 四个真来源全开；写成空列表 = 用户把它们全关了（只剩离线示例）
+        enabled = ["ithome", "v2ex", "linuxdo", "zhihu"]
     elif not isinstance(enabled, list):
         enabled = [str(enabled)]
 
     made = []
-    for key, cls in (("ithome", IthomeSource), ("v2ex", V2exSource), ("linuxdo", DiscourseSource)):
+    for key, cls in (("ithome", IthomeSource), ("v2ex", V2exSource),
+                     ("linuxdo", DiscourseSource), ("zhihu", ZhihuSource)):
         if key not in enabled:
             continue
         cred = auth.get(key) if isinstance(auth.get(key), dict) else {}
