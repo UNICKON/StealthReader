@@ -138,7 +138,7 @@ EXPECT_KEYS = ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "weibo", "demo"]
 
 print("=== 1. 来源登记与默认落点 ===")
 keys = [s.key for s in w.feed_sources]
-ORIG_SOURCES = list(w.feed_sources)          # 第 6 节会把来源换成替身，第 8 节要还原
+ORIG_SOURCES = list(w.feed_sources)          # 第 6 节会把来源换成替身，第 9 节要还原
 check("顺序：混流 / IT之家 / V2EX / linux.do / 知乎 / 微博 / 示例", keys == EXPECT_KEYS, keys)
 check("默认落在混流上", w.feed_source().key == "mix", w.feed_source().key)
 
@@ -258,7 +258,108 @@ pump(lambda: not w.feed_busy, 10.0)
 check("退回列表之后，晚到的详情结果没有把视图弹回详情", w.feed_nav.view == "list",
       w.feed_nav.view)
 
-print("\n=== 7. 退出：书的状态不许被动过 ===")
+print("\n=== 7. 微信读书书架窗口（只到\"读到哪了\"）===")
+
+
+class FakeWeread(object):
+    """替身客户端：数据来自夹具，一个包都不发。"""
+
+    def __init__(self, books, chapters=None, progress=None, available=True):
+        self.available = available
+        self._books = books
+        self._chapters = chapters or []
+        self._progress = progress or {}
+
+    def shelf(self):
+        return json.loads(json.dumps(self._books))
+
+    def chapters(self, book_id):
+        return json.loads(json.dumps(self._chapters))
+
+    def progress(self, book_id):
+        return json.loads(json.dumps(self._progress))
+
+
+wr_shelf = fixture("weread_shelf.json")
+wr_chs = fixture("weread_chapters.json")
+wr_prg = fixture("weread_progress.json")
+if not (wr_shelf and wr_chs and wr_prg):
+    check("微信读书的夹具在", False, "缺夹具，先跑 tests/record_fixtures.py weread")
+else:
+    # 先让**真的适配器**把夹具揉成窗口要的形状：这样"夹具 → weread.py → 窗口"整条链一起验了
+    class _FxHttp(object):
+        def get_json(self, url, ttl=None, what="", headers=None, timeout=None):
+            if "/web/shelf/sync" in url:
+                return json.loads(json.dumps(wr_shelf))
+            if "/web/book/getProgress" in url:
+                return json.loads(json.dumps(wr_prg))
+            raise AssertionError("探针里不该请求 " + url)
+
+        def post_json(self, url, payload, ttl=None, what="", headers=None, timeout=None):
+            if "/web/book/chapterInfos" in url:
+                return json.loads(json.dumps(wr_chs))
+            raise AssertionError("探针里不该请求 " + url)
+
+    real = app_mod.weread_mod.Weread(_FxHttp(), {"cookie": "x=1"})
+    wr_books = real.shelf()
+    wr_chapters = real.chapters(wr_books[0]["id"])
+    wr_prog = real.progress(wr_books[0]["id"])
+
+    dlg = app_mod.WereadShelfDialog(FakeWeread(wr_books, wr_chapters, wr_prog))
+    pump(lambda: dlg.list_widget.count() >= 3, 5.0)
+    check("窗口列出了 3 本", dlg.list_widget.count() == 3, dlg.list_widget.count())
+    check("标题里写着本数", "3 本" in dlg.windowTitle(), dlg.windowTitle())
+    row0 = dlg.list_widget.item(0).text()
+    check("第一行是最近读的那本 + 进度", "重新认识你自己" in row0 and "89%" in row0, row0)
+    pump(lambda: "当前章" in dlg.info_label.text(), 5.0)
+    info = dlg.info_label.text()
+    check("详情里写着读到百分之多少", "读到 89%" in info, info.splitlines()[:2])
+    check("详情里写着当前是哪一章", "当前章：" in info, info.splitlines()[:3])
+    check("详情里用了它给的\"最后停在这一行\"", "最后停在这一行：" in info)
+    check("详情里说清了正文为什么不在这里", "正文不在这里" in info)
+    check("目录列出了 4 章", dlg.chapter_widget.count() == 4, dlg.chapter_widget.count())
+    rows = [dlg.chapter_widget.item(i).text() for i in range(dlg.chapter_widget.count())]
+    check("读到的那一章打了 ▶", any(r.startswith("▶ ") for r in rows), rows)
+    dlg.search_input.setText("齐泽克")
+    check("按作者搜只剩 1 本", dlg.list_widget.count() == 1, dlg.list_widget.count())
+    dlg.search_input.setText("")
+    pump(lambda: dlg.list_widget.count() == 3, 5.0)
+    before = len(OPENED)
+    dlg.on_book_opened(dlg.list_widget.item(0))
+    check("双击一本书是去网页版接着读（交给默认浏览器）",
+          len(OPENED) == before + 1 and "/web/reader/" in OPENED[-1],
+          OPENED[-1] if OPENED else "")
+
+    dlg2 = app_mod.WereadShelfDialog(FakeWeread([]))
+    pump(lambda: "没有书" in dlg2.info_label.text(), 5.0)
+    check("空书架有话说，不是一片空白", "没有书" in dlg2.info_label.text(),
+          dlg2.info_label.text()[:24])
+
+    dlg3 = app_mod.WereadShelfDialog(FakeWeread([], available=False))
+    check("没 Cookie 时标题就直说", "Cookie" in dlg3.windowTitle(), dlg3.windowTitle())
+    check("没 Cookie 时告诉去哪儿配", "feed_auth.json" in dlg3.info_label.text())
+    for _d in (dlg, dlg2, dlg3):
+        try:
+            _d.accept()            # 走正常的关闭路径（窗口里会等取数线程收工）
+        except Exception:
+            pass
+    qapp.processEvents()
+
+    # 菜单入口：安全文档模式下菜单是"中性项"（故意不放它），所以先把那层遮罩摘掉再看
+    orig_veiled = w._book_veiled
+    w._book_veiled = lambda: False
+    menu_texts = [a.text() for a in w.build_context_menu().actions()]
+    w._book_veiled = orig_veiled
+    check("右键菜单里有\"微信读书 · 我的书架\"",
+          any("微信读书" in t for t in menu_texts),
+          [t for t in menu_texts if "书架" in t or "微信" in t])
+    w._book_veiled = lambda: True
+    veiled = [a.text() for a in w.build_context_menu().actions()]
+    w._book_veiled = orig_veiled
+    check("遮罩模式下不露出这个入口（跟其它书相关项一个规矩）",
+          not any("微信读书" in t for t in veiled), veiled)
+
+print("\n=== 8. 退出：书的状态不许被动过 ===")
 w.exit_feed_mode(reason="probe")
 check("退得出来", not w.feed_mode)
 check("没有后台取数还在跑", not w.feed_busy)
@@ -267,7 +368,7 @@ check("日志里的失败都是'这个站连不上'，没有代码异常",
           for m in LOGS if "社区取数失败" in m),
       [m for m in LOGS if "社区取数失败" in m][:3])
 
-print("\n=== 8. 离线示例仍是兜底 ===")
+print("\n=== 9. 离线示例仍是兜底 ===")
 w.feed_sources = list(ORIG_SOURCES)          # 把第 6 节换掉的替身来源还原回来
 w.feed_source_i = [i for i, s in enumerate(w.feed_sources) if s.key == "demo"][0] \
     if any(s.key == "demo" for s in w.feed_sources) else 0

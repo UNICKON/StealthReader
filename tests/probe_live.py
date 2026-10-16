@@ -172,9 +172,18 @@ if "知乎" in got:
     check("详情打开了并且有正文", len(w.text_edit.toPlainText()) > 50,
           len(w.text_edit.toPlainText()))
     check("O 打开真原帖", w.feed_open_original() is False and OPENED, OPENED[-1:])
+# "没有代码异常"这条要按**两类**看：
+#   ① 话必须是"这个站连不上/不让我看"这类实话（措辞会随站和网络变，所以只认几个关键词；
+#      实测 V2EX 在这台机器上是 SSL 出错，措辞是"证书/连接出错"，第一版的关键词表就没收进去）；
+#   ② 绝不能出现 Python 异常类型名或 traceback——那才是代码 bug 混进了失败日志。
+_EXC_MARKS = ("Traceback", "KeyError", "TypeError", "AttributeError", "IndexError",
+              "ValueError", "ZeroDivisionError", "unhashable", "object has no attribute")
+_FAIL_WORDS = ("连接超时", "连接出错", "证书", "超时", "404", "401", "403", "432", "Cloudflare",
+               "登录", "被拒绝", "暂时")
+_feed_fails = [m for m in LOGS if "社区取数失败" in m]
 check("日志里没有代码异常（只有'这个站连不上'这类实话）",
-      all(any(h in m for h in ("连接超时", "404", "401", "403", "Cloudflare", "登录", "432"))
-          for m in LOGS if "社区取数失败" in m),
+      all((not any(x in m for x in _EXC_MARKS)) and any(h in m for h in _FAIL_WORDS)
+          for m in _feed_fails),
       [m for m in LOGS if "社区取数失败" in m][:3])
 w.exit_feed_mode(reason="smoke")
 check("退得出来且没在取数", not w.feed_mode and not w.feed_busy)
@@ -229,23 +238,33 @@ else:
             check("NGA（带 Cookie）：列表没有把'错误提示'当帖子",
                   all(p.author and p.ts > 0 and "时间超过限制" not in p.title for p in nposts),
                   [(p.title[:12], p.author) for p in nposts[:2]])
-            # 新的帖子才读得动：老的会被 NGA 自己挡（"帖子发布或回复时间超过限制"）
-            picked, derr = None, ""
+            # 新的帖子才读得动：老的会被 NGA 自己挡（"帖子发布或回复时间超过限制"）。
+            # 而且 NGA 首页常常是"只丢了个链接"的短帖，所以按前几条里**正文最长**的那条验收
+            # （第一版只取第一条读得动的，结果碰上一条 17 字的，把一个正常的帖子判成失败）。
+            picked, derr, lens = None, "", []
             for cand in nposts[:4]:
                 try:
-                    picked, _ = ns.detail(cand)
-                    break
+                    got, _ = ns.detail(cand)
                 except Exception as e:
                     derr = "%s: %s" % (type(e).__name__, e)
+                    continue
+                lens.append(got.text_length())
+                if picked is None or got.text_length() > picked.text_length():
+                    picked = got
             check("NGA（带 Cookie）：正文拿到了（%d 字）" % (picked.text_length() if picked else 0),
-                  bool(picked) and picked.text_length() > 20, derr)
+                  bool(picked) and picked.text_length() > 20, lens or derr)
             if picked:
                 check("NGA（带 Cookie）：正文不外链",
                       all(not (b.url or "").startswith("http") for b in picked.body))
                 cms2, _ = ns.comments(nposts[0])
                 note("NGA 第一条的评论拿到 %d 条（作者名 NGA 只给 UID 占位，所以多半是空的）"
                      % len(cms2))
-                check("NGA（带 Cookie）：评论这条路通了（%d 条）" % len(cms2), len(cms2) >= 1, len(cms2))
+                # 首页有的是 0 回复的短帖，这时"评论 0 条"就是对的答案——所以只在列表说它**有回复**
+                # 时才要求评论非空（第一版无条件要求 ≥1，碰上一条 0 回复的就把正常结果判成失败）。
+                want = int(getattr(nposts[0], "n_comments", 0) or 0)
+                check("NGA（带 Cookie）：评论这条路通了（列表说 %d 条回复，拿到 %d 条）"
+                      % (want, len(cms2)), len(cms2) >= 1 if want > 0 else len(cms2) == 0,
+                      (want, len(cms2)))
         except Exception as e:
             note("NGA 这条路这次没走通：%s: %s" % (type(e).__name__, e))
 
@@ -274,6 +293,59 @@ else:
                   cms3 == [], len(cms3))
         except Exception as e:
             note("小红书这条路这次没走通：%s: %s" % (type(e).__name__, e))
+
+    # 微信读书：只到"读到哪了"。正文那条路（e_*/t_* 那套签名与校验）故意不走，见 weread.py
+    print("\n=== 5. 微信读书（要 Cookie，只到\"读到哪了\"）===")
+    try:
+        import weread                                                    # noqa: E402
+        wr = weread.build_weread(cache_root=CACHE, root=SR)
+    except Exception as e:
+        wr = None
+        note("weread.py 没起来：%s: %s" % (type(e).__name__, e))
+    if wr is None:
+        pass
+    elif not wr.available:
+        note("feed_auth.json 里没有微信读书的 Cookie，跳过")
+    else:
+        try:
+            t0 = time.time()
+            books = wr.shelf()
+            check("微信读书（带 Cookie）：书架拿到了（%d 本，%.1fs）" % (len(books), time.time() - t0),
+                  len(books) >= 3, len(books))
+            # 书名人人都有；作者不一定——自己传上去的书（z-library 那种）微信读书就没有作者，实测 57 本里 2 本
+            check("微信读书（带 Cookie）：书名都在，进度是 0-100",
+                  all(b["title"] for b in books) and all(0 <= b["progress"] <= 100 for b in books),
+                  (sum(1 for b in books if not b["author"]), len(books)))
+            check("微信读书（带 Cookie）：每本都有能打开的网页版地址",
+                  all(b["url"].startswith("https://weread.qq.com/web/") for b in books),
+                  books[0]["url"][:52])
+            read = [b for b in books if b["progress"] > 0]
+            check("微信读书（带 Cookie）：有读到一半的书（书架不是空的壳）", bool(read),
+                  [(b["title"][:10], b["progress"]) for b in read[:3]])
+            if read:
+                one = read[0]
+                chs = wr.chapters(one["id"])
+                check("微信读书（带 Cookie）：《%s》章节表拿到了（%d 章）"
+                      % (one["title"][:10], len(chs)), len(chs) >= 2, len(chs))
+                check("微信读书（带 Cookie）：章节有标题和字数",
+                      all(c["title"] for c in chs[:5]) and any(c["words"] > 0 for c in chs),
+                      [(c["title"][:10], c["words"]) for c in chs[:3]])
+                pr = wr.progress(one["id"])
+                check("微信读书（带 Cookie）：进度对得上（%d%%）" % pr["progress"],
+                      pr["progress"] == one["progress"], (pr["progress"], one["progress"]))
+                check("微信读书（带 Cookie）：当前章在那本书的章节表里",
+                      any(c["uid"] == pr["chapter_uid"] for c in chs) or pr["chapter_uid"] == 0,
+                      (pr["chapter_uid"], len(chs)))
+                check("微信读书（带 Cookie）：没有去碰正文接口（这条线只到\"读到哪了\"）",
+                      not hasattr(wr, "content") and not hasattr(wr, "read"))
+            # 第二次调必须走缓存（书架是 80KB 的东西，不该每开一次窗口都重下一遍）
+            t0 = time.time()
+            again = wr.shelf()
+            check("微信读书（带 Cookie）：第二次开书架走缓存（%.2fs）" % (time.time() - t0),
+                  len(again) == len(books) and (time.time() - t0) < 1.0,
+                  "%.2fs" % (time.time() - t0))
+        except Exception as e:
+            note("微信读书这条路这次没走通：%s: %s" % (type(e).__name__, e))
 
 shutil.rmtree(CACHE, ignore_errors=True)
 print("\n================ 结果 ================")

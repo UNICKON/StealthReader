@@ -1,0 +1,60 @@
+{
+ "books": [
+  {
+   "bookId": "CB_3PE3bc3eR5Gy74S75d2s9C27",
+   "title": "重新认识你自己 - Freedom From The Known",
+   "author": "Jiddu Krishnamurti",
+   "cover": "https://res.weread.qq.com/wrepub/CB_9Yi1hU1iB1vP73L71D0Y6G1b_parsecover",
+   "deepLink": "https://weread.qq.com/book-detail?type=1&v=49e429b3643425f335045336263336552354779373453373564327339433237ae4",
+   "finishReading": 0,
+   "readUpdateTime": 1791869414
+  },
+  {
+   "bookId": "CB_6Yb5QP5RI9qm73M71W4WKE1C",
+   "title": "导读齐泽克",
+   "author": "(英)托尼·迈尔斯",
+   "cover": "https://res.weread.qq.com/wrepub/CB_G2N3W73TW8FV73B71T1un51s_parsecover",
+   "deepLink": "https://weread.qq.com/book-detail?type=1&v=b3d42fc3643425f36596235515035524939716d37334d37315734574b453143778",
+   "finishReading": 0,
+   "readUpdateTime": 1781544460
+  },
+  {
+   "bookId": "CB_BlTGh1Geh11k6t66tAE7e6cK",
+   "title": "魔鬼经济学合集（共4册）",
+   "author": "（美）都伯纳",
+   "cover": "https://res.weread.qq.com/wrepub/CB_GEI7J07GuGVE6iG6gXBZH7V6_parsecover",
+   "deepLink": "https://weread.qq.com/book-detail?type=1&v=f6342093643425f426c5447683147656831316b36743636744145376536634b872",
+   "finishReading": 0,
+   "readUpdateTime": 1735709022
+  }
+ ],
+ "bookProgress": [
+  {
+   "bookId": "CB_3PE3bc3eR5Gy74S75d2s9C27",
+   "progress": 89,
+   "chapterUid": 10,
+   "chapterIdx": 10,
+   "readingTime": 5649,
+   "updateTime": 1791869414,
+   "synckey": 1866714748
+  },
+  {
+   "bookId": "CB_6Yb5QP5RI9qm73M71W4WKE1C",
+   "progress": 0,
+   "chapterUid": 3,
+   "chapterIdx": 3,
+   "readingTime": 110,
+   "updateTime": 1781544460,
+   "synckey": 1996004377
+  },
+  {
+   "bookId": "CB_BlTGh1Geh11k6t66tAE7e6cK",
+   "progress": 22,
+   "chapterUid": 21,
+   "chapterIdx": 21,
+   "readingTime": 10422,
+   "updateTime": 1735709022,
+   "synckey": 1229336600
+  }
+ ]
+}

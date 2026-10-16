@@ -1,0 +1,41 @@
+{
+ "data": [
+  {
+   "bookId": "CB_3PE3bc3eR5Gy74S75d2s9C27",
+   "updated": [
+    {
+     "chapterUid": 1,
+     "chapterIdx": 1,
+     "title": "你不能依赖任何人，事实上并没有向导，没有老师，也没有权威，只有靠你自己——你和他人，以及你和世界的关系——除此以外一无所恃。",
+     "wordCount": 6284,
+     "paid": 0,
+     "level": 1
+    },
+    {
+     "chapterUid": 2,
+     "chapterIdx": 2,
+     "title": "如果我们能时时刻刻都在学习，从观察、聆听、注视和行动中学习，那么你会发现，学习是不断进展，永无过去。",
+     "wordCount": 4396,
+     "paid": 0,
+     "level": 1
+    },
+    {
+     "chapterUid": 3,
+     "chapterIdx": 3,
+     "title": "只有先具备了关怀之心才能全神贯注。换句话说，你必须由衷地想去了解一件事物，才会付出全部的心力去觉察它。",
+     "wordCount": 2880,
+     "paid": 0,
+     "level": 1
+    },
+    {
+     "chapterUid": 10,
+     "chapterIdx": 10,
+     "title": "如果有了爱与美，不论你做什么都是对的，都会带来秩序与和谐。只要你知道如何去爱，一切问题都将迎刃而解，你就能随心所欲而不逾矩了。",
+     "wordCount": 5262,
+     "paid": 0,
+     "level": 1
+    }
+   ]
+  }
+ ]
+}

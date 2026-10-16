@@ -239,6 +239,23 @@ class Http(object):
                                     timeout=timeout or self.timeout, allow_redirects=allow_redirects)
         except Exception as e:
             raise FeedNetError(_short_err(e))
+        return self._check(r)
+
+    def _post(self, url, payload, headers=None, timeout=None):
+        """POST 一份 JSON。状态码的判读跟 GET 完全共用 `_check`——同一套"人话错误"，
+        不然微信读书的 `errCode -2010`、微博的 432 这些各写一遍迟早会走偏。"""
+        self._throttle(url)
+        h = dict(self.headers)
+        h.update(headers or {})
+        h.setdefault("Content-Type", "application/json;charset=UTF-8")
+        try:
+            r = self._session().post(url, json=payload, headers=h, cookies=self.cookies or None,
+                                     timeout=timeout or self.timeout)
+        except Exception as e:
+            raise FeedNetError(_short_err(e))
+        return self._check(r)
+
+    def _check(self, r):
         if r.status_code == 403 and "just a moment" in r.text[:2000].lower():
             raise FeedNetError("被 Cloudflare 盾拦住（要贴浏览器 Cookie）")
         if r.status_code == 401:
@@ -290,6 +307,37 @@ class Http(object):
         self.served_stale = False
         if self.cache is not None:
             self.cache.write_json(url, obj)
+        return obj
+
+    def post_json(self, url, payload, ttl=TTL_LIST, headers=None, what="", timeout=None):
+        """POST 一份 JSON 并当 JSON 读（缓存、失败退回过期缓存都跟 get_json 一致）。
+
+        缓存键必须把 payload 也算进去：微信读书的章节表是 `POST {"bookIds": [...]}`，
+        只按 URL 缓存的话，两本不同的书会互相串（第二次打开就看到上一本的章节）。"""
+        key = url + "|" + json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        if self.cache is not None:
+            hit = self.cache.read_json(key, ttl)
+            if hit is not None:
+                self.served_stale = False
+                return hit
+        try:
+            r = self._post(url, payload, headers=headers, timeout=timeout)
+            obj = r.json()
+        except FeedNetError:
+            stale = self.cache.read_json(key, TTL_FOREVER) if self.cache is not None else None
+            if stale is not None:
+                self.served_stale = True
+                return stale
+            raise
+        except Exception:
+            stale = self.cache.read_json(key, TTL_FOREVER) if self.cache is not None else None
+            if stale is not None:
+                self.served_stale = True
+                return stale
+            raise FeedNetError("%s返回的不是 JSON" % (what or ""))
+        self.served_stale = False
+        if self.cache is not None:
+            self.cache.write_json(key, obj)
         return obj
 
     def get_bytes(self, url, ttl=TTL_FOREVER, headers=None, max_bytes=MAX_IMAGE_BYTES, timeout=None):
