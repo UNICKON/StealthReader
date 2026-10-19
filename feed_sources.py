@@ -627,7 +627,7 @@ class ZhihuSource(RealSource):
     # 一页 6 条回答，**每条都要带自己的评论**：以前只给前 3 条补，
     # 后 3 条永远是空的——真人 2026-10-19 报的就是这个"有些回答的评论好像不会加载"。
     ANSWERS_WITH_COMMENTS = 6
-    CHILD_COMMENTS_LIMIT = 4     # 每条评论再带几条子评论（知乎只有两层）
+    CHILD_COMMENTS_LIMIT = 12    # 每条评论再带几条子评论（先摆 3 条，其余"继续加载"）
     ANSWER_COMMENTS_LIMIT = 8
     # 一条回答最多摆多少块（一块 = 一个段落或一张图）。
     # **帖子正文那一份不设小上限**：真人要的就是"能读完一条长回答"，按 40 块截断等于又省略了
@@ -912,7 +912,7 @@ class ZhihuSource(RealSource):
         self._ans[key] = (out, "", time.time())
         return out
 
-    def _answer_comments(self, aid, limit=None, children=True):
+    def _answer_comments(self, aid, limit=None, children=True, offset=0):
         """一条回答底下的评论（知乎的"评论"就是这一层，挂在回答下面当子节点）。
 
         `children=True` 时再给前几条有回复的评论各取一层子评论（真三层树：
@@ -921,16 +921,16 @@ class ZhihuSource(RealSource):
         `author` 是 `{role, member:{name}}` 那种嵌一层的形状，`_zhihu_name` 认得出。
         """
         aid = str(aid).lstrip("a")
-        key = "c:" + aid
+        key = "c:%s:%d" % (aid, int(offset or 0))
         hit = None if feed_net.is_fresh() else self._ans.get(key)
         if hit is not None:
             items, _why, when = hit
             if items or (time.time() - when) < self.RETRY_AFTER:
                 return list(items)
         limit = int(limit or self.ANSWER_COMMENTS_LIMIT)
-        url = ("%s/api/v4/answers/%s/comments?limit=%d&offset=0&order=normal"
+        url = ("%s/api/v4/answers/%s/comments?limit=%d&offset=%d&order=normal"
                "&include=data[*].content,like_count,created_time,author.name,child_comment_count"
-               % (self.base_url, aid, limit))
+               % (self.base_url, aid, limit, int(offset or 0)))
         out = []
         try:
             data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎回答评论",
@@ -984,6 +984,27 @@ class ZhihuSource(RealSource):
                         built[idx].replies = reps
         self._ans[key] = (out, "", time.time())
         return out
+
+    def comments_page(self, post, cursor=None):
+        """评论翻页：**只有"点开的是某条回答"这一层有下一页**（offset 往后翻）。
+
+        问题页那层摆的是这个问题的回答，一页 `ANSWERS_LIMIT` 条就是全部，没有下一页。
+        缓存键里带上了 offset，所以翻过的页再翻回来是 0 请求。
+        """
+        if not self.has_auth:
+            return [], None, None
+        if not self._is_answer_post(post):
+            items, why = self.comments(post)
+            return items, why, None
+        off = max(0, int(cursor or 0))
+        cmts = self._answer_comments(post.id, offset=off)
+        # 下一页游标 = 已经读到的条数。**不能拿"这一页够不够 limit"判断**：
+        # 实测接口一次只回 7 条（limit 写 8），按 limit 判就永远以为没有下一页。
+        # 知道总数（post.n_comments）就按总数停；不知道就让下一页空着回来（空页即到头）。
+        total = int(getattr(post, "n_comments", 0) or 0)
+        got = off + len(cmts)
+        nxt = got if (cmts and (total <= 0 or got < total)) else None
+        return cmts, None, nxt
 
     def _answers(self, qid):
         """问一次这个问题的回答列表。返回 (list[dict], 失败原因)。
@@ -1558,7 +1579,18 @@ class NgaSource(RealSource):
         return out, None
 
     def comments(self, post, cursor=None):
-        url = "%s/read.php?tid=%s&__output=8" % (self.base_url, post.id)
+        return self._comments(post, 1)[0], None
+
+    def comments_page(self, post, cursor=None):
+        """NGA 的回复按楼层分页（`read.php?tid=..&page=N`，一页 20 楼）。
+
+        以前只取第 1 页，读到底就没了；现在滚到底自动接下一页。"""
+        page = max(1, int(cursor or 1))
+        items, nxt = self._comments(post, page)
+        return items, None, nxt
+
+    def _comments(self, post, page=1):
+        url = "%s/read.php?tid=%s&page=%d&__output=8" % (self.base_url, post.id, int(page))
         try:
             data = self._json(url, TTL_LIST, "NGA 回复")
         except FeedNetError:
@@ -1584,7 +1616,12 @@ class NgaSource(RealSource):
                 body=body,
                 reply_to=_nga_reply_to(it.get("content") or ""),
             ))
-        return out, None
+        # 还有没有下一页：拿"本页最大楼层"和"这个帖一共几楼"比。
+        # 不能用"本页条数>=20"来判断——最后一页只有三两楼，那样会永远以为还有下一页。
+        total = int(((data.get("data") or {}).get("__ROWS")) or 0)
+        max_lou = max([int(it.get("lou") or 0) for it in rows] or [0])
+        nxt = (page + 1) if (total and max_lou + 1 < total) else None
+        return out, nxt
 
 
 _NGA_UID_RE = re.compile(r"\[uid=[^\]]*\]\s*([^\[\]]{1,32}?)\s*\[/uid\]", re.I)
@@ -2417,6 +2454,12 @@ class MixSource(SourceAdapter):
 
     def detail(self, post, cursor=None):
         return self._route(post).detail(post, cursor)
+
+    def comments_page(self, post, cursor=None):
+        src = self.by_key.get(getattr(post, "source", ""))
+        if src is None:
+            return [], None, None
+        return src.comments_page(post, cursor)
 
     def comments(self, post, cursor=None):
         return self._route(post).comments(post, cursor)

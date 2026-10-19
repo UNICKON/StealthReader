@@ -4305,12 +4305,18 @@ class StealthReader(QWidget):
             return
         if what == "more" and not nav.more:
             return
+        if what == "comments" and not nav.c_more:
+            return
         # 详情取谁：**先看 nav.post**（详情页当前这一条），没有再退回列表选中项。
         # 只用 nav.selected() 会踩到"详情里再进一层"（知乎回答 → 该问题的全部回答）：
         # 那时列表选中项还是那个回答，于是点标题进了问题页，又被回答的正文盖了回去。
         target = (post or nav.post or nav.selected()) if what == "detail" else None
         if what == "detail" and target is None:
             return
+        if what == "comments":
+            target = nav.post                  # 评论翻页永远翻"当前这一条"的评论
+            if target is None:
+                return
         if self.feed_busy:
             # 上一次还没回来。**不能直接丢**：切换来源或者快速连按的时候丢掉一次，
             # 页面就空着（或停在上一家的内容上）而且没有任何机制会再补一次——实测踩到过。
@@ -4318,16 +4324,19 @@ class StealthReader(QWidget):
             self.feed_pending = (what, target)
             return
         channel = nav.channel if what in ("list", "more") else None
-        cursor = nav.cursor if what == "more" else None
+        cursor = (nav.cursor if what == "more"
+                  else nav.c_cursor if what == "comments" else None)
         tag = getattr(src, "key", "")     # 这次取的是哪一家：回来时要核对
         gen = self.feed_gen               # 这次取的是哪一"代"视图：回来时也要核对
         memo_key = (("list", tag, channel or "", cursor or "") if what in ("list", "more")
+                    else ("comments", tag, target.id if target is not None else "", cursor or "")
+                    if what == "comments"
                     else ("detail", tag, target.id if target is not None else ""))
 
         # 快路径：内存里有这一份就先画（0 毫秒），再照旧去取。
         # 这不是"不刷新"——取回来的内容一般一样（缓存命中），一样就不重排；
         # 真变了（新帖子/新评论）才重排。人按 R 时 fresh=True，这条路直接跳过。
-        if not fresh:
+        if not fresh and what != "comments":      # 评论翻页只有"下一页"，没有快路径可走
             hit = self._feed_memo.get(memo_key)
             if hit is not None:
                 payload0, when0 = hit
@@ -4335,8 +4344,8 @@ class StealthReader(QWidget):
                     posts0, nxt0, append0 = payload0
                     self.on_feed_data("list", (posts0, nxt0, append0, gen, tag))
                 else:
-                    p0, c0 = payload0
-                    self.on_feed_data("detail", (p0, c0, gen, tag))
+                    p0, c0, n0 = payload0
+                    self.on_feed_data("detail", (p0, c0, n0, gen, tag))
                 if time.time() - when0 < self.FEED_MEMO_TTL:
                     # 刚取过：这一趟连请求都不用发（磁盘 TTL 到没到都不管，按 R 才强制重取）。
                     # 切栏目、退回列表、反复进同一个帖子，全在这一步就是 0 请求。
@@ -4352,6 +4361,9 @@ class StealthReader(QWidget):
                     if not fresh:
                         self._feed_memo_put(memo_key, (posts, nxt, what == "more"))
                     self.feed_data_signal.emit("list", (posts, nxt, what == "more", gen, tag))
+                elif what == "comments":
+                    cmts, _why, nxt = feed_mod.source_comments_page(src, target, cursor)
+                    self.feed_data_signal.emit("comments", (cmts, nxt, gen, tag))
                     # 提前渲染：列表刚回来就把第一条的正文/评论预取回来放着。
                 else:
                     ev, mine = self._feed_lock(memo_key)
@@ -4359,10 +4371,10 @@ class StealthReader(QWidget):
                         ev.wait(20)      # 预取正在取这一条：等它，别重复发请求
                     try:
                         p, _ = src.detail(target)
-                        cmts, _ = src.comments(target)
+                        cmts, _why, cnxt = feed_mod.source_comments_page(src, target, None)
                         if not fresh:
-                            self._feed_memo_put(memo_key, (p, cmts))
-                        self.feed_data_signal.emit("detail", (p, cmts, gen, tag))
+                            self._feed_memo_put(memo_key, (p, cmts, cnxt))
+                        self.feed_data_signal.emit("detail", (p, cmts, cnxt, gen, tag))
                     finally:
                         if mine:
                             self._feed_unlock(memo_key, ev)
@@ -4464,9 +4476,9 @@ class StealthReader(QWidget):
             def work():
                 try:
                     dp, _e = src.detail(post)
-                    cm, _c = src.comments(post)
-                    self._feed_memo_put(key, (dp, cm))
-                    self.feed_data_signal.emit("prefetch", (dp, cm, gen, tag))
+                    cm, _c, cnxt = feed_mod.source_comments_page(src, post, None)
+                    self._feed_memo_put(key, (dp, cm, cnxt))
+                    self.feed_data_signal.emit("prefetch", (dp, cm, cnxt, gen, tag))
                 except Exception:
                     pass
                 finally:
@@ -4509,9 +4521,9 @@ class StealthReader(QWidget):
                         continue
                     try:
                         dp, _e = src.detail(p)
-                        cm, _c = src.comments(p)
-                        self._feed_memo_put(key, (dp, cm))
-                        self.feed_data_signal.emit("prefetch", (dp, cm, gen, tag))
+                        cm, _c, cnxt = feed_mod.source_comments_page(src, p, None)
+                        self._feed_memo_put(key, (dp, cm, cnxt))
+                        self.feed_data_signal.emit("prefetch", (dp, cm, cnxt, gen, tag))
                     finally:
                         self._feed_unlock(key, ev)
                 except Exception:
@@ -4552,17 +4564,19 @@ class StealthReader(QWidget):
         if kind == "list":
             posts, nxt, append, gen, tag = payload
         elif kind == "detail":
-            post, cmts, gen, tag = payload
+            post, cmts, cnxt, gen, tag = payload
+        elif kind == "comments":
+            cmts, nxt, gen, tag = payload
         elif kind == "prefetch":
             # 预取只是"提前放在手边"：只有当人此刻正好站在这条帖子的详情页上才算数，
             # 否则安静丢掉（他已经翻到别处了，拿旧数据去改导航会把人家正在看的内容换掉）。
-            dp, cm, pgen, ptag = payload
+            dp, cm, cnxt, pgen, ptag = payload
             nav0 = self.feed_nav
             if (pgen == self.feed_gen and self.feed_mode and nav0 is not None
                     and nav0.view == "detail" and nav0.post is not None
                     and str(nav0.post.id) == str(dp.id)
                     and ptag == getattr(self.feed_source(), "key", "")):
-                self.on_feed_data("detail", (dp, cm, pgen, ptag))
+                self.on_feed_data("detail", (dp, cm, cnxt, pgen, ptag))
             return
         elif kind == "boards":
             boards, gen, tag = payload
@@ -4616,7 +4630,10 @@ class StealthReader(QWidget):
                 # 新一页到了：重新武装"到底自动续页"（每次到底只发一次）
                 self.feed_more_armed = True
             elif kind == "detail":
-                nav.set_detail(post, cmts)
+                nav.set_detail(post, cmts, cnxt)
+            elif kind == "comments":
+                nav.add_comments(cmts, nxt)
+                self.feed_more_armed = True        # 新一页到了：重新武装"滚到底续页"
             if self._feed_sig_now() != self._feed_sig:
                 self.render_feed()
             if kind == "detail" and self.feed_detail_top:
@@ -4892,15 +4909,24 @@ class StealthReader(QWidget):
         永远读不到第二页——真人原话"页面下滑到底了继续加载"。取数在后台线程，
         界面不等；`feed_more_armed` 保证一次到底只发一次，翻页回来后重新武装。"""
         nav = self.feed_nav
-        if nav is None or not self.feed_mode or nav.view != "list":
-            return
-        if not nav.more or not self.feed_more_armed or self.feed_busy:
+        if nav is None or not self.feed_mode or self.feed_busy or not self.feed_more_armed:
             return
         sb = self.text_edit.verticalScrollBar()
         if sb.maximum() <= 0 or sb.value() < sb.maximum() - 60:
             return
-        self.feed_more_armed = False
-        self.feed_load("more")
+        if nav.view == "list":
+            if not nav.more:
+                return
+            self.feed_more_armed = False
+            self.feed_load("more")
+            return
+        # 详情页：先把手里**已经取回来**的评论摆出来（0 请求），手里没有了才去取下一页
+        if nav.show_more_comments():
+            self.render_feed()
+            return
+        if nav.c_more:
+            self.feed_more_armed = False
+            self.feed_load("comments")
 
     def feed_move(self, step):
         nav = self.feed_nav
@@ -4919,7 +4945,16 @@ class StealthReader(QWidget):
 
     def feed_open(self):
         nav = self.feed_nav
-        if nav is None or nav.view == "detail" or not nav.open_selected():
+        if nav is None:
+            return False
+        if nav.view == "detail":
+            # 详情里回车 = 当前这条是"还有 N 条回复"就摊开（其它条目回车不做事，
+            # 免得把正在读的评论折叠掉）
+            cur = nav.current_comment()
+            if getattr(cur, "more_for", ""):
+                return self.feed_toggle_collapse()
+            return False
+        if not nav.open_selected():
             return False
         self.feed_gen += 1                  # 视图换代：还在飞的列表结果不许再盖回来
         self.feed_detail_top = True     # 正文回来时再钉一次顶部（标题先画，正文随后到）
@@ -5023,6 +5058,11 @@ class StealthReader(QWidget):
         if nav is None or nav.view != "detail":
             return False
         target = nav.current_comment()
+        if getattr(target, "more_for", ""):
+            # 这行是"还有 N 条回复"：回车/点击 = 摊开下一批（数据就在手边，不发请求）
+            if nav.show_more_children(target.more_for):
+                self.render_feed()
+            return True
         y_before = self._feed_comment_y(target)
         if not nav.toggle_collapse():
             return False

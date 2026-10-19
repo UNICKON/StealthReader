@@ -69,10 +69,10 @@ class Comment(object):
     深度不写死在数据里，由 comment_forest 按树算出来——来源给的层级结构各不相同，
     统一在渲染前算好，就不会每个来源一套缩进。"""
 
-    __slots__ = ("id", "author", "created", "score", "body", "replies", "reply_to")
+    __slots__ = ("id", "author", "created", "score", "body", "replies", "reply_to", "more_for")
 
     def __init__(self, cid, author="", created="", score=0, body=None, replies=None,
-                 reply_to=""):
+                 reply_to="", more_for=""):
         self.id = str(cid)
         self.author = author or ""
         self.created = created or ""
@@ -82,18 +82,20 @@ class Comment(object):
         # 来源**明确知道**这条回复的是谁时（虎扑的 quote、Discourse 的 reply_to_post_number 之类）
         # 直接填这里；不知道就留空，由 FeedNav.reply_to_of 从层级或正文开头的 `@某某` 推。
         self.reply_to = reply_to or ""
+        # 非空 = 这行是"还有 N 条回复"的占位（`cid` 指向父评论），不是真评论
+        self.more_for = more_for or ""
 
     @classmethod
     def from_dict(cls, d):
         if isinstance(d, Comment):      # 同上：适配器直接给 Comment 也收
             return cls(d.id, d.author, d.created, d.score, d.body, d.replies,
-                       getattr(d, "reply_to", ""))
+                       getattr(d, "reply_to", ""), getattr(d, "more_for", ""))
         d = d or {}
         return cls(
             d.get("id", ""), d.get("author", ""), d.get("created", ""), d.get("score", 0),
             d.get("body", []),
             [cls.from_dict(r) for r in (d.get("replies") or [])],
-            d.get("reply_to", ""),
+            d.get("reply_to", ""), d.get("more_for", ""),
         )
 
     def to_dict(self):
@@ -102,6 +104,7 @@ class Comment(object):
             "body": [b.to_dict() for b in self.body],
             "replies": [r.to_dict() for r in self.replies],
             "reply_to": self.reply_to,
+            "more_for": self.more_for,
         }
 
     def total(self):
@@ -454,6 +457,23 @@ class SourceAdapter(object):
     def comments(self, post, cursor=None):
         raise NotImplementedError
 
+    def comments_page(self, post, cursor=None):
+        """带游标的评论分页：(评论列表, 失败原因, 下一个游标)。
+
+        默认实现 = "一次给完"（游标永远 None）：能翻页的来源自己重写这一个方法，
+        其余来源照旧只实现 `comments()`，页面那边就只是把已经取回来的分几次摆出来。"""
+        try:
+            items, why = self.comments(post, cursor)
+        except TypeError:
+            # 老适配器的 `comments(post)` 没有 cursor 参数（离线夹具就是这样）：退回两参数调
+            try:
+                items, why = self.comments(post)
+            except Exception as e:
+                return [], type(e).__name__, None
+        except Exception as e:
+            return [], type(e).__name__, None
+        return items, why, None
+
     def channels(self):
         """来源内的栏目（Reddit 的 subreddit 那个位置）。"""
         return []
@@ -552,6 +572,22 @@ def build_sources(demo_root, cache_root=None, config=None, log=None):
 
 # --------------------------------------------------------------------------- 导航（纯逻辑）
 
+def source_comments_page(src, post, cursor=None):
+    """统一入口：来源有 `comments_page` 就用它；没有（鸭子类型的替身/老适配器）退回 `comments()`。
+
+    探针里的替身来源就是普通对象（不继承 `SourceAdapter`），详情取数如果直接点
+    `src.comments_page` 会 AttributeError，整页正文都取不回来。
+    """
+    fn = getattr(src, "comments_page", None)
+    if fn is not None:
+        return fn(post, cursor)
+    try:
+        items, why = src.comments(post, cursor)
+    except TypeError:
+        items, why = src.comments(post)
+    return items, why, None
+
+
 class FeedNav(object):
     """社区页状态机：列表 → 详情 → 返回，外加评论上的上下移动与折叠。
 
@@ -572,6 +608,10 @@ class FeedNav(object):
         self.channel = "全部"
         self.stale = True           # 需要（重新）取数
         self.detail_loaded = False  # 详情正文/评论是否已经取回来
+        self.c_cursor = None        # 评论分页游标
+        self.c_more = False         # 评论还有没有下一页
+        self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论
+        self.child_show = {}        # 每条评论已经摊开几条回复
         # 详情里还能再进一层时用它回退（知乎：某个回答 → 这个问题的全部回答）。
         # 退格先退栈，栈空了才回列表。
         self.stack = []
@@ -590,6 +630,10 @@ class FeedNav(object):
         self.more = True
         self.stale = True
         self.detail_loaded = False
+        self.c_cursor = None        # 评论分页游标
+        self.c_more = False         # 评论还有没有下一页
+        self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
+        self.child_show = {}        # 每条评论已经摊开几条回复
         self.stack = []
         if channel is not None:
             self.channel = channel
@@ -632,6 +676,10 @@ class FeedNav(object):
         self.c_index = 0
         self.collapsed = set()
         self.detail_loaded = False
+        self.c_cursor = None        # 评论分页游标
+        self.c_more = False         # 评论还有没有下一页
+        self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
+        self.child_show = {}        # 每条评论已经摊开几条回复
         return True
 
     def open_detail(self, post):
@@ -651,15 +699,72 @@ class FeedNav(object):
         self.c_index = 0
         self.collapsed = set()
         self.detail_loaded = False
+        self.c_cursor = None        # 评论分页游标
+        self.c_more = False         # 评论还有没有下一页
+        self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
+        self.child_show = {}        # 每条评论已经摊开几条回复
         return True
 
-    def set_detail(self, post, comments):
+    def set_detail(self, post, comments, cursor=None):
         self.post = post
         self.roots = list(comments or [])
+        self.c_cursor = cursor
+        self.c_more = cursor is not None
         self.flat = comment_forest(self.roots)
         self.detail_loaded = True
         if self.c_index >= len(self.visible_comments()):
             self.c_index = 0
+
+    def _node_by_id(self, cid, nodes=None):
+        for c in (self.roots if nodes is None else nodes):
+            if c.id == cid:
+                return c
+            hit = self._node_by_id(cid, c.replies)
+            if hit is not None:
+                return hit
+        return None
+
+    def add_comments(self, comments, cursor):
+        """又取回来一页评论：接在后面（已经有的按 id 去重，翻页重叠不会重一遍）。"""
+        have = set(c.id for c in self.roots)
+        new = [c for c in (comments or []) if c.id not in have]
+        self.roots.extend(new)
+        self.flat = comment_forest(self.roots)
+        self.c_cursor = cursor
+        self.c_more = bool(cursor is not None and new)   # 这一页一条新的都没有 = 到头了
+        self.c_show = max(self.c_show, len(self.roots))     # 新一页到了直接摆出来
+        return len(new)
+
+    def child_limit(self, c):
+        return self.child_show.get(c.id, CHILD_SHOW)
+
+    def hidden_children(self, c):
+        return max(0, len(c.replies) - self.child_limit(c))
+
+    def has_more_comments(self):
+        """还有没摆出来的（已经取回来的 + 来源说还有下一页的）。"""
+        return bool(self.c_more or len(self.roots) > self.c_show)
+
+    def show_more_comments(self):
+        """把已经取回来的下一批顶层评论摆出来；返回这次多摆了几条（0 = 手里没有了）。"""
+        if len(self.roots) <= self.c_show:
+            return 0
+        before = self.c_show
+        self.c_show = min(len(self.roots), self.c_show + COMMENT_PAGE)
+        return self.c_show - before
+
+    def show_more_children(self, cid):
+        """把这条评论**已经取回来**的下一批回复摆出来；返回多摆了几条。"""
+        node = self._node_by_id(cid)
+        if node is None:
+            return 0
+        lim = self.child_limit(node)
+        if lim >= len(node.replies):
+            return 0
+        new = min(len(node.replies), lim + CHILD_SHOW)
+        got = new - lim
+        self.child_show[cid] = new
+        return got
 
     def back(self):
         if self.view == "list":
@@ -677,6 +782,10 @@ class FeedNav(object):
         self.c_index = 0
         self.collapsed = set()
         self.detail_loaded = False
+        self.c_cursor = None        # 评论分页游标
+        self.c_more = False         # 评论还有没有下一页
+        self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
+        self.child_show = {}        # 每条评论已经摊开几条回复
         self.stack = []
         return True
 
@@ -731,20 +840,32 @@ class FeedNav(object):
             self.c_index = max(0, min(len(vis) - 1, self.c_index))
 
     def visible_comments(self):
-        """按折叠状态过滤后的显示序列：**被折叠节点的整个子树都不显示**。
+        """按折叠状态过滤后的显示序列（**只含屏幕上真摆出来的那些**）。
 
-        折叠过滤只有一个实现（这里）。之前想在拍平序列上按"祖先是否被折叠"筛，
-        结果是折叠了父节点、子节点照旧露出来——这种错在界面上很难看出来，
-        所以直接递归：遇到折叠节点就不再往里走。"""
+        折叠：被折叠节点的整个子树都不显示（一个实现，递归到底）。
+        分页：顶层只走到 `c_show`、每条只走到 `child_show[cid]`；后面还有的用一行
+        "还有 N 条回复 · 回车展开"占位，顶层剩下的在整页末尾写"还有 N 条评论"。
+
+        以前这里把整棵树一次全给出去，一页几百条评论直接铺到底——真人原话
+        "支持继续加载，不论是帖子还是评论还是子评论"。
+        """
         out = []
 
         def walk(nodes, depth, parent=None):
             for c in nodes:
                 out.append((c, depth, parent))     # 父节点留着：表头要写"回复 X"
-                if c.id not in self.collapsed:
-                    walk(c.replies, depth + 1, c)
+                if c.id in self.collapsed:
+                    continue
+                lim = self.child_limit(c)
+                walk(list(c.replies[:lim]), depth + 1, c)
+                rest = len(c.replies) - lim
+                if rest > 0:
+                    out.append((Comment(
+                        cid="__more__" + c.id,
+                        body=[Block(BLOCK_P, "还有 %d 条回复 · 回车展开" % rest)],
+                        more_for=c.id), depth + 1, c))
 
-        walk(self.roots, 0)
+        walk(list(self.roots[:max(1, int(self.c_show or COMMENT_PAGE))]), 0)
         return out
 
     def parent_of(self, c):
@@ -1097,6 +1218,8 @@ def _comment_header(c, reply_to=""):
 
 
 
+COMMENT_PAGE = 20          # 详情页一次摆几条顶层评论（剩下的"继续加载"）
+CHILD_SHOW = 3             # 每条评论先摆几条回复（剩下的"还有 N 条回复 · 回车展开"）
 COMMENT_PREVIEW = 54       # 折叠时留一行摘要的字数：知道这条在说什么就够了
 COMMENT_INDENT = 16        # 每层缩进
 COMMENT_MAX_DEPTH = 6      # 缩进封顶：再深就挤成一列字了（reddit 也是到一定层数就不再缩）
@@ -1109,12 +1232,12 @@ def render_comment_tree(nav, theme):
     层级全丢了，真人原话"评论和子评论没处理好，应该像 reddit 那样"。
 
     现在：
-    - 每条评论 = 作者行（作者 · 时间 · 赞，最小号、最弱色）+ 正文（正文号、正常色）；
-    - 子回复作为独立一条，左边距多 16px，层级一眼看出来；缩进封顶 6 层，再深就不再往里缩
-      （否则第 10 层只剩几个字宽）；
+    - 每条评论 = 作者行（作者 · 回复 X · 时间 · 赞，最小号、最弱色）+ 正文（正文号、正常色）；
+    - 子回复作为独立一条，左边距多 16px，层级一眼看出来；缩进封顶 6 层，再深就不再往里缩；
     - 作者行前面放 `▾`（展开）/ `▸`（收起，有子回复时写 `▸ n`）；点这条或按 `Z` 切换；
-    - **收起 = 这条也收起来**：只留作者行 + 一行摘要（`COMMENT_PREVIEW` 字），
-      长评论不会一下占满一屏；展开才是全文；
+    - **收起 = 这条也收起来**：只留作者行 + 一行摘要（`COMMENT_PREVIEW` 字）；
+    - 一页不全铺：顶层先摆 `COMMENT_PAGE` 条、每条先摆 `CHILD_SHOW` 条回复，
+      剩下的用"还有 N 条……"占位（滚到底/回车继续加载，见 FeedNav.show_more_*）；
     - 表头文本本身不动，`comment_needle()` 拿来定位照样命中（它匹配的是表头那段）。
     """
     vis = nav.visible_comments()
@@ -1126,6 +1249,13 @@ def render_comment_tree(nav, theme):
         depth = max(0, int(depth))
         ind = COMMENT_INDENT * min(depth, COMMENT_MAX_DEPTH)
         gap = 14 if depth == 0 else 8
+        if getattr(c, "more_for", ""):
+            # "还有 N 条回复"：一行弱色小字，回车摊开（数据就在手边，不再发请求）
+            parts.append(
+                f'<p style="margin:6px 0 0 {ind}px; color:{theme["faint"]};'
+                f' font-size:{f["meta"]}px;">{esc(_comment_text(c))}</p>'
+            )
+            continue
         reply_to = nav.reply_to_of(c) if nav is not None else ""
         head = _comment_header(c, reply_to)
         folded = c.id in nav.collapsed
@@ -1154,6 +1284,14 @@ def render_comment_tree(nav, theme):
                 f' font-size:{f["sub"]}px; line-height:160%;">'
                 f'{_block_inline(b, theme)}</p>'
             )
+    # 顶层还没摆出来的：写一行占位，滚到底自动接着加载（见 main.feed_autoload_more）
+    hidden = max(0, len(nav.roots) - max(1, int(nav.c_show or COMMENT_PAGE)))
+    if hidden or nav.c_more:
+        tail = ("还有 %d 条评论" % hidden) if hidden else "还有更多评论"
+        parts.append(
+            f'<p style="margin:10px 0 0 0; color:{theme["faint"]};'
+            f' font-size:{f["meta"]}px;">{esc(tail)}</p>'
+        )
     return "".join(parts)
 
 
@@ -1313,6 +1451,8 @@ def comment_needle(comment, nav=None):
     """详情里定位一条评论用的文本（表头那一行）。"""
     if comment is None:
         return ""
+    if getattr(comment, "more_for", ""):
+        return _comment_text(comment)          # "还有 N 条回复"那行：定位用它自己的字
     reply_to = nav.reply_to_of(comment) if nav is not None else ""
     return _comment_header(comment, reply_to)
 
@@ -1326,7 +1466,7 @@ def item_needles(nav):
     if nav is None:
         return []
     if nav.view == "detail":
-        return [(c, "comment", _comment_header(c, nav.reply_to_of(c)))
+        return [(c, "comment", comment_needle(c, nav))
                 for c, _d, _p in nav.visible_comments()]
     return [(p, "post", post_needle(p)) for p in nav.posts]
 
