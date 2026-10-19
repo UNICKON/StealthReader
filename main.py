@@ -3727,6 +3727,16 @@ class StealthReader(QWidget):
     # 反过来（窗口自己吞掉唤出）就没法用了。
     WAKE_GRACE = 0.45
 
+    def showEvent(self, event):
+        """窗口每次露脸都记一笔时间——`toggle_window` 靠它认出"刚唤出的那一下"。
+
+        写在 `showEvent` 里，而不是只写在老板键那条分支上：启动、托盘、偷瞄，以及以后
+        新加的任何显示路径都要经过这里，一处就覆盖全了。（以前只有老板键那条记，
+        于是"启动后立刻按老板键"那一下完全不受临界期保护。）
+        """
+        self._shown_at = time.time()
+        super().showEvent(event)
+
     def toggle_window(self, source="boss"):
         current_time = time.time()
         if current_time - self.last_toggle_time < 0.3:
@@ -3761,7 +3771,6 @@ class StealthReader(QWidget):
                 # 老板键接管可见层：把偷瞄那套收干净再说，免得它把接下来的点击当退出指令
                 self._drop_peek_state()
             self.showNormal()
-            self._shown_at = time.time()
             self.apply_style()
             self.activateWindow()
             self.ensure_on_screen()
