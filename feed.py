@@ -556,6 +556,9 @@ class FeedNav(object):
         self.channel = "全部"
         self.stale = True           # 需要（重新）取数
         self.detail_loaded = False  # 详情正文/评论是否已经取回来
+        # 详情里还能再进一层时用它回退（知乎：某个回答 → 这个问题的全部回答）。
+        # 退格先退栈，栈空了才回列表。
+        self.stack = []
 
     # --- 列表 ---
     def reset(self, channel=None):
@@ -571,6 +574,7 @@ class FeedNav(object):
         self.more = True
         self.stale = True
         self.detail_loaded = False
+        self.stack = []
         if channel is not None:
             self.channel = channel
 
@@ -614,6 +618,25 @@ class FeedNav(object):
         self.detail_loaded = False
         return True
 
+    def open_detail(self, post):
+        """详情里再进一层（知乎：回答 → 它所属问题的全部回答）。
+
+        当前这一层整份压进 `stack`，退格原样回来——不用重新取数，也不丢折叠状态。
+        """
+        if post is None:
+            return False
+        if self.view == "detail" and self.post is not None:
+            self.stack.append((self.post, self.roots, self.flat,
+                               self.c_index, set(self.collapsed)))
+        self.view = "detail"
+        self.post = post
+        self.roots = []
+        self.flat = []
+        self.c_index = 0
+        self.collapsed = set()
+        self.detail_loaded = False
+        return True
+
     def set_detail(self, post, comments):
         self.post = post
         self.roots = list(comments or [])
@@ -625,6 +648,12 @@ class FeedNav(object):
     def back(self):
         if self.view == "list":
             return False
+        if self.stack:
+            # 栈里还有一层：回上一层详情，内容原样（不重新取数）
+            self.post, self.roots, self.flat, self.c_index, self.collapsed = self.stack.pop()
+            self.view = "detail"
+            self.detail_loaded = True
+            return True
         self.view = "list"
         self.post = None
         self.roots = []
@@ -632,6 +661,7 @@ class FeedNav(object):
         self.c_index = 0
         self.collapsed = set()
         self.detail_loaded = False
+        self.stack = []
         return True
 
     def move_comment(self, step):
@@ -656,9 +686,14 @@ class FeedNav(object):
         return None
 
     def toggle_collapse(self):
-        """折叠/展开当前选中那条（只有带回复的才折叠得动）。"""
+        """折叠/展开当前选中那条。
+
+        以前只有"带回复"的才折叠得动——真人说得很清楚：点上去只想把这一条收起来，
+        长评论也是一条，凭什么不给收。所以现在**任何一条**都能收：
+        收起 = 只留作者行 + 一行摘要（子回复一起藏起来）。
+        """
         cur = self.current_comment()
-        if cur is None or not cur.replies:
+        if cur is None:
             return False
         if cur.id in self.collapsed:
             self.collapsed.discard(cur.id)
@@ -960,9 +995,14 @@ def render_detail(post, nav, theme):
     if post is None:
         return _wrap(theme, "")
     f = _scale(theme)
+    title_style = (f'margin:0; color:{theme["mark"]}; font-size:{f["title"]}px;'
+                   f' font-weight:bold; line-height:140%;')
+    if theme.get("title_link"):
+        # 这一页是从某个回答进来的：标题就是那个问题，点它能看这个问题的全部回答。
+        # 只加一道下划线（不加任何说明文字）——真人反复说过前端不要解释性文字。
+        title_style += " text-decoration:underline;"
     parts = [
-        f'<p style="margin:0; color:{theme["mark"]}; font-size:{f["title"]}px;'
-        f' font-weight:bold; line-height:140%;">{esc(post.title)}</p>',
+        f'<p style="{title_style}">{esc(post.title)}</p>',
         f'<p style="margin:6px 0 0 0; color:{theme["faint"]};'
         f' font-size:{f["meta"]}px;">{_meta_line(post, theme)}</p>',
     ]
@@ -1000,6 +1040,7 @@ def _comment_header(c):
 
 
 
+COMMENT_PREVIEW = 54       # 折叠时留一行摘要的字数：知道这条在说什么就够了
 COMMENT_INDENT = 16        # 每层缩进
 COMMENT_MAX_DEPTH = 6      # 缩进封顶：再深就挤成一列字了（reddit 也是到一定层数就不再缩）
 
@@ -1014,7 +1055,9 @@ def render_comment_tree(nav, theme):
     - 每条评论 = 作者行（作者 · 时间 · 赞，最小号、最弱色）+ 正文（正文号、正常色）；
     - 子回复作为独立一条，左边距多 16px，层级一眼看出来；缩进封顶 6 层，再深就不再往里缩
       （否则第 10 层只剩几个字宽）；
-    - 有回复的节点，作者行前面放 `▾`（展开）/ `▸ n`（折叠，n = 藏着的条数）；`Z` 切换；
+    - 作者行前面放 `▾`（展开）/ `▸`（收起，有子回复时写 `▸ n`）；点这条或按 `Z` 切换；
+    - **收起 = 这条也收起来**：只留作者行 + 一行摘要（`COMMENT_PREVIEW` 字），
+      长评论不会一下占满一屏；展开才是全文；
     - 表头文本本身不动，`comment_needle()` 拿来定位照样命中（它匹配的是表头那段）。
     """
     vis = nav.visible_comments()
@@ -1027,15 +1070,26 @@ def render_comment_tree(nav, theme):
         ind = COMMENT_INDENT * min(depth, COMMENT_MAX_DEPTH)
         gap = 14 if depth == 0 else 8
         head = _comment_header(c)
-        if c.replies:
-            if c.id in nav.collapsed:
-                head = "▸ %d · %s" % (len(descendant_ids(c)), head)
-            else:
-                head = "▾ " + head
+        folded = c.id in nav.collapsed
+        if folded:
+            n_hidden = len(descendant_ids(c))
+            head = ("▸ %d · %s" % (n_hidden, head)) if n_hidden else ("▸ " + head)
+        elif c.replies:
+            # 只有"下面还挂着东西"的才标 ▾：没有回复的那条展开时就是干净一行，
+            # 收起来之后才出现 ▸（不然每条前面都挂个 ▾，像一堆没用的按钮）
+            head = "▾ " + head
         parts.append(
             f'<p style="margin:{gap}px 0 0 {ind}px; color:{theme["faint"]};'
             f' font-size:{f["meta"]}px;">{esc(head)}</p>'
         )
+        if folded:
+            preview = _clip(_comment_text(c), COMMENT_PREVIEW)
+            if preview:
+                parts.append(
+                    f'<p style="margin:2px 0 0 {ind}px; color:{theme["dim"]};'
+                    f' font-size:{f["sub"]}px; line-height:150%;">{esc(preview)}</p>'
+                )
+            continue
         for b in (c.body or []):
             parts.append(
                 f'<p style="margin:2px 0 0 {ind}px; color:{theme["text"]};'
@@ -1043,6 +1097,12 @@ def render_comment_tree(nav, theme):
                 f'{_block_inline(b, theme)}</p>'
             )
     return "".join(parts)
+
+
+def _comment_text(c):
+    """一条评论的纯文本（折叠摘要用）：去掉图块，段落之间留一个空格。"""
+    return " ".join(str(b.text or "").strip() for b in (c.body or [])
+                    if b.text and b.text.strip())
 
 
 def _block_inline(b, theme):

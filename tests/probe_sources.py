@@ -1338,6 +1338,51 @@ _nv.collapsed.discard("c1")
 check("展开状态下有回复的节点带 ▾",
       "▾ 父" in feed_mod.render_comment_tree(_nv, _th))
 
+# 真人："现在点击收起只收起子评论，应该多评论能也进行收缩，过长不全展示。"
+_leaf = feed_sources.Comment(
+    cid="leaf", author="没回复的人", created="10-18", score=1,
+    body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="这一条很长。" * 40)])
+_nv2 = feed_mod.FeedNav()
+_nv2.set_detail(feed_sources.Post(source="x", pid="1", title="t"), [_leaf])
+check("没有子回复的评论也能折叠（以前点了没反应）", _nv2.toggle_collapse() is True)
+_lh2 = feed_mod.render_comment_tree(_nv2, _th)
+check("收起之后这条正文不再整段铺开（只留一行摘要）",
+      ("这一条很长。" * 30) not in _lh2 and _lh2.count("这一条很长") <= 9,
+      _lh2.count("这一条很长"))
+check("收起后摘要不超过约定字数、以省略号收尾",
+      feed_mod._clip(feed_mod._comment_text(_leaf), feed_mod.COMMENT_PREVIEW) in _lh2
+      and "…" in _lh2, _lh2[-60:])
+check("收起后作者行还在（不然不知道是谁说的）", "没回复的人" in _lh2)
+_nv2.toggle_collapse()
+check("再点一次就展开回全文", "这一条很长。" * 20 in feed_mod.render_comment_tree(_nv2, _th))
+
+# 2) 详情可以再进一层：回答 → 该问题的全部回答（退格原样回来）
+_nv3 = feed_mod.FeedNav()
+_ans = feed_sources.Post(source="zhihu", source_label="知乎", pid="a9", title="问题标题",
+                         url="https://www.zhihu.com/question/4242/answer/9")
+_q = feed_sources.Post(source="zhihu", pid="4242", title="问题标题",
+                       url="https://www.zhihu.com/question/4242")
+_nv3.posts = [_ans]
+_nv3.open_selected()
+_nv3.set_detail(_ans, [feed_sources.Comment(cid="c1", author="甲", body=[])])
+check("回答页里能再进一层（问题的全部回答）", _nv3.open_detail(_q) is True
+      and _nv3.post.id == "4242" and _nv3.detail_loaded is False, _nv3.post.id)
+_nv3.set_detail(_q, [feed_sources.Comment(cid="a1", author="乙", body=[])])
+_nv3.collapsed.add("a1")
+check("回来一层：退格回上一层详情，内容原样（不重新取数）",
+      _nv3.back() is True and _nv3.view == "detail" and _nv3.post.id == "a9"
+      and _nv3.detail_loaded is True and [c.id for c in _nv3.roots] == ["c1"], _nv3.post.id)
+check("再退一次才回列表，栈清空", _nv3.back() is True and _nv3.view == "list"
+      and _nv3.stack == [])
+
+# 3) 能跳的时候标题带下划线（不能跳就别画线，免得点上去没反应）
+_th_link = dict(_th)
+_th_link["title_link"] = True
+_h1 = feed_mod.render_detail(_ans, feed_mod.FeedNav(), _th_link)
+_h2 = feed_mod.render_detail(_ans, feed_mod.FeedNav(), _th)
+check("回答页标题带下划线（提示能点进去看全部回答）",
+      "text-decoration:underline" in _h1 and "text-decoration:underline" not in _h2)
+
 # 知乎那三层：问题帖的评论栏其实是「回答」，回答帖/其它来源才是「评论」
 def _label_of(post):
     nv = feed_mod.FeedNav()

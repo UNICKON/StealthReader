@@ -1003,6 +1003,93 @@ pump(lambda: not w.feed_busy, 10.0)
 check("刚取过的内容连请求都不发（90 秒内）", slow.n_list >= 1, slow.n_list)
 w.feed_source_i = _src_i0
 
+# === 13. 知乎回答页点标题 → 这个问题的全部回答；长评论整条能收起来 ===
+print("\n=== 13. 点标题进问题 / 长评论收起来 ===")
+
+
+class _ZhihuLike(object):
+    """这一节只借它的两条路：回答页给正文，问题页给"回答列表"。"""
+
+    key = "zhihu"
+    label = "知乎"
+    images_off = True
+
+    def __init__(self):
+        self.n_detail = 0
+
+    def detail(self, post):
+        self.n_detail += 1
+        txt = "问题说明" if str(post.id).isdigit() else "这条回答"
+        return feed_sources.Post.from_dict(
+            dict(post.to_dict(), body=[{"kind": "p", "text": txt}])), None
+
+    def comments(self, post):
+        if str(post.id).isdigit():
+            return [feed_sources.Comment(cid="a1", author="答主一",
+                                         body=[feed_sources.Block(kind=feed_sources.BLOCK_P,
+                                                                  text="回答一")])], "ok"
+        return [feed_sources.Comment(cid="c1", author="评论者",
+                                     body=[feed_sources.Block(kind=feed_sources.BLOCK_P,
+                                                              text="这条回答下面的评论")])], "ok"
+
+
+_z = _ZhihuLike()
+_orig_source = w.feed_source
+w.feed_source = lambda: _z
+if not w.feed_mode:
+    w.enter_feed_mode()
+_ans_post = feed_sources.Post(source="zhihu", source_label="知乎", pid="a77",
+                              title="某个问题", url="https://www.zhihu.com/question/4242/answer/77")
+w.feed_nav.reset()
+w.feed_nav.view = "detail"
+w.feed_nav.post = _ans_post
+w.feed_nav.detail_loaded = True
+w.render_feed()
+check("「某个回答」这一页知道它属于哪个问题（能跳）",
+      w.feed_question_id() == "4242" and w.feed_theme().get("title_link") is True,
+      w.feed_question_id())
+_tc = app_mod.QTextCursor(w.text_edit.document())
+_tc.movePosition(app_mod.QTextCursor.Start)
+_pt = w.text_edit.cursorRect(_tc).center()
+check("鼠标停在标题上给手型（提示能点）", w.feed_hover_title(_pt) is True)
+check("点标题 = 进这个问题的全部回答",
+      w.feed_click(_pt) is True and w.feed_nav.post.id == "4242", w.feed_nav.post.id)
+pump(lambda: w.feed_nav.detail_loaded and not w.feed_busy, 10.0)
+# 这一条最容易假通过：详情取数只看 nav.selected() 的话，取回来的还是列表选中那条回答，
+# 问题页会被回答的正文盖回去（真机上就是这个表现）。所以正文必须是**问题页**那份。
+_body = " ".join(b.text for b in (w.feed_nav.post.body or []))
+check("问题页取的是问题自己的正文（没被列表选中那条回答盖回去）",
+      w.feed_nav.post.id == "4242" and _body.strip() == "问题说明", (w.feed_nav.post.id, _body))
+check("问题页里列的是回答", any(c.author == "答主一" for c in w.feed_nav.roots),
+      [c.author for c in w.feed_nav.roots])
+check("问题页里标题不再可点（已经在问题页了）", not w.feed_question_id())
+check("退格回刚才那个回答", w.feed_back() is True and w.feed_nav.post.id == "a77"
+      and w.feed_nav.detail_loaded is True, w.feed_nav.post.id)
+check("再退一次才回列表", w.feed_back() is True and w.feed_nav.view == "list")
+w.feed_source = _orig_source
+
+# 长评论：默认整段显示；点一下把这一条连正文一起收起来（只留作者行 + 一行摘要）
+_long = "很长的评论。" * 40
+w.feed_nav.view = "detail"
+w.feed_nav.post = _ans_post
+w.feed_nav.stack = []
+w.feed_nav.roots = [feed_sources.Comment(
+    cid="c9", author="话多的人", created="10-19", score=3,
+    body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text=_long)])]
+w.feed_nav.flat = feed_mod.comment_forest(w.feed_nav.roots)
+w.feed_nav.detail_loaded = True
+w.feed_nav.c_index = 0
+w.feed_nav.collapsed = set()
+w.render_feed()
+check("长评论默认整段显示", _long in w.text_edit.toPlainText())
+check("点一下收起：这一条连正文一起收（只留作者行 + 一行摘要）",
+      w.feed_toggle_collapse() is True, w.feed_nav.collapsed)
+_x = w.text_edit.toPlainText()
+check("收起后长正文不再铺满屏幕", _long not in _x and "话多的人" in _x, len(_x))
+check("收起后给了一行摘要（看得出这条在说什么）", "很长的评论" in _x)
+check("再点一下展开回全文", w.feed_toggle_collapse() is True
+      and _long in w.text_edit.toPlainText())
+
 w.feed_sources = list(ORIG_SOURCES)          # 把第 6 节换掉的替身来源还原回来
 w.feed_source_i = [i for i, s in enumerate(w.feed_sources) if s.key == "demo"][0] \
     if any(s.key == "demo" for s in w.feed_sources) else 0

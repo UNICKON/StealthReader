@@ -963,6 +963,29 @@ class ZhihuSource(RealSource):
         if not qid:
             return [], None
         answers, _why = self._answers(qid)
+        # 前几条回答"各自的评论"是独立请求。串着一个一个来，一页要多等一两秒
+        # （实测 4 条串行 2.4 秒）；并发取回来，顺序和条数一条不少。
+        need = {}
+        for i, it in enumerate(answers):
+            aid0 = str(it.get("id") or "")
+            if (aid0 and i < self.ANSWERS_WITH_COMMENTS
+                    and int(it.get("comment_count") or 0) > 0):
+                need[i] = aid0
+        got = {}
+        if need:
+            def _one(idx, aid0):
+                try:
+                    got[idx] = self._answer_comments(aid0)
+                except Exception:
+                    got[idx] = []
+
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(4, len(need))) as ex:
+                for _f in [ex.submit(_one, i, a) for i, a in need.items()]:
+                    try:
+                        _f.result(timeout=20)
+                    except Exception:
+                        pass
         out = []
         for i, it in enumerate(answers):
             # 回答摆**全文**：它是"评论"这一层的正文，缩成摘要就变成"长答案被省略"了。
@@ -973,10 +996,7 @@ class ZhihuSource(RealSource):
                 txt = self._excerpt_of(it)
                 blocks = [Block(kind=BLOCK_P, text=txt)] if txt else []
             aid = str(it.get("id") or "")
-            reps = []
-            if (aid and i < self.ANSWERS_WITH_COMMENTS
-                    and int(it.get("comment_count") or 0) > 0):
-                reps = self._answer_comments(aid)
+            reps = got.get(i) or []
             out.append(Comment(
                 cid=aid or ("a%d" % i),
                 author=_zhihu_name(it.get("author")) or "匿名",

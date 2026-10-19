@@ -3566,6 +3566,8 @@ class StealthReader(QWidget):
         elif (event.buttons() == Qt.NoButton
               and self.is_in_resize_area(self.text_edit.viewport().mapTo(self, event.pos()))):
             want = Qt.SizeFDiagCursor
+        elif event.buttons() == Qt.NoButton and self.feed_hover_title(event.pos()):
+            want = Qt.PointingHandCursor     # 标题能点（知乎回答页 → 该问题的全部回答）
         else:
             want = Qt.ArrowCursor
         self.text_edit.set_pinned_cursor(want)
@@ -4261,7 +4263,10 @@ class StealthReader(QWidget):
             return
         if what == "more" and not nav.more:
             return
-        target = (post or nav.selected()) if what == "detail" else None
+        # 详情取谁：**先看 nav.post**（详情页当前这一条），没有再退回列表选中项。
+        # 只用 nav.selected() 会踩到"详情里再进一层"（知乎回答 → 该问题的全部回答）：
+        # 那时列表选中项还是那个回答，于是点标题进了问题页，又被回答的正文盖了回去。
+        target = (post or nav.post or nav.selected()) if what == "detail" else None
         if what == "detail" and target is None:
             return
         if self.feed_busy:
@@ -4669,9 +4674,12 @@ class StealthReader(QWidget):
     def feed_theme(self):
         # 主题自己去读 `feed_font_size` / `feed_font_family`（见 feed.theme_from_config），
         # 这里只把**正文此刻实际的颜色**递进去：auto/幽灵模式会换色，靠 config 猜就不准了。
-        return feed_mod.theme_from_config(dict(self.config or {}),
-                                          max(240, self.width() - 40),
-                                          text_color=self.feed_text_color())
+        theme = feed_mod.theme_from_config(dict(self.config or {}),
+                                           max(240, self.width() - 40),
+                                           text_color=self.feed_text_color())
+        # 这一页是不是"某个回答"，标题（= 那个问题）能不能点进去看全部回答
+        theme["title_link"] = bool(self.feed_question_id())
+        return theme
 
     def feed_item_blocks(self):
         """把"每条一段定位文本"落成文档里的光标，按文档顺序：[(对象, 类型, 光标)]。
@@ -4727,6 +4735,9 @@ class StealthReader(QWidget):
         if nav is None:
             return False
         block_no = self.text_edit.cursorForPosition(pos).blockNumber()
+        if nav.view == "detail" and block_no == 0 and self.feed_question_id():
+            # 详情页点标题 = 进这个问题的全部回答（标题就是问题）
+            return self.feed_open_question()
         hit = None
         for obj, kind, cur in self.feed_item_blocks():
             if cur.blockNumber() <= block_no:
@@ -4855,6 +4866,63 @@ class StealthReader(QWidget):
             self.feed_ensure_visible(cur)   # 回到刚才读的那一条（不在可见区里才滚）
         else:
             self.feed_scroll_top()
+        return True
+
+    def feed_question_id(self, post=None):
+        """当前详情页是"某个问题的某个回答"时，返回那个问题的 id；否则空串。
+
+        知乎的推荐流里既有问题卡片（id 是数字），也有"某问题的某个回答"（id 是 a…）。
+        回答页只该看到**这一个回答**和它的评论；想看这个问题下的其它回答，
+        点标题（标题就是问题）进去——所以这里得知道它属于哪个问题。
+        """
+        nav = self.feed_nav
+        if post is None:
+            if nav is None or nav.view != "detail":
+                return ""
+            post = nav.post
+        if post is None or post.source != "zhihu":
+            return ""
+        m = re.search(r"/question/(\d+)", post.url or "")
+        if not m:
+            return ""
+        qid = m.group(1)
+        return "" if str(post.id) == qid else qid      # 已经在问题页了，就别再"跳"
+
+    def feed_hover_title(self, pos):
+        """鼠标是不是停在详情页标题那一行（只有能跳的时候才认）。"""
+        nav = self.feed_nav
+        if not self.feed_mode or nav is None or nav.view != "detail":
+            return False
+        if not self.feed_question_id():
+            return False
+        try:
+            return self.text_edit.cursorForPosition(pos).blockNumber() == 0
+        except Exception:
+            return False
+
+    def feed_open_question(self):
+        """知乎回答页点标题：进这个问题的「全部回答」那一页。
+
+        问题页就是"id 是数字的帖子"：正文是问题说明（接口给不出就空着，不编），
+        「评论」那一栏列的是**回答**，每条回答底下再挂它自己的评论——三层都在一页里。
+        退格原样回到刚才那个回答（`FeedNav.stack`），不重新取数、也不丢折叠状态。
+        """
+        nav = self.feed_nav
+        qid = self.feed_question_id()
+        if nav is None or not qid or nav.view != "detail" or nav.post is None:
+            return False
+        cur = nav.post
+        qp = feed_mod.Post(
+            source="zhihu", source_label=cur.source_label or "知乎", channel=cur.channel,
+            pid=qid, title=cur.title, url="https://www.zhihu.com/question/%s" % qid,
+            score=cur.score, score_label=cur.score_label, comment_label="回答",
+        )
+        if not nav.open_detail(qp):
+            return False
+        self.feed_gen += 1
+        self.render_feed()
+        self.feed_scroll_top()
+        self.feed_load("detail")
         return True
 
     def feed_toggle_collapse(self):
