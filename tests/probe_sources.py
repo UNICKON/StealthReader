@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """来源层逻辑探针：**零网络**（夹具驱动 + requests 换成抛异常）。
 
     python tests/probe_sources.py          # 在 StealthReader 目录下跑
@@ -72,8 +72,10 @@ class FakeHttp(object):
         self.cache = cache
         self.served_stale = False
         self.image_calls = []
+        self.calls = []          # 请求过哪些地址（虎扑那节要验翻页拼的 URL）
 
     def get_json(self, url, ttl=None, what="", headers=None, timeout=None):
+        self.calls.append(url)
         for frag in self.fail:
             if frag in url:
                 raise FeedNetError("连接超时")
@@ -88,6 +90,7 @@ class FakeHttp(object):
 
     def get_bytes(self, url, ttl=None, headers=None, max_bytes=0, timeout=None):
         """按原始字节给（NGA 那条路要的就是字节：它自带编码和裸控制字符）。"""
+        self.calls.append(url)
         for frag in self.fail:
             if frag in url:
                 raise FeedNetError("连接超时")
@@ -189,7 +192,8 @@ if not raw_z:
     skip("知乎", "缺夹具")
 else:
     zs = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache()))
-    check("栏目只有 热榜", zs.channels() == ["热榜"], zs.channels())
+    check("栏目是 热榜 / 推荐 / 关注（真人要的不是'只有热榜'）",
+          zs.channels() == ["热榜", "推荐", "关注"], zs.channels())
     zp, zn = zs.list("热榜", 0)
     check("拿到条目", len(zp) >= 20, len(zp))
     check("没有分页", zn is None, zn)
@@ -311,7 +315,7 @@ else:
 print("\n=== 7. 来源登记（默认 / 单独开关 / 全关）===")
 made = feed_sources.build_real_sources(cache_root=TMP_CACHE, config={}, log=None)
 check("默认：混流 + 免登录的和要 Cookie 的都在，微博默认关",
-      [s.key for s in made] == ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs"],
+      [s.key for s in made] == ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu"],
       [s.key for s in made])
 check("每个来源都有 label / channels / image_base",
       all(s.label and isinstance(s.channels(), list) and isinstance(s.image_base(), str)
@@ -517,6 +521,33 @@ if raw_cat:
                   {"label": "甲", "fid": "8", "group": "g"}], dup)
 else:
     skip("NGA 板块分类树", "缺 tests/fixtures/nga_category.json")
+
+# 编码：真人报过"NGA 全是乱码"。根因就是死信它自称的 encode=gbk（read.php 实际发 UTF-8）
+_zh = {"encode": "gbk", "data": {"__T": {"0": {"subject": "帖子的标题", "author": "某人"}}}}
+_u8 = json.dumps(_zh, ensure_ascii=False).encode("utf-8")     # 真身 UTF-8，却自称 gbk
+_gbk = json.dumps(_zh, ensure_ascii=False).encode("gbk")      # 真身 GBK，也自称 gbk
+check("（编码）自称 gbk、实际是 UTF-8 的响应不再解成乱码",
+      feed_sources._nga_parse(_u8)["data"]["__T"]["0"]["subject"] == "帖子的标题",
+      feed_sources._nga_parse(_u8)["data"]["__T"]["0"]["subject"])
+check("（编码）真的是 GBK 的响应照旧解对",
+      feed_sources._nga_parse(_gbk)["data"]["__T"]["0"]["author"] == "某人",
+      feed_sources._nga_parse(_gbk)["data"]["__T"]["0"]["author"])
+_MOJ_TXT = "标题与作者以及发布时刻表"
+# 每个汉字 3 字节，偶数个汉字 → 整个 UTF-8 串正好能被 gb18030 无残留地"误解"一遍（不丢字节）
+_MOJ = _MOJ_TXT.encode("utf-8").decode("gb18030")            # 真机上那种乱码就是这么来的
+_MOJ_BAD = _MOJ_TXT.encode("utf-8").decode("gb18030", "replace")  # 带替换符的那种（也要认）
+_tree = feed_sources._nga_fix_tree({"a": _MOJ, "b": "某人", "c": ["x", _MOJ],
+                                    "n": 1, "none": None})
+check("（编码）解析完再按字符串兜一遍：嵌在结构里的乱码也修回来，正常中文和数字不动",
+      _tree == {"a": _MOJ_TXT, "b": "某人", "c": ["x", _MOJ_TXT], "n": 1, "none": None}, _tree)
+check("（编码）乱码判据只认\"UTF-8 被当 GBK 解\"，正常中文不误判",
+      feed_sources._nga_mojibake("正常的简体中文标题") is False
+      and feed_sources._nga_mojibake(_MOJ) is True
+      and feed_sources._nga_mojibake(_MOJ_BAD) is True
+      and feed_sources._nga_mojibake(_MOJ_TXT) is False
+      and feed_sources._nga_mojibake("") is False and feed_sources._nga_mojibake("abc") is False,
+      (feed_sources._nga_mojibake("正常的简体中文标题"),
+       feed_sources._nga_mojibake(_MOJ), feed_sources._nga_mojibake(_MOJ_BAD)))
 
 # 真夹具：`record_fixtures.py nga` 用浏览器 Cookie 录的（列表、正文各裁过，老帖那条是原样 GBK）
 raw_ngal = fixture_bytes("nga_list.json")
@@ -819,7 +850,70 @@ else:
           "而且不会被字符串里的 '} <' 提前截断",
           len(js_posts) == 1 and js_posts[0].title == "标题" and js_posts[0].score == 7,
           [(p.title, p.score) for p in js_posts])
-print("\n=== 15. 来源登记认出了新来源 ===")
+print("\n=== 15. 虎扑（免登录：版面列表是 HTML，正文和回复在页面数据里）===")
+raw_hl = fixture_bytes("hupu_list.html")
+raw_ht = fixture_bytes("hupu_thread.html")
+if raw_hl is None or raw_ht is None:
+    skip("虎扑夹具", "缺 hupu_list.html / hupu_thread.html（先跑 tests/record_fixtures.py hupu）")
+else:
+    hp = feed_sources.HupuSource(
+        FakeHttp(bytes_routes={"/bxj": raw_hl, "643064746.html": raw_ht}, cache=MemCache()))
+    check("虎扑的栏目就是真版面（17 个，名字和 slug 都不重复）",
+          len(hp.channels()) == 17 and len(set(hp.channels())) == 17, len(hp.channels()))
+    check("板块表是静态的：boards() 不发网络请求，label/slug 双向翻译都对，认不出退回步行街",
+          hp.http.calls == [] and hp.board_fid("篮球场") == "nba"
+          and hp.board_label("nba") == "篮球场" and hp.board_fid("不认识的") == "bxj",
+          (hp.http.calls, hp.board_fid("篮球场"), hp.board_label("nba")))
+    hp_posts, hp_nxt = hp.list("步行街主干道", 0)
+    check("（真夹具）版面列表解出 12 条，标题/作者/回复/浏览都在",
+          len(hp_posts) == 12 and all(p.title and p.author for p in hp_posts),
+          [(p.title[:12], p.author, p.n_comments, p.score) for p in hp_posts[:2]])
+    check("（真夹具）统计单位是'回复/浏览'（虎扑列表给的就不是赞）",
+          all(p.comment_label == "回复" and p.score_label == "浏览" for p in hp_posts))
+    check("（真夹具）原帖地址是网页地址（不是 API）",
+          all(p.url.startswith("https://bbs.hupu.com/") and p.url.endswith(".html")
+              for p in hp_posts), [p.url for p in hp_posts[:2]])
+    check("（真夹具）时间 '10-19 11:10' 解成了真实的 epoch 秒",
+          all(p.ts > 0 for p in hp_posts), [p.created for p in hp_posts[:3]])
+    check("（真夹具）有一页就说明还有下一页（12 条 < 阈值 20 → 没有下一页）",
+          hp_nxt is None, hp_nxt)
+    hp.list("步行街主干道", 2)
+    urls = hp.http.calls
+    check("翻页：第 1 页 /bxj，第 2 页 /bxj-2（?page=2 在虎扑不生效）",
+          any(u.endswith("/bxj") for u in urls) and any(u.endswith("/bxj-2") for u in urls),
+          urls[-2:])
+    seed = feed_sources.Post(source="hupu", source_label="虎扑", channel="步行街主干道",
+                             pid="643064746", title="在爸爸朋友的公司上班，把我上到有点破防了", author="某人",
+                             url="https://bbs.hupu.com/643064746.html")
+    hpd, _ = hp.detail(seed)
+    dtxt = " ".join(b.text for b in hpd.body)
+    check("（真夹具）正文从页面数据里解出来了（不是空壳）", len(dtxt) > 300 and "公司" in dtxt,
+          dtxt[:60])
+    check("（真夹具）标题按页面里的再校一次", hpd.title.startswith("在爸爸朋友的公司上班"), hpd.title)
+    hpc, _ = hp.comments(seed)
+    check("（真夹具）回复 6 条，作者/正文/时间都在",
+          len(hpc) == 6 and all(c.author and c.body and c.created for c in hpc),
+          [(c.author, c.score) for c in hpc[:3]])
+    check("（真夹具）回复的数字就是'亮了'（虎扑回复只有这个数）",
+          all(c.score >= 0 for c in hpc) and any(c.score > 0 for c in hpc),
+          [c.score for c in hpc])
+    vid_json = json.dumps({"thread": {"tid": 1, "title": "视频帖", "content": "<p></p>",
+                                      "video": "https://v.example.com/x.mp4"},
+                           "replies": {"list": []}}, ensure_ascii=False)
+    vid = ('<html><body><script id="__NEXT_DATA__" type="application/json">'
+           '{"props":{"pageProps":{"detail":%s}}}</script></body></html>' % vid_json).encode("utf-8")
+    hp2 = feed_sources.HupuSource(FakeHttp(bytes_routes={"1.html": vid}, cache=MemCache()))
+    vd, _ = hp2.detail(feed_sources.Post(source="hupu", pid="1", title="视频帖"))
+    check("（手写形状）只有视频、没有正文时如实说是视频（并给出地址）",
+          any("视频" in b.text for b in vd.body) and any("x.mp4" in b.text for b in vd.body),
+          [b.text[:46] for b in vd.body])
+    check("时间解析：'10-19 11:10' / '11:10' 能解，空的和乱写的不硬编",
+          feed_sources._hupu_time("10-19 11:10") > 0
+          and feed_sources._hupu_time("11:10") > 0
+          and feed_sources._hupu_time("") == 0
+          and feed_sources._hupu_time("刚刚") == 0,
+          (feed_sources._hupu_time("10-19 11:10"), feed_sources._hupu_time("刚刚")))
+print("\n=== 16. 来源登记认出了新来源 ===")
 on_nga = feed_sources.build_real_sources(
     cache_root=TMP_CACHE, config={"feed_sources": ["nga", "zhihu"]}, log=None)
 # 顺序由代码里的登记表决定（固定的，不跟着配置串走），这样 `[`/`]` 的顺序永远可预期
@@ -827,6 +921,12 @@ check("写进 feed_sources 就能带出 NGA", [s.key for s in on_nga] == ["mix",
       [s.key for s in on_nga])
 check("NGA 在列表里被标成需要凭据",
       next(s for s in on_nga if s.key == "nga").needs_auth is True)
+
+on_hp = feed_sources.build_real_sources(
+    cache_root=TMP_CACHE, config={"feed_sources": ["hupu"]}, log=None)
+check("写进 feed_sources 就能带出虎扑，而且它免登录",
+      [s.key for s in on_hp] == ["mix", "hupu"] and on_hp[1].needs_auth is False,
+      [s.key for s in on_hp])
 
 # ---------------------------------------------------------------- 收尾
 shutil.rmtree(TMP_CACHE, ignore_errors=True)

@@ -4790,6 +4790,24 @@ class StealthReader(QWidget):
         if snap:
             # 书页按快照原样回来；**不写阅读进度**（社区页上的坐标不是书的位置）
             self.restore_book_state(snap, write_progress=False)
+        # 兜一层：社区页那套字体是**控件级**的（`setFont` 会连文档默认字体一起换），所以退出时
+        # 把控件字体和**文档默认字体**都按阅读设置再钉一次。只靠 restore_book_state 里的
+        # apply_style 不够稳：退出之后还有几条会重渲染书页的路（本地书重排、变色龙定时器、
+        # 设置窗口刷样式、鼠标进出幽灵态）——它们要是拿社区页的字体去铺书页，就是真人反馈的
+        # "退出 CAF 之后正文的字体变了"。配置是权威值，这里照它钉，不看上一刻控件里是什么。
+        try:
+            book_font = QFont(self.config.get("font_family", "Microsoft YaHei"),
+                              int(self.config.get("font_size", 14)))
+            self.text_edit.setFont(book_font)
+            self.text_edit.document().setDefaultFont(QFont(book_font))
+        except (TypeError, ValueError):
+            pass
+            book_font = QFont(self.config.get("font_family", "Microsoft YaHei"),
+                              int(self.config.get("font_size", 14)))
+            self.text_edit.setFont(book_font)
+            self.text_edit.document().setDefaultFont(QFont(book_font))
+        except (TypeError, ValueError):
+            pass
         self.update_review_bar()
         self.update_tray_tooltip()
         log_event(f"社区统一流：已退出（{reason or '未说明'}）")
@@ -5573,6 +5591,9 @@ class StealthReader(QWidget):
         font = QFont(font_family, font_size)
 
         self.text_edit.setFont(font)
+        # 文档默认字体跟着一起钉：社区页/卡片页会把它换掉，而书页重排时"没写内联字体的那些块"
+        # 吃的就是它——只改控件字体不改它，退出社区页后仍可能露出一块社区页的字号。
+        self.text_edit.document().setDefaultFont(QFont(font))
 
         fm = QFontMetrics(font)
         # 最小窗口高度按实际排版算（行距 + 上下页边距），否则压到一行高时会被裁掉

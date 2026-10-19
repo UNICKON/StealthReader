@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """录制真实响应当夹具（**故意联网**，只在需要更新夹具时手动跑一次）。
 
 探针是这一批功能的验收依据，而探针跑在夹具上；夹具必须是**真响应**，不能手写——
@@ -628,6 +628,65 @@ def record(which):
                                  note="已裁剪：正文前 400 字、图前 2 张、去掉 ipLocation")
                     else:
                         print("  详情状态里没有这条笔记，没录")
+    if which in ("", "hupu"):
+        print("虎扑（免登录：版面页是 HTML，帖子页的数据在 __NEXT_DATA__ 里）")
+        hp_head = {"User-Agent": UA, "Referer": "https://bbs.hupu.com/"}
+        try:
+            hp_raw, _code = fetch_raw("https://bbs.hupu.com/bxj", {}, hp_head)
+            if not hp_raw:
+                raise RuntimeError("空响应")
+            hp_html = hp_raw.decode("utf-8", "replace")
+        except Exception as e:
+            print("  版面页没拿到（%s）" % e)
+        else:
+            items = re.findall(r'<li class="bbs-sl-web-post-body".*?</li>', hp_html, re.S)[:12]
+            shell = '<html><body><div class="bbs-sl-web-post"><ul>'
+            write_bytes("hupu_list.html",
+                        (shell + "\n" + "\n".join(items) + "\n</ul></div></body></html>\n").encode("utf-8"))
+            print("  版面列表 %d 条" % len(items))
+            # 清单里不少是纯图/视频帖，正文一个字都没有——那种当不了夹具，要挑有字的
+            picked = None
+            for tid in re.findall(r'href="/(\d+)\.html"', "\n".join(items))[:10]:
+                try:
+                    page_raw, _c2 = fetch_raw("https://bbs.hupu.com/%s.html" % tid, {}, hp_head)
+                    if not page_raw:
+                        continue
+                    page = page_raw.decode("utf-8", "replace")
+                except Exception:
+                    continue
+                m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
+                if not m:
+                    continue
+                try:
+                    detail = json.loads(m.group(1))["props"]["pageProps"]["detail"]
+                except Exception:
+                    continue
+                text = re.sub(r"<[^>]+>", "", (detail.get("thread") or {}).get("content") or "")
+                if len(re.sub(r"\s+", "", text)) >= 200:
+                    picked = (tid, detail)
+                    break
+            if not picked:
+                print("  前十篇里没有带文字正文的帖子，帖子夹具没录")
+            else:
+                tid, detail = picked
+                thread = {k: (detail.get("thread") or {}).get(k) for k in (
+                    "tid", "title", "content", "video", "videoCover", "lights", "replies",
+                    "read", "createdAt", "createdAtFormat", "author")}
+                thread["content"] = re.sub(r' data-origin="[^"]*"', "", thread.get("content") or "")
+                reps = [{k: it.get(k) for k in ("pid", "content", "allLightCount", "createdAt",
+                                                "createdAtFormat", "author", "replyNum")}
+                        for it in (((detail.get("replies") or {}).get("list")) or [])[:6]
+                        if isinstance(it, dict)]
+                trim = {"thread": thread, "replies": {"count": len(reps), "list": reps},
+                        "breadCrumb": detail.get("breadCrumb")}
+                page_html = ('<html><head><title>%s</title></head><body>'
+                             '<script id="__NEXT_DATA__" type="application/json">%s</script>'
+                             '</body></html>\n') % (
+                                 thread.get("title") or "",
+                                 json.dumps({"props": {"pageProps": {"detail": trim}}},
+                                            ensure_ascii=False))
+                write_bytes("hupu_thread.html", page_html.encode("utf-8"))
+                print("  帖子夹具 tid=%s、正文 %d 字、回复 %d 条" % (tid, len(thread["content"]), len(reps)))
     if which in ("", "weibo"):
         print("微博")
         save("weibo_hotsearch.json", "https://weibo.com/ajax/side/hotSearch",

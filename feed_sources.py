@@ -508,10 +508,18 @@ class ZhihuSource(RealSource):
     label = "知乎"
     base_url = "https://www.zhihu.com"
     needs_auth = False
-    CHANNELS = ["热榜"]
+    CHANNELS = ["热榜", "推荐", "关注"]
     LIST_URL = "https://api.zhihu.com/topstory/hot-list?limit=50&reverse_order=0"
+    # 推荐：2026-10-19 用真 Cookie 实测 200，`data[i].target` 是**回答**（type=answer，
+    # 自带 excerpt/content/question/author），`paging.next` 给下一页的完整 URL。
+    RECOMMEND_URL = "https://api.zhihu.com/topstory/recommend?action=down&ad_interval=-1&limit=10"
+    # 关注：同一套形状（`data[i].target` 是回答或文章）。没人可关注时它就是空列表，
+    # 不报错——空着如实显示"这一栏还没内容"，不要假装网络出问题。
+    FOLLOW_URL = "https://api.zhihu.com/moments?limit=10&offset=0"
     # 一次问这么多条回答：它们就是详情页的"评论"那一栏。10 条足够一屏读，文档也不会太沉。
     ANSWERS_LIMIT = 10
+    # 真人要求"热榜详情内容应该缩略而不是全文显示"：回答只摆摘要，最长这么多字。
+    EXCERPT_CHARS = 220
     # 失败只记这么久。以前失败也缓存一辈子，于是第一次撞上风控之后，这个问题到进程结束都打不开。
     RETRY_AFTER = 90
 
@@ -543,30 +551,117 @@ class ZhihuSource(RealSource):
         return int(v)
 
     def list(self, channel=None, cursor=None):
+        ch = channel if channel in self.CHANNELS else "热榜"
+        if ch == "热榜":
+            return self._list_hot(ch)
+        return self._list_feed(ch, cursor)
+
+    def _post_from_question(self, tgt, channel, score_text=""):
+        """热榜/推荐里"问题"那一种：标题、热度、回答数、网页地址。"""
+        qid = str(tgt.get("id") or "")
+        if not qid:
+            return None
+        ts = feed_mod.parse_time(tgt.get("created"))
+        return Post(
+            source=self.key, source_label=self.label, channel=channel, pid=qid,
+            title=feed_mod.strip_html(tgt.get("title") or ""),
+            author="",                          # 热榜不告诉你这是谁问的
+            created=feed_mod.human_time(ts), ts=ts,
+            score=self._hot(score_text), score_label="热度",
+            n_comments=int(tgt.get("answer_count") or 0), comment_label="回答",
+            excerpt=self._clip(feed_mod.strip_html(tgt.get("excerpt") or "")),
+            # target.url 是 api.zhihu.com 的接口地址；给人点的必须是网页地址，
+            # 否则 O 打开的是 JSON（这条是探针里对着真实响应逼出来的）
+            url="%s/question/%s" % (self.base_url, qid),
+            tags=[],
+        )
+
+    def _post_from_answer(self, tgt, channel):
+        """推荐/关注里"回答"那一种：题目取它所在的问题，正文只留摘要（缩略）。
+
+        id 前面加 `a` 区分"这是一条回答"而不是"一个问题"——详情/评论两条路要靠它分流，
+        免得拿回答 id 去问问题接口。
+        """
+        aid = str(tgt.get("id") or "")
+        q = tgt.get("question") if isinstance(tgt.get("question"), dict) else {}
+        qid = str(q.get("id") or "")
+        if not aid:
+            return None
+        ts = feed_mod.parse_time(tgt.get("created_time"))
+        url = ("%s/question/%s/answer/%s" % (self.base_url, qid, aid)) if qid \
+            else ("%s/answer/%s" % (self.base_url, aid))
+        return Post(
+            source=self.key, source_label=self.label, channel=channel, pid="a" + aid,
+            title=feed_mod.strip_html(q.get("title") or "") or "（这条回答没有问题标题）",
+            author=_zhihu_name(tgt.get("author")) or "匿名",
+            created=feed_mod.human_time(ts), ts=ts,
+            score=int(tgt.get("voteup_count") or 0), score_label="赞",
+            n_comments=int(tgt.get("comment_count") or 0), comment_label="评论",
+            excerpt=self._excerpt_of(tgt),
+            url=url, tags=[],
+        )
+
+    def _clip(self, text):
+        """一段文字压到 `EXCERPT_CHARS` 以内（压成一行，超了加省略号）。缩略就用这一把尺子。"""
+        s = " ".join(str(text or "").split())
+        if len(s) > self.EXCERPT_CHARS:
+            s = s[:self.EXCERPT_CHARS].rstrip() + "…"
+        return s
+
+    def _excerpt_of(self, item):
+        """一条回答的摘要：优先用接口给的 `excerpt`，没有再拿正文截断。一律压成一行。"""
+        ex = feed_mod.strip_html(item.get("excerpt") or "")
+        if len(ex) < 12:
+            ex = feed_mod.strip_html(item.get("content") or "")
+        return self._clip(ex)
+
+    def _list_hot(self, channel):
         data = self._get(self.LIST_URL, TTL_LIST, "知乎热榜", timeout=LIST_TIMEOUT)
-        items = (data or {}).get("data") or []
         posts = []
-        for it in items:
+        for it in ((data or {}).get("data") or []):
             tgt = it.get("target") if isinstance(it, dict) else None
-            if not isinstance(tgt, dict) or not tgt.get("id"):
+            if not isinstance(tgt, dict):
                 continue
-            qid = str(tgt["id"])
-            ts = feed_mod.parse_time(tgt.get("created"))
-            posts.append(Post(
-                source=self.key, source_label=self.label, channel="热榜", pid=qid,
-                title=feed_mod.strip_html(tgt.get("title") or ""),
-                author="",                      # 热榜不告诉你这是谁问的
-                created=feed_mod.human_time(ts), ts=ts,
-                score=self._hot(it.get("detail_text")), score_label="热度",
-                n_comments=int(tgt.get("answer_count") or 0), comment_label="回答",
-                excerpt=feed_mod.strip_html(tgt.get("excerpt") or ""),
-                # target.url 是 api.zhihu.com 的接口地址；给人点的必须是网页地址，
-                # 否则 O 打开的是 JSON（这条是探针里对着真实响应逼出来的）
-                url="%s/question/%s" % (self.base_url, qid),
-                tags=[],
-            ))
+            p = self._post_from_question(tgt, channel, score_text=it.get("detail_text"))
+            if p is not None:
+                posts.append(p)
+        return [p for p in posts if p.id and p.title], None    # 热榜就这一页，没有分页
+
+    def _list_feed(self, channel, cursor):
+        """推荐 / 关注：一次一页，分页游标就是接口自己给的 `paging.next` 完整地址。"""
+        first = self.RECOMMEND_URL if channel == "推荐" else self.FOLLOW_URL
+        url = cursor or first
+        data = self._get(url, TTL_LIST, "知乎" + channel, timeout=LIST_TIMEOUT)
+        data = data or {}
+        posts = []
+        for it in (data.get("data") or []):
+            tgt = it.get("target") if isinstance(it, dict) else None
+            if not isinstance(tgt, dict):
+                continue
+            kind = str(tgt.get("type") or "")
+            p = None
+            if kind == "answer":
+                p = self._post_from_answer(tgt, channel)
+            elif kind == "question":
+                p = self._post_from_question(tgt, channel)
+            if p is not None:
+                posts.append(p)
         posts = [p for p in posts if p.id and p.title]
-        return posts, None                  # 热榜就这一页，没有分页
+        nxt = ((data.get("paging") or {}).get("next") or "").strip() or None
+        if nxt == url:            # 有的接口把当前页原样回给你，别让它无限翻
+            nxt = None
+        return posts, nxt
+
+    def _is_answer_post(self, post):
+        return str(post.id).startswith("a") or "/answer/" in (post.url or "")
+
+    def _question_id(self, post):
+        """回答帖 → 它属于哪个问题（从自己生成的网页地址里取，取不到就空）。"""
+        m = re.search(r"/question/(\d+)", post.url or "")
+        if m:
+            return m.group(1)
+        pid = str(post.id or "")
+        return pid if pid.isdigit() else ""
 
     def detail(self, post, cursor=None):
         """正文栏只放**问题自己**的信息；回答属于"评论"那一栏（见 comments）。
@@ -581,12 +676,22 @@ class ZhihuSource(RealSource):
         """
         out = Post.from_dict(post.to_dict())
         body = []
+        if self._is_answer_post(post):
+            # 推荐/关注里点开的是一条回答：正文只摆**摘要**（真人要求缩略，不要全文），
+            # 下面"评论"那一栏给的是同一个问题下别的回答的摘要。
+            body.append(Block(kind=BLOCK_P, text=(
+                out.excerpt or "（这条回答没给摘要）")))
+            body.append(Block(kind=BLOCK_QUOTE, text=(
+                "这里只摆摘要：一条回答动辄几千字，正式读还是按 O 打开原帖。"
+                "下面那一栏是同一个问题下其它回答的摘要，按 J/K 挑、回车展开。")))
+            out.body = body
+            return out, None
         answers, why = self._answers(str(post.id)) if self.has_auth else ([], "")
         if answers:
             n_all = int(post.n_comments or 0)
             body.append(Block(kind=BLOCK_P, text=(
-                "这个问题下有 %s 条回答，下面按知乎的默认排序列出前 %d 条。"
-                % (n_all if n_all else "若干", len(answers)))))
+                "这个问题下有 %s 条回答，下面按知乎的默认排序列出前 %d 条，**每条只摆摘要**"
+                "（全文按 O 去原帖看）。" % (n_all if n_all else "若干", len(answers)))))
         elif not self.has_auth:
             body.append(Block(kind=BLOCK_QUOTE, text=(
                 "知乎的回答要登录才给（这个接口回 401）。把浏览器 Cookie 贴进 feed_auth.json 的 "
@@ -641,31 +746,34 @@ class ZhihuSource(RealSource):
     def comments(self, post, cursor=None):
         """这一栏的"评论"就是**回答列表**——真人要的正是它们，能一条条读、能折叠。
 
+        **只摆摘要**（`EXCERPT_CHARS` 以内）：以前把整条回答的 HTML 都塞进来，一条几千字，
+        十条规定下来一页几万字，人翻两屏就不想读了（真人原话：「知乎的热榜详情内容应该缩略
+        而不是全文显示」）。要全文按 O 开原帖。
+
         取不到就如实为空（原因写在正文那一栏，不在这里重复）。注意回答作者是 `author.name`
         那一层（评论才是嵌一层的 `author.member.name`，两种形状 `_zhihu_name` 都认）。
         """
         if not self.has_auth:
             return [], None
-        answers, _why = self._answers(str(post.id))
+        qid = self._question_id(post)
+        if not qid:
+            return [], None
+        answers, _why = self._answers(qid)
+        # 点开的就是其中一条回答时，别再把它自己列一遍
+        skip = ""
+        if self._is_answer_post(post):
+            skip = str(post.id)[1:] if str(post.id).startswith("a") else str(post.id)
         out = []
         for i, it in enumerate(answers):
-            # 回答里的图也要落地（Qt 读不了 http，`_localize_images` 会把落不下来的直接丢掉，
-            # 所以不会留一排在浏览器里能看、在这儿是裂图的地址）。
-            # 只有第一条允许带 2 张：10 条回答的图全下载就是几十个请求、好几兆，
-            # 而真正会被读完的通常只有最上面那条；其余的图按"落不下来"处理掉。
-            blocks = self._localize_images(
-                feed_mod.blocks_from_html(it.get("content") or "", max_blocks=40),
-                limit=(2 if i == 0 else 0))
-            if not blocks:
-                # 有的回答只开放摘要（content 为空、excerpt 有字）：照实说，不留一条空评论
-                short = feed_mod.strip_html(it.get("excerpt") or "")
-                blocks = [Block(kind=BLOCK_P, text=(short or "（这条回答没给正文，可能是只开放摘要或已删除）"))]
+            if skip and str(it.get("id") or "") == skip:
+                continue
             out.append(Comment(
                 cid=str(it.get("id") or ("a%d" % i)),
                 author=_zhihu_name(it.get("author")) or "匿名",
                 created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
                 score=int(it.get("voteup_count") or 0),
-                body=blocks,
+                body=[Block(kind=BLOCK_P, text=(
+                    self._excerpt_of(it) or "（这条回答没给摘要，按 O 去原帖看）"))],
             ))
         return out, None
 
@@ -793,33 +901,95 @@ class WeiboSource(RealSource):
         return [], None                           # 拿不到就是拿不到，不造评论
 
 
+def _nga_recode(text):
+    """如果 `text` 是"UTF-8 被当成 GBK 解开"的乱码，返回还原后的文本；否则返回 None。
+
+    判据很干脆：**按 gb18030 编回去还能得到合法 UTF-8** —— 那就说明原文本来就是 UTF-8，
+    刚才那一步解错了。反过来，正常的 GBK 中文编回 gb18030 之后不是合法 UTF-8，不会被误判。
+    （用 gb18030 而不是 gbk 反解：真机上这种乱码多半是"宽编码"解出来的，gbk 编不回去；
+    这种乱码还常常丢掉末尾一两个字节，所以补几次"切掉尾巴再试"。）
+    """
+    if not text:
+        return None
+    body = text.replace("\ufffd", "")
+    if not body or all(ord(ch) < 128 for ch in body):
+        return None
+    for enc in ("gb18030", "gbk"):
+        try:
+            back = body.encode(enc)
+        except Exception:
+            continue
+        for cut in (0, 1, 2):
+            chunk = back[:len(back) - cut] if cut else back
+            try:
+                fixed = chunk.decode("utf-8")
+            except Exception:
+                continue
+            if any("\u4e00" <= ch <= "\u9fff" for ch in fixed):
+                return fixed
+        return None                        # 编回去了但解不出中文 → 不是这种乱码
+    return None
+
+
+def _nga_mojibake(text):
+    """这段文本是不是乱码（"UTF-8 被当 GBK 解"那一种，也就是人眼看到的样子）。"""
+    return _nga_recode(text) is not None
+
+
+def _nga_unmojibake(text):
+    """把一段乱码还原回正常中文（还原不了就原样返回）。"""
+    fixed = _nga_recode(text)
+    return text if fixed is None else fixed
+
+
+def _nga_fix_tree(node):
+    """递归把整棵 JSON 里的乱码字符串修回来。
+
+    为什么要按**字符串**修、而不是整份响应只挑一个编码：NGA 这两条接口的编码实测并不统一
+    （2026-10-19：`thread.php` 是 GBK，`read.php` 里带用户输入的那些字段会是 UTF-8），
+    一份响应里两种编码混着来的时候，选哪个都会有一半是乱码。"""
+    if isinstance(node, str):
+        return _nga_unmojibake(node)
+    if isinstance(node, list):
+        return [_nga_fix_tree(x) for x in node]
+    if isinstance(node, dict):
+        return {k: _nga_fix_tree(v) for k, v in node.items()}
+    return node
+
+
 def _nga_parse(raw):
     """NGA 的 `__output=8` JSON：**必须 `strict=False`**。
 
     它返回的字符串里有裸换行/制表符（JSON 标准不允许），`json.loads` 默认会
     `Invalid control character` 直接报错——这不是"接口坏了"，是它就是这么发的。
-    编码按响应里自称的 `encode` 字段走（实测是 `"encode":"gbk"`，按 utf-8 解会成乱码），
-    认不出来就 utf-8 → gbk 逐个试。"""
+
+    编码这块**不能只信它自称的**：响应里写着 `"encode":"gbk"`，但同一个站的另一条接口
+    （`read.php`）实际发的是 UTF-8。所以先按"自称的编码 + 另一种"各解一遍，谁不像乱码用谁，
+    解析完再按字符串兜一遍（见 `_nga_fix_tree`）——真人反馈的"NGA 全是乱码"就是死信自称值造成的。
+    """
     if isinstance(raw, (bytes, bytearray)):
         head = bytes(raw[:600]).lower()
+        declared_gbk = b'"encode"' in head and b"gbk" in head
+        order = ("gbk", "utf-8") if declared_gbk else ("utf-8", "gbk")
         text = None
-        if b'"encode"' in head and b"gbk" in head:
+        for enc in order:
+            try:
+                cand = raw.decode(enc)
+            except Exception:
+                continue
+            if "\ufffd" in cand or _nga_mojibake(cand):
+                continue                   # 这一解出来是乱码，换另一种
+            text = cand
+            break
+        if text is None:
             text = raw.decode("gbk", "replace")
-        else:
-            for enc in ("utf-8", "gbk"):
-                try:
-                    text = raw.decode(enc)
-                    break
-                except Exception:
-                    continue
-            if text is None:
-                text = raw.decode("utf-8", "replace")
     else:
         text = str(raw)
     try:
-        return json.loads(text, strict=False)
+        data = json.loads(text, strict=False)
     except Exception as e:
         raise FeedNetError("NGA 回的 JSON 读不出来（%s）" % type(e).__name__)
+    return _nga_fix_tree(data)
 
 
 def _nga_rows(data, key):
@@ -1361,9 +1531,11 @@ class XhsSource(RealSource):
                 parts.append('<img src="%s"/>' % (img.get("urlDefault") or img.get("url")))
         body = self._localize_images(feed_mod.blocks_from_html("".join(parts), max_blocks=20), limit=9)
         body.append(Block(kind=BLOCK_QUOTE, text=(
-            "这里只有正文和图片：小红书的评论接口要前端签名（实测 406），"
-            "页面自带的评论时有时无（录夹具时连看 10 条笔记，一条都没带上），"
-            "所以评论这一层没有做——按 O 去原页看评论。")))
+            "这里只有正文和图片：小红书的评论**拿不到**。2026-10-19 又试了一轮——"
+            "`edith.xiaohongshu.com/api/sns/web/v2/comment/page` 406（要前端算的 `x-s` 签名）、"
+            "`/web/v1/comment/page` 404、`www.xiaohongshu.com/api/sns/v3|v2/comment/page` 500，"
+            "笔记页自带的 `comments.list` 连看 4 条笔记全是空的（评论是打开后才去拉的）。"
+            "真要看评论按 O 去原页。")))
         out.body = body
         return out, None
 
@@ -1373,6 +1545,234 @@ class XhsSource(RealSource):
         # （录夹具时连看 10 条笔记，一条都没带上）。既然拿不到真数据，就不写"猜出来的解析"：
         # 宁可明说没有，也不把别人的评论编出来。哪天录到一份真带的，再把这一层打开。
         return [], None
+
+
+HUPU_BOARDS = (
+    # 2026-10-19 逐个抓过一遍：每一条都是 `https://bbs.hupu.com/<slug>`，页面里 40~50 条帖子、
+    # 标题取 `<title>`（如 `/nba` → 篮球场）。`/all-*` 那一批是"聚合专题页"，**不是**版面，
+    # 里面一条帖子都没有（实测 0 条），所以不能当板块用。
+    ("步行街主干道", "bxj"),
+    ("篮球场", "nba"),
+    ("足球场", "soccer"),
+    ("CBA专区", "cba"),
+    ("影视区", "ent"),
+    ("娱乐圈", "59"),
+    ("音乐圈", "63"),
+    ("英雄联盟", "lol"),
+    ("乒乓球区", "pingpang"),
+    ("网球场", "tennis"),
+    ("综合体育区", "sports"),
+    ("数码综合讨论", "digital"),
+    ("运动装备", "gear"),
+    ("游戏区", "game"),
+    ("历史区", "history"),
+    ("恋爱区", "love"),
+    ("股票区", "stock"),
+)
+
+
+def _hupu_rows(html):
+    """版面列表页 → [{id, title, author, replies, read, time}]。
+
+    虎扑的版面页是**服务端渲染**的（不像帖子页那样带 `__NEXT_DATA__`），所以只能读 HTML。
+    一行的骨架是（实测 2026-10-19）：
+
+        <li class="bbs-sl-web-post-body">
+          <div class="post-title"><a href="/643069210.html" class="p-title">标题</a></div>
+          <div class="post-datum">9 / 899</div>      ← 回复 / 浏览
+          <div class="post-auth"><a ...>作者</a></div>
+          <div class="post-time">10-19 11:10</div>
+        </li>
+    """
+    out = []
+    for seg in str(html or "").split('class="bbs-sl-web-post-body"')[1:]:
+        seg = seg.split("</li>", 1)[0]
+        a = re.search(r'<a([^>]*class="p-title"[^>]*)>(.*?)</a>', seg, re.S)
+        if not a:
+            continue
+        href = re.search(r'href="/(\d+)\.html"', a.group(1))
+        if not href:
+            continue
+        title = feed_mod.strip_html(a.group(2))
+        if not title:
+            continue
+        datum = re.search(r'class="post-datum"[^>]*>(.*?)</div>', seg, re.S)
+        nums = re.findall(r'\d+', feed_mod.strip_html(datum.group(1))) if datum else []
+        auth = re.search(r'class="post-auth"[^>]*>(.*?)</div>', seg, re.S)
+        tm = re.search(r'class="post-time"[^>]*>(.*?)</div>', seg, re.S)
+        out.append({
+            "id": href.group(1),
+            "title": title,
+            "author": feed_mod.strip_html(auth.group(1)) if auth else "",
+            "replies": int(nums[0]) if nums else 0,
+            "read": int(nums[1]) if len(nums) > 1 else 0,
+            "time": feed_mod.strip_html(tm.group(1)) if tm else "",
+        })
+    return out
+
+
+def _hupu_time(text):
+    """`10-19 11:10` / `11:10` / `昨天 11:10` → epoch 秒；认不出来就给 0（列表里不显示时间）。"""
+    s = " ".join(str(text or "").split())
+    if not s:
+        return 0
+    now = time.localtime()
+    for fmt, guess in (("%m-%d %H:%M", None), ("%Y-%m-%d %H:%M", None)):
+        try:
+            t = time.strptime(s, fmt)
+        except ValueError:
+            continue
+        year = t.tm_year if fmt.startswith("%Y") else now.tm_year
+        try:
+            return time.mktime((year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, 0, 0, 0, -1))
+        except (OverflowError, ValueError):
+            return 0
+    m = re.match(r"(\d{1,2}):(\d{2})$", s)
+    if m:                      # 只有时分 = 今天
+        try:
+            return time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
+                                int(m.group(1)), int(m.group(2)), 0, 0, 0, -1))
+        except (OverflowError, ValueError):
+            return 0
+    return 0
+
+
+class HupuSource(RealSource):
+    """虎扑（bbs.hupu.com）。**整站免登录**：版面列表、帖子正文、回复都能直接拿。
+
+    2026-10-19 实测（本机网络，不带任何 Cookie）：
+      - 版面页 `/<slug>` 是**服务端渲染**的 HTML（约 300KB），一页 40~50 条帖子，
+        每条带标题/作者/回复数/浏览数/时间；翻页是 `/<slug>-2`（`?page=2` **不生效**，
+        会把第 1 页原样再发一遍）；
+      - 帖子页 `/<tid>.html` 是 Next.js，正文和回复都在 `<script id="__NEXT_DATA__">` 里：
+        `props.pageProps.detail.thread`（title / content(HTML) / lights / replies / read /
+        createdAt(毫秒) / author.puname）和 `props.pageProps.detail.replies.list`
+        （pid / content / allLightCount / createdAt / author.puname）；
+      - 那些 `/api/...` 的 JSON 老接口**全 404 了**（`api/topic/list`、`api/thread/detail`、
+        `api/v2/recommend/list`、`api.hupu.com` 都试过），所以只能走页面里的数据。
+
+    **板块**：虎扑的"版"就是 URL 里那个 slug，`HUPU_BOARDS` 是逐条抓过的真版面
+    （`/all-*` 是聚合专题页，里面一条帖子都没有，不在表里）。换板块走界面里那套选择器。
+    """
+
+    key = "hupu"
+    label = "虎扑"
+    base_url = "https://bbs.hupu.com"
+    needs_auth = False               # 免登录
+    CHANNELS = tuple(label for label, _slug in HUPU_BOARDS)
+    SLUG = dict(HUPU_BOARDS)
+    UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+    MAX_PAGE_BYTES = 3000000
+
+    def channels(self):
+        return list(self.CHANNELS)
+
+    def board_fid(self, channel):
+        """栏目名（或直接给的 slug）→ 虎扑的 slug。认不出来就退回步行街。"""
+        s = str(channel or "").strip()
+        for label, slug in HUPU_BOARDS:
+            if s == label or s == slug:
+                return slug
+        return HUPU_BOARDS[0][1]
+
+    def board_label(self, fid):
+        s = str(fid or "").strip()
+        for label, f in HUPU_BOARDS:
+            if s == f:
+                return label
+        return s
+
+    def boards(self, force=False):
+        """板块表是**静态**的（已经逐条验证过），不需要联网，所以这里不发请求。"""
+        return [{"label": label, "fid": slug, "group": "虎扑"} for label, slug in HUPU_BOARDS]
+
+    def _headers(self):
+        return {"User-Agent": self.UA, "Referer": self.base_url + "/"}
+
+    def _html(self, path, ttl):
+        url = path if path.startswith("http") else (self.base_url + path)
+        raw = self.http.get_bytes(url, ttl=ttl, headers=self._headers(),
+                                  max_bytes=self.MAX_PAGE_BYTES, timeout=LIST_TIMEOUT)
+        self.served_stale = bool(getattr(self.http, "served_stale", False))
+        return raw.decode("utf-8", "replace")
+
+    def _detail_json(self, tid):
+        """帖子页里那坨 `__NEXT_DATA__` 的 `detail` 部分（正文和回复都在里面）。"""
+        html = self._html("/%s.html" % str(tid).strip(), TTL_DETAIL)
+        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+        if not m:
+            raise FeedNetError("虎扑这一页没带数据（可能改版了）：%s" % tid)
+        try:
+            data = json.loads(m.group(1))
+        except ValueError:
+            raise FeedNetError("虎扑页面里的数据读不出来：%s" % tid)
+        return ((data.get("props") or {}).get("pageProps") or {}).get("detail") or {}
+
+    def list(self, channel=None, cursor=None):
+        label = self.board_label(self.board_fid(channel))
+        slug = self.board_fid(channel)
+        try:
+            page = max(1, int(cursor or 1))
+        except (TypeError, ValueError):
+            page = 1
+        path = "/%s" % slug if page == 1 else "/%s-%d" % (slug, page)
+        html = self._html(path, TTL_LIST)
+        posts = []
+        for row in _hupu_rows(html):
+            ts = _hupu_time(row["time"])
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=label, pid=row["id"],
+                title=row["title"], author=row["author"],
+                created=row["time"] or feed_mod.human_time(ts), ts=ts,
+                score=row["read"], score_label="浏览",
+                n_comments=row["replies"], comment_label="回复",
+                url="%s/%s.html" % (self.base_url, row["id"]), tags=[],
+            ))
+        # 一页 40~50 条；拿到这么多才认为还有下一页（末尾那页会短）
+        nxt = page + 1 if len(posts) >= 20 else None
+        return posts, nxt
+
+    def detail(self, post, cursor=None):
+        out = Post.from_dict(post.to_dict())
+        detail = self._detail_json(post.id)
+        th = detail.get("thread") or {}
+        body = self._localize_images(
+            feed_mod.blocks_from_html(th.get("content") or "", max_blocks=60), limit=4)
+        if th.get("title"):
+            out.title = feed_mod.strip_html(th["title"]) or out.title
+        if not body:
+            # 视频帖/纯图帖：正文那栏是空的，照实说并把视频地址写出来（Qt 放不了视频）
+            note = "（这帖没有正文文字"
+            note += "，是一段视频：%s" % th["video"] if th.get("video") else ""
+            body = [Block(kind=BLOCK_QUOTE, text=note + "。按 O 打开原帖看。）")]
+        out.body = body
+        return out, None
+
+    def comments(self, post, cursor=None):
+        """回复（虎扑的回复没有真正的层级，引用写在正文里，所以按平铺给）。"""
+        detail = self._detail_json(post.id)
+        rows = ((detail.get("replies") or {}).get("list")) or []
+        out = []
+        for i, it in enumerate(rows):
+            blocks = feed_mod.blocks_from_html(it.get("content") or "", max_blocks=12)
+            if not blocks:
+                blocks = [Block(kind=BLOCK_P, text="（这条回复没内容）")]
+            out.append(Comment(
+                cid=str(it.get("pid") or ("r%d" % i)),
+                author=_hupu_name(it.get("author")) or "匿名",
+                created=feed_mod.human_time(int(it.get("createdAt") or 0) / 1000.0),
+                score=int(it.get("allLightCount") or 0),
+                body=blocks,
+            ))
+        return out, None
+
+
+def _hupu_name(author):
+    """虎扑的作者字段是 `{"puname": "...", "puid": ...}`（回复和正文同一形状）。"""
+    if not isinstance(author, dict):
+        return ""
+    return str(author.get("puname") or author.get("name") or "").strip()
 
 
 class MixSource(SourceAdapter):
@@ -1488,14 +1888,15 @@ def build_real_sources(cache_root=None, config=None, log=None):
         # 微博不在默认里：它的风控最紧，属于"单独开关"那一档。
         # NGA 和 小红书 也在默认里：它们确实要 Cookie，但没配的时候页脚会照实说
         # "这个来源要 Cookie"，不会假装成功——比"藏起来让人找不到"更好解释。
-        enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs"]
+        enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu"]
     elif not isinstance(enabled, list):
         enabled = [str(enabled)]
 
     made = []
     for key, cls in (("ithome", IthomeSource), ("v2ex", V2exSource),
                      ("linuxdo", DiscourseSource), ("zhihu", ZhihuSource),
-                     ("weibo", WeiboSource), ("nga", NgaSource), ("xhs", XhsSource)):
+                     ("weibo", WeiboSource), ("nga", NgaSource), ("xhs", XhsSource),
+                     ("hupu", HupuSource)):
         if key not in enabled:
             continue
         cred = auth.get(key) if isinstance(auth.get(key), dict) else {}

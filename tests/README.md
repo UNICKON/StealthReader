@@ -21,7 +21,7 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 
 | 探针 | 网络 | 管什么 |
 |---|---|---|
-| `probe_sources.py` | **零** | 每个来源的 列表 / 正文 / 评论 映射、统计单位、缓存与断网回落、混流分额与转发、凭据管线、状态码→人话的映射、结构不变量 |
+| `probe_sources.py` | **零** | 每个来源的 列表 / 正文 / 评论 映射、统计单位、缓存与断网回落、混流分额与转发、凭据管线、状态码→人话的映射、结构不变量；**NGA 的编码判据（自称 gbk 实为 UTF-8 / 真 GBK / 结构里嵌乱码 / 正常中文不误判）**；**虎扑的版面表、列表 HTML、`__NEXT_DATA__` 正文与回复、翻页拼地址**；知乎三栏与"详情只摆摘要" |
 | `probe_ui.py` | **零** | 真适配器 + 替身 Http 走完整窗：混流席位、`[` `]` 切来源（真 QKeyEvent）、`,` `.` 切栏目、详情、`O` 开原帖、退出不动书的状态、两个"结果晚到"的竞态、按像素点选与落点、进出社区页的排版隔离、社区页字体、**换社区/换板块（菜单里能看见、按来源记忆、后台拉板块表→可搜索的选择器）**、微信读书书架窗口 |
 | `probe_weread.py` | **零** | 微信读书那一层：书架与进度怎么合、章节表怎么排、`errCode` 怎么说人话、没 Cookie 时一个包都不发、POST 缓存不串书；还有两条钉住"**不做正文**"的断言 |
 | `probe_live.py` | 真 | 真站能不能拿到、缓存第二次是否 0 秒、混流是否并行、整窗真拉一遍、**配了 Cookie 的站正文/评论通不通**、微信读书书架 |
@@ -72,6 +72,8 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 | `linuxdo_cf.html` | linux.do 的 Cloudflare `Just a moment...` 拦截页 |
 | `chiphell_567.html` | Chiphell 的非标准 567 防爬占位页 |
 | `zhihu_unauth_answers.json` | 知乎正文接口**没登录时**的真响应（`code 40362` 风控） |
+| `hupu_list.html` | 虎扑版面页 `bbs.hupu.com/bxj`（**免登录**），**裁过**：只留前 12 条 `<li class="bbs-sl-web-post-body">`，外壳换成最小 HTML |
+| `hupu_thread.html` | 虎扑帖子页，**裁过**：`__NEXT_DATA__` 只留 `detail.thread`（正文去掉 `data-origin`）和前 6 条回复；挑的是**有文字正文**的那篇（列表里很多是纯图/视频帖，正文一个字都没有） |
 | `weread_unauth_shelf.json` | 微信读书书架接口**没登录时**的真响应（`errCode -2010`） |
 | `weread_shelf.json` | 微信读书书架，**裁过**：只留 3 本 + 适配器用到的字段（书名/作者/封面/`deepLink`/进度） |
 | `weread_chapters.json` | 微信读书章节表，**裁过**：前 3 章 + **当前读到的那一章**（先录的前 3 章里根本没有它，"目录里 ▶ 标出读到哪章"这条就没法验） |

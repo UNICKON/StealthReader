@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """界面集成探针：**零网络**，离屏 Qt 走完整形窗口（混流 / 切来源 / 详情 / 打开原帖 / 退出）。
 
     python tests/probe_ui.py
@@ -148,8 +148,9 @@ keys = [s.key for s in w.feed_sources]
 ORIG_SOURCES = list(w.feed_sources)          # 第 6 节会把来源换成替身，第 9 节要还原
 check("顺序：混流 / IT之家 / V2EX / linux.do / 知乎 / 微博 / 示例", keys == EXPECT_KEYS, keys)
 check("默认落在混流上", w.feed_source().key == "mix", w.feed_source().key)
-check("启动时按 config 里记的来源恢复（没记过就是混流）",
-      STARTUP_SOURCE == (REMEMBERED_SOURCE or "mix"), (STARTUP_SOURCE, REMEMBERED_SOURCE))
+check("启动时按 config 里记的来源恢复（没记过、或记的那个这次没登记，就是混流）",
+      STARTUP_SOURCE == (REMEMBERED_SOURCE if REMEMBERED_SOURCE in keys else "mix"),
+      (STARTUP_SOURCE, REMEMBERED_SOURCE, keys))
 
 print("\n=== 2. 混流：活着的来源都在第一页，挂了的只写页脚 ===")
 w.enter_feed_mode()
@@ -180,16 +181,31 @@ w.feed_cycle_source(1)
 pump(lambda: not w.feed_busy)
 check("轮回到混流", w.feed_source().key == "mix", w.feed_source().key)
 
-print("\n=== 4. 栏目：只有一栏的来源按 , 不动（不是坏了）===")
+print("\n=== 4. 栏目：多栏的来源按 , 能换，只有一栏的按了不动 ===")
 while w.feed_source().key != "zhihu":
     w.feed_cycle_source(1)
     pump(lambda: not w.feed_busy)
-before = (w.feed_nav.channel, len(w.feed_nav.posts))
+before = w.feed_nav.channel
+check("知乎的栏目是 热榜 / 推荐 / 关注（真人反馈过'只有热榜'）",
+      list(w.feed_source().channels()) == ["热榜", "推荐", "关注"],
+      w.feed_source().channels())
 w.on_feed_key(Qt.Key_Comma)
-time.sleep(0.3)
-qapp.processEvents()
-check("知乎只有热榜一栏，按 , 后栏目和内容都没变",
-      (w.feed_nav.channel, len(w.feed_nav.posts)) == before, (w.feed_nav.channel, before))
+pump(lambda: not w.feed_busy)
+check("按 , 换了栏目（热榜 → 上一栏 关注；, 是往前、. 是往后）",
+      w.feed_nav.channel != before and w.feed_nav.channel in w.feed_source().channels(),
+      (before, w.feed_nav.channel))
+# 推荐那栏探针里没有夹具，取不到是正常的；要验的是"栏目换过去了、页脚说实话"，不是空白
+check("换到没夹具的那栏：页脚/列表如实说取不到，而不是假装成功",
+      bool(w.feed_nav.posts) or "推荐" in w.feed_status_text() or "取" in w.feed_status_text(),
+      (w.feed_status_text()[:48], len(w.feed_nav.posts)))
+for _ in range(3):                      # 转回热榜：后面几节都还要用它
+    if w.feed_nav.channel == "热榜":
+        break
+    w.on_feed_key(Qt.Key_Comma)
+    pump(lambda: not w.feed_busy)
+check("按 , 转三下能转回热榜（三栏是闭环的）", w.feed_nav.channel == "热榜", w.feed_nav.channel)
+pump(lambda: bool(w.feed_nav.posts) and not w.feed_busy)
+check("回到热榜后列表又有了", len(w.feed_nav.posts) > 0, len(w.feed_nav.posts))
 check("栏目停在一个真实存在的值上（不再显示不存在的'全部'）",
       w.feed_nav.channel in w.feed_source().channels(), w.feed_nav.channel)
 while w.feed_source().key != "ithome":
@@ -491,19 +507,35 @@ check("进出社区页之后，书页排版一模一样（字体/行距/缩进/�
       snap_layout() == _layout_before, (_layout_before, snap_layout()))
 
 w.config["feed_font_size"] = 22
-w.config["feed_font_family"] = w.config.get("font_family")
+# 字体故意换一个**跟书页不一样**的：以前这里写的是 `= 书页字体`，于是"社区页字体漏到书页上"
+# 这一类 bug 探针根本看不见（两边同名，比也白比）。真人报的就是"退出后正文变成社区页那个字体"。
+w.config["feed_font_family"] = "Courier New"
 w.enter_feed_mode()
 pump(lambda: w.feed_nav.posts and not w.feed_busy)
 check("社区页字号跟着 feed_font_size 走", w.text_edit.font().pointSizeF() == 22.0,
       w.text_edit.font().pointSizeF())
+check("社区页字体/字号真的换成了自己那套（不是跟书页同名才看着一样）",
+      w.text_edit.font().family() == "Courier New"
+      and w.text_edit.document().defaultFont().family() == "Courier New",
+      (w.text_edit.font().family(), w.text_edit.document().defaultFont().family()))
 check("社区页 HTML 那一层的字号也换了（两处不能各说各话）",
       w.feed_theme()["size"] == 22, w.feed_theme()["size"])
 w.exit_feed_mode(reason="probe")
 pump(lambda: w.text_edit.toPlainText()[:12] == LAYOUT_TEXT[:12], 5.0)
 qapp.processEvents()
+_book_size = int(w.config.get("font_size", 14))
+_book_fam = w.config.get("font_family")
 check("社区页字号再大，书页字号一个字都没动",
-      int(w.text_edit.font().pointSizeF()) == int(w.config.get("font_size", 14)),
+      int(w.text_edit.font().pointSizeF()) == _book_size,
       (w.text_edit.font().pointSizeF(), w.config.get("font_size")))
+check("社区页换过字体，书页的字体也得原样回来（控件字体 + 文档默认字体都要）",
+      w.text_edit.font().family() == _book_fam
+      and w.text_edit.document().defaultFont().family() == _book_fam
+      and int(w.text_edit.document().defaultFont().pointSizeF()) == _book_size,
+      (w.text_edit.font().family(), w.text_edit.document().defaultFont().family(),
+       w.text_edit.document().defaultFont().pointSizeF()))
+check("退出之后书页排版仍然逐项一致（字体/行距/缩进/页边距/页底）",
+      snap_layout() == _layout_before, (_layout_before, snap_layout()))
 w.config.pop("feed_font_size", None)
 w.config.pop("feed_font_family", None)
 
