@@ -4734,8 +4734,12 @@ class StealthReader(QWidget):
         return None
 
     def feed_click(self, pos, force=False):
-        """鼠标点在社区页上：**列表里点一下就直接进去**；详情里点评论 = 选中，
-        再点同一条 = 折叠/展开。
+        """鼠标点在社区页上：**点一下就到**——列表里点帖子就进去，详情里点评论就折叠/展开。
+
+        以前详情的写法是"第一次只换选中、再点同一条才折叠"，真人一句话点破：
+        "折叠和展开都需要点两次，一次就好了"。这套双击语义是从 reddit 网页搬来的，
+        但这个窗口不是网页：选中是一个看不见的状态（只有字色变一点），人点一下没反应
+        只会再点一次，还以为是坏了。现在点评论 = 折叠/展开（顺带把它变成当前条目）。
 
         这里以前是"单击只换选中、再单击才进去"，reddit 网页确实是这样，但在这个窗口里
         它是错的：列表本身就是滚动的一整页，单击换选中会顺手把页面滚一下（见 feed_ensure_visible），
@@ -4772,12 +4776,9 @@ class StealthReader(QWidget):
             except ValueError:
                 return False
         if kind == "comment":
-            # 评论：点当前这条 = 折叠/展开；点别的 = 只换选中（不跳页）
-            if force or cur_sel is obj:
-                return self.feed_toggle_collapse()
-            self.feed_highlight()
-            self.update_review_bar()
-            return True
+            # 评论：点一下就是折叠/展开（"一次就好了"）。光标已经在别的条目上也一样——
+            # `feed_click` 开头已经把被点的那条设成了当前条目。
+            return self.feed_toggle_collapse()
         # 列表：一下就到（force 也就是"双击"，走同一条路，不重复动作）
         return self.feed_open()
 
@@ -6844,7 +6845,7 @@ class StealthReader(QWidget):
             self.save_window_pos()
             return True
         if self.feed_mode:
-            # 社区页：列表单击就进详情、评论单击选中再点折叠（见 feed_click）。划到了字就仍然算"选字复制"，
+            # 社区页：列表单击就进详情、评论单击就折叠/展开（见 feed_click）。划到了字就仍然算"选字复制"，
             # 交给原来的划选路径——工位上想抄一段走，这条不能堵。
             if (event.button() == Qt.LeftButton
                     and not self.text_edit.textCursor().hasSelection()

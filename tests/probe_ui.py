@@ -1196,6 +1196,25 @@ if _pick:
     _y2 = w._feed_comment_y(_c)
     check("再点展开：也留在原地", _y2 is not None and abs(_y2 - _y0) <= 4, (_y0, _y2))
 
+# 点一下就折叠（以前是"第一次只换选中、再点一次才折叠"，真人："一次就好了"）
+w.feed_nav.collapsed = set()
+w.render_feed()
+_settle()
+_first, _d1, _p1 = w.feed_nav.visible_comments()[0]
+_cursor0 = None
+for _obj, _kind, _cur in w.feed_item_blocks():
+    if _obj is _first:
+        _cursor0 = _cur
+        break
+check("找得到第一条评论在屏幕上的位置", _cursor0 is not None, _cursor0)
+if _cursor0 is not None:
+    _pt = w.text_edit.cursorRect(_cursor0).center()
+    check("点一下就折叠（不用点两次）",
+          w.feed_click(_pt) is True and _first.id in w.feed_nav.collapsed,
+          w.feed_nav.collapsed)
+    check("再点一下就展开", w.feed_click(_pt) is True
+          and _first.id not in w.feed_nav.collapsed, w.feed_nav.collapsed)
+
 w.feed_sources = list(ORIG_SOURCES)          # 把第 6 节换掉的替身来源还原回来
 w.feed_source_i = [i for i, s in enumerate(w.feed_sources) if s.key == "demo"][0] \
     if any(s.key == "demo" for s in w.feed_sources) else 0

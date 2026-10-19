@@ -624,6 +624,7 @@ class ZhihuSource(RealSource):
     ANSWERS_LIMIT = 6
     # 只有前几条回答去拉"它自己的评论"：一条回答一次请求，全拉一遍要去十几次。
     ANSWERS_WITH_COMMENTS = 3
+    CHILD_COMMENTS_LIMIT = 4     # 每条评论再带几条子评论（知乎只有两层）
     ANSWER_COMMENTS_LIMIT = 8
     # 一条回答最多摆多少块（一块 = 一个段落或一张图）。
     # **帖子正文那一份不设小上限**：真人要的就是"能读完一条长回答"，按 40 块截断等于又省略了
@@ -869,9 +870,51 @@ class ZhihuSource(RealSource):
         self._ans[key] = (item, _zhihu_why(why) if why else "", time.time())
         return self._ans[key][0], self._ans[key][1]
 
-    def _answer_comments(self, aid, limit=None):
+    def _child_comments(self, cid, limit=None):
+        """一条评论底下的**子评论**（第二层）。
+
+        知乎只有两层：评论 → 子评论；再往里的回复是被摊平到同一层、用 `@某人` 开头的，
+        所以这里最多再取一层就够了（取太多层反而每次都要多好几个请求）。
+        接口实测：`/api/v4/comments/<cid>/child_comments?limit=N&offset=0`（2026-10-19）。
+        """
+        cid = str(cid)
+        key = "cc:" + cid
+        hit = None if feed_net.is_fresh() else self._ans.get(key)
+        if hit is not None:
+            items, _why, when = hit
+            if items or (time.time() - when) < self.RETRY_AFTER:
+                return list(items)
+        limit = int(limit or self.CHILD_COMMENTS_LIMIT)
+        url = ("%s/api/v4/comments/%s/child_comments?limit=%d&offset=0"
+               % (self.base_url, cid, limit))
+        out = []
+        try:
+            data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎子评论",
+                                      headers={"x-requested-with": "fetch"},
+                                      timeout=LIST_TIMEOUT)
+        except Exception:
+            data = {}
+        rows = (data or {}).get("data") if isinstance(data, dict) else None
+        for i, it in enumerate([r for r in (rows or []) if isinstance(r, dict)]):
+            body = feed_mod.blocks_from_html(str(it.get("content") or ""), max_blocks=4)
+            if not body:
+                continue
+            out.append(Comment(
+                cid=str(it.get("id") or ("zcc%d" % i)),
+                author=_zhihu_name(it.get("author")) or "匿名",
+                created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
+                score=int(it.get("vote_count") or it.get("like_count") or 0),
+                body=body,
+            ))
+        self._ans[key] = (out, "", time.time())
+        return out
+
+    def _answer_comments(self, aid, limit=None, children=True):
         """一条回答底下的评论（知乎的"评论"就是这一层，挂在回答下面当子节点）。
 
+        `children=True` 时再给前几条有回复的评论各取一层子评论（真三层树：
+        回答 → 评论 → 子评论）。问题页那种"一屏摆 6 条回答"的场景传 `children=False`：
+        那里要的是广度，为每条回答再补子评论只会把一页拖成十几秒。
         `author` 是 `{role, member:{name}}` 那种嵌一层的形状，`_zhihu_name` 认得出。
         """
         aid = str(aid).lstrip("a")
@@ -883,7 +926,7 @@ class ZhihuSource(RealSource):
                 return list(items)
         limit = int(limit or self.ANSWER_COMMENTS_LIMIT)
         url = ("%s/api/v4/answers/%s/comments?limit=%d&offset=0&order=normal"
-               "&include=data[*].content,like_count,created_time,author.name"
+               "&include=data[*].content,like_count,created_time,author.name,child_comment_count"
                % (self.base_url, aid, limit))
         out = []
         try:
@@ -892,18 +935,50 @@ class ZhihuSource(RealSource):
                                       timeout=LIST_TIMEOUT)
         except Exception:
             data = {}
-        rows = (data or {}).get("data") if isinstance(data, dict) else None
-        for i, it in enumerate([r for r in (rows or []) if isinstance(r, dict)]):
+        rows = [r for r in ((data or {}).get("data") or []) if isinstance(r, dict)]
+        out = []
+        built = {}
+        for i, it in enumerate(rows):
             body = feed_mod.blocks_from_html(str(it.get("content") or ""), max_blocks=6)
             if not body:
                 continue
-            out.append(Comment(
+            c = Comment(
                 cid=str(it.get("id") or ("zc%d" % i)),
                 author=_zhihu_name(it.get("author")) or "匿名",
                 created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
                 score=int(it.get("vote_count") or it.get("like_count") or 0),
                 body=body,
-            ))
+            )
+            out.append(c)
+            built[i] = c
+        if children and built:
+            # 这份接口**不给** `child_comment_count`（字段清单里根本没有），所以没法"只问有回复的"：
+            # 老老实实给前三条各问一次子评论，问空就是没有（三个请求并发，约 200 毫秒）。
+            need = []
+            for i in sorted(built):
+                cid = str(rows[i].get("id") or "") if i < len(rows) else ""
+                if cid:
+                    need.append((i, cid))
+            need = need[:3]              # 一页只补前三条：再多就是拿等待换密度
+            if need:
+                got = {}
+
+                def one(idx, cid):
+                    try:
+                        got[idx] = self._child_comments(cid)
+                    except Exception:
+                        got[idx] = []
+
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(3, len(need))) as ex:
+                    for _f in [ex.submit(one, i, c) for i, c in need]:
+                        try:
+                            _f.result(timeout=15)
+                        except Exception:
+                            pass
+                for idx, reps in got.items():
+                    if idx in built and reps:
+                        built[idx].replies = reps
         self._ans[key] = (out, "", time.time())
         return out
 
@@ -975,7 +1050,7 @@ class ZhihuSource(RealSource):
         if need:
             def _one(idx, aid0):
                 try:
-                    got[idx] = self._answer_comments(aid0)
+                    got[idx] = self._answer_comments(aid0, children=False)
                 except Exception:
                     got[idx] = []
 
@@ -2218,15 +2293,26 @@ def build_real_sources(cache_root=None, config=None, log=None):
         # 微博不在默认里：它的风控最紧，属于"单独开关"那一档。
         # NGA 和 小红书 也在默认里：它们确实要 Cookie，但没配的时候页脚会照实说
         # "这个来源要 Cookie"，不会假装成功——比"藏起来让人找不到"更好解释。
-        enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu"]
+        enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu",
+                   "github", "medium", "sst"]
     elif not isinstance(enabled, list):
         enabled = [str(enabled)]
+
+    # 订阅式来源单独住一个文件（feed_more.py）：它们没有评论、没有 Cookie，
+    # 跟论坛接口那一套不是一类东西。导入失败只影响这三家，不影响别的来源。
+    try:
+        import feed_more
+        extra = (("github", feed_more.GithubTrendingSource),
+                 ("medium", feed_more.RssSource),
+                 ("sst", feed_more.SstSource))
+    except Exception:
+        extra = ()
 
     made = []
     for key, cls in (("ithome", IthomeSource), ("v2ex", V2exSource),
                      ("linuxdo", DiscourseSource), ("zhihu", ZhihuSource),
                      ("weibo", WeiboSource), ("nga", NgaSource), ("xhs", XhsSource),
-                     ("hupu", HupuSource)):
+                     ("hupu", HupuSource)) + extra:
         if key not in enabled:
             continue
         cred = auth.get(key) if isinstance(auth.get(key), dict) else {}

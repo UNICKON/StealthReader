@@ -93,7 +93,7 @@ comments(post, cursor) -> [Comment]        # 树状评论（拍平后按 parent 
 
 | 级别 | 来源 | 依赖 |
 |---|---|---|
-| A 免登录 | IT之家、V2EX（公开 API）、linux.do（RSS/公开 JSON）、知乎**热榜** | 无 |
+| A 免登录 | IT之家、V2EX（公开 API）、linux.do（RSS/公开 JSON）、知乎**热榜**、GitHub 热榜（抓页面 + README）、Medium（出版物流 + 标签流）、SST 博客（抓页面） | 无 |
 | B 要 Cookie | 知乎回答与评论、NGA、Chiphell、微信读书 | Cookie |
 | C 风控最紧 | 微博、小红书 | Cookie + 前端签名，放最后，单独开关 |
 
@@ -812,7 +812,7 @@ TouchFish 那边是这么做的：**每个站一个"当前板块"配置项 + 一
   A 轮的夹具是手写的（`feed_demo/posts.json`），B 轮起换成真实响应存下来的夹具。
   **E 轮起探针与夹具都进仓库**（`tests/`），所以"零网络"是可复现、可回归的：
   `probe_sources.py` / `probe_ui.py` / `probe_weread.py` 开头就把 `requests` 换成抛异常。
-  现状：`probe_sources.py` 262 项、`probe_ui.py` 133 项、`probe_weread.py` 47 项，全过（数目随轮次增，见各轮验收）。
+  现状：`probe_sources.py` 284 项、`probe_ui.py` 136 项、`probe_weread.py` 47 项，全过（数目随轮次增，见各轮验收）。
 - 网络路径只做一次手动"真实拉取"冒烟；失败必须降级到缓存并给出可见提示。
 - 排版、老板键、偷瞄、防截屏沿用现有探针回归（一条都不能退）。
 
@@ -886,6 +886,58 @@ TouchFish 那边是这么做的：**每个站一个"当前板块"配置项 + 一
 
 验收：`probe_ui.py` **133 项**（+5：这页真的能滚、视口里挑得到一条、折叠后它还在原来的高度、
 折叠确实生效、再展开也留在原地），`probe_sources.py` 262 项、`probe_weread.py` 47 项，全过。
+
+### U 轮（折叠一次就够 / 真三层子评论 / GitHub 热榜 + Medium + SST）
+
+真人三句话："折叠和展开都需要点两次，一次就好了"、"好像没有支持多层级的子评论，怎么做比较好"、
+"添加 github 热榜和 medium 支持，添加 sst 流内容的支持"。
+
+**① 折叠一次就够。** `feed_click` 里原来要求"这一条已经选中了（`cur_sel is obj`）"才折叠，
+第一次点只是把它设成选中——所以每条都要点两下。现在评论分支**只看点没点在这一条上**，
+直接 `feed_toggle_collapse()`；页脚那行"点开/收起"的提示也跟着删了（前端不放说明性文字）。
+探针里补了一次点就折叠、再点就展开两条。
+
+**② 多层级子评论。** 渲染层和导航层本来就是递归的（`render_comment_tree` 按 `COMMENT_INDENT`
+缩进、`visible_comments` 按深度优先走、折叠收整棵子树），缺的是**有来源真的给第二层**：
+
+- 知乎只有两层——评论 → 子评论；再往里的回复被它摊平到同一层、用 `@某人` 开头。所以
+  "多层级"在知乎这里最多做到"回答 → 评论 → 子评论"这三档。
+- 子评论接口实测：`/api/v4/comments/<cid>/child_comments?limit=N&offset=0`（HTTP 200，
+  `data[i].content` 是正文 HTML）。**回答评论那份接口不给 `child_comment_count`**（字段清单里
+  根本没有），所以没法"只问有回复的"：给前三条各问一次（三个请求并发，约 200 毫秒），
+  问空就是没有。一条回答实测 8 条评论、前三条各 4 条子评论。
+- 问题页（一屏 6 条回答那种）传 `children=False`：那里要的是广度，为每条回答再补子评论
+  只会把一页拖成十几秒。
+- 探针里造了一棵真三层的夹具：深度是 `甲(0) → 丙(1) → 乙(0)`，收掉甲之后丙跟着不显示。
+
+**③ GitHub 热榜。** `api.github.com` 在这台机器上是 **403（限流）**，所以热榜直接读
+`https://github.com/trending?since=daily|weekly|monthly` 那一页的 `<article class="Box-row">`
+（实测 14 行，约 600 KB），正文是仓库 README：
+`raw.githubusercontent.com/<owner>/<repo>/HEAD/README.md`（免登录、不限流；根 README 只有一行
+指向真正的 README 时跟着再取一次）。Markdown 自己转块：标题/段落/列表/引用/代码块/图片，
+徽章（`[![build](badge)](link)`）压成空串自然消失，`&middot;` 这类实体解开。
+仓库没有"评论"，`comments()` 返回空列表——界面不画评论那一块（不是"加载失败"）。
+
+**④ Medium。** 官方标签流（`medium.com/feed/tag/xxx`）**只给摘要**：`<item>` 里没有
+`content:encoded`，正文页 `medium.com/@user/slug` 直接 403，几个镜像也不可用
+（scribe.rip 超时、freedium.cfd 证书错、md.dhr.wtf 直接断）。能用的是**出版物流**：
+`betterprogramming.pub/feed` 带 `content:encoded`（第一条 8300 字）。所以 Medium 这个来源
+四个板块一半全文、一半摘要：只给摘要的那种，正文末尾补一行**原文地址**（是地址，不是说明文字）。
+
+**⑤ SST。** `sst.dev` 没有订阅地址：`/rss.xml` `/feed.xml` `/atom.xml` `/feed` `/rss` 都返回
+Astro 的 HTML 页面，`/blog/rss.xml` 这类是 403；页面里也没有 `<link rel="alternate">`。
+所以按结构抓：列表页的 `<a href="/blog/<slug>">标题</a>` 就是一条（顺序即页面顺序），
+文章页的正文在 Starlight 的 `.sl-markdown-content` 那个 `div` 里（按 `<div` / `</div>`
+配对取到闭合标签，别把旁边的导航一起端进来），标题取 `<h1>` 去掉 ` | SST` 尾巴。
+
+**⑥ 三家都进默认混流。** 混流按"每页席位"分（来源越多每家越少），所以 GitHub/SST 那种
+没有时间戳的（`ts=0`，不编时间）会排在后面几页；冷启动仍由 V2EX 那 6 秒超时决定（老问题）。
+Medium 的流本身慢（实测首次 5.9 秒，`betterprogramming.pub` → `medium.com` 一跳），
+后面 5 分钟走缓存。
+
+验收：`probe_sources.py` **284 项**（+22：RSS 全文/摘要与实体、Atom 的 href 与 author、
+SST 列表与正文 div、GitHub 行解析与 README 转块、订阅源诚实空评论、知乎两层子评论夹具）、
+`probe_ui.py` **136 项**（+3：点一下就折叠、再点一下就展开）、`probe_weread.py` 47 项，全过。
 
 ## 10. 我替你定的、你可能想改的
 

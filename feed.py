@@ -209,6 +209,15 @@ def parse_time(value):
             return dt.astimezone().timestamp()
         except Exception:
             continue
+    # 订阅流（RSS 2.0 / Atom）的日期是 RFC 822 那种写法：`Mon, 19 Oct 2026 08:38:36 GMT`。
+    # 交给标准库解——自己写 strptime 表会漏掉时区名和两位数年份。
+    try:
+        import email.utils
+        dt = email.utils.parsedate_to_datetime(text)
+        if dt is not None:
+            return dt.timestamp()
+    except Exception:
+        pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(text, fmt).timestamp()

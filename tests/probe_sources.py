@@ -357,7 +357,8 @@ else:
 print("\n=== 7. 来源登记（默认 / 单独开关 / 全关）===")
 made = feed_sources.build_real_sources(cache_root=TMP_CACHE, config={}, log=None)
 check("默认：混流 + 免登录的和要 Cookie 的都在，微博默认关",
-      [s.key for s in made] == ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu"],
+      [s.key for s in made] == ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs",
+                               "hupu", "github", "medium", "sst"],
       [s.key for s in made])
 check("每个来源都有 label / channels / image_base",
       all(s.label and isinstance(s.channels(), list) and isinstance(s.image_base(), str)
@@ -1428,6 +1429,141 @@ check("按 R 刷新时这一趟不吃缓存，刷新完立刻恢复",
       (_plain, _fresh, _back))
 check("刷新开关是线程本地的：别的线程照常吃缓存（不会顺手把图片也一起打穿）",
       _res.get("v") == {"v": 1}, _res)
+
+
+# ---------------------------------------------------------------- 订阅式来源（批次 U）
+print("\n=== 12. 订阅式来源：RSS / SST / GitHub 热榜 ===")
+import feed_more as _more
+
+_RSS = ('<?xml version="1.0"?><rss version="2.0" '
+        'xmlns:content="http://purl.org/rss/1.0/modules/content/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>t</title>'
+        '<item><title><![CDATA[全文章节]]></title><link>https://example.com/a</link>'
+        '<guid>x-1</guid><pubDate>Mon, 19 Oct 2026 08:38:36 GMT</pubDate>'
+        '<dc:creator><![CDATA[张三]]></dc:creator><category>python</category>'
+        '<content:encoded><![CDATA[<h2>小标题</h2><p>正文第一段 &amp; 实体</p>]]>'
+        '</content:encoded><description><![CDATA[摘要而已]]></description></item>'
+        '<item><title>只有摘要</title><link>https://example.com/b</link><guid>x-2</guid>'
+        '<description><![CDATA[<p>这是摘要，不是全文</p>]]></description></item>'
+        '</channel></rss>')
+_ATOM = ('<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">'
+         '<title>t</title><entry><title>Atom 一条</title><id>y-1</id>'
+         '<link rel="alternate" href="https://example.com/c"/>'
+         '<updated>2026-10-19T08:00:00Z</updated><author><name>李四</name></author>'
+         '<content type="html">&lt;p&gt;Atom 正文&lt;/p&gt;</content></entry></feed>')
+
+_items = _more.parse_feed(_RSS.encode("utf-8"))
+check("RSS：两条都解析出来", len(_items) == 2, len(_items))
+check("RSS：标题/链接/作者/分类都对",
+      _items[0]["title"] == "全文章节" and _items[0]["link"] == "https://example.com/a"
+      and _items[0]["author"] == "张三" and _items[0]["tags"] == ["python"],
+      {k: _items[0][k] for k in ("title", "link", "author", "tags")})
+check("RSS：带 content:encoded 的算全文，只有 description 的算摘要",
+      _items[0]["full"] is True and _items[1]["full"] is False,
+      (_items[0]["full"], _items[1]["full"]))
+_atom = _more.parse_feed(_ATOM.encode("utf-8"))
+check("Atom：rel=alternate 的 href 当链接、author/name 当作者",
+      bool(_atom) and _atom[0]["link"] == "https://example.com/c"
+      and _atom[0]["author"] == "李四", _atom[0] if _atom else None)
+
+_rs = _more.RssSource(FakeHttp(bytes_routes={"example.com/feed": _RSS.encode("utf-8")}, cache=MemCache()),
+                      feeds=(("测试", "https://example.com/feed"),), key="t", label="测试")
+_rs.images_off = True
+_rp, _rn = _rs.list("测试", 0)
+check("订阅源：条数/标题/时间/地址", len(_rp) == 2 and _rp[0].title == "全文章节"
+      and _rp[0].ts > 0 and _rp[0].url.startswith("https://"),
+      [(p.title, p.ts, p.url) for p in _rp])
+check("订阅源：栏目就是它自己的订阅地址", _rs.channels() == ["测试"], _rs.channels())
+_rd, _ = _rs.detail(_rp[0])
+check("订阅源：全文那篇正文有内容，且不额外塞地址行",
+      any("正文第一段" in (b.text or "") for b in _rd.body)
+      and not any((b.text or "").endswith("example.com/a") for b in _rd.body),
+      [b.text[:24] for b in _rd.body])
+_rd2, _ = _rs.detail(_rp[1])
+check("订阅源：只有摘要的那篇，正文末尾补上原文地址",
+      any((b.text or "") == "https://example.com/b" for b in _rd2.body),
+      [b.text[:40] for b in _rd2.body])
+_cm, _why = _rs.comments(_rp[0])
+check("订阅源没有评论：返回空列表（界面不会画评论那一块）", _cm == [] and _why == "",
+      (_cm, _why))
+
+_GH = ('<article class="Box-row"><h2 class="h3 lh-condensed">'
+       '<a href="/acme/rocket"><span>acme/rocket</span></a></h2>'
+       '<p class="col-9 color-fg-muted my-1 pr-4">A tiny rocket &amp; tools.</p>'
+       '<span itemprop="programmingLanguage">Rust</span>'
+       '<a href="/acme/rocket/stargazers" class="x"><svg></svg> 12,345</a>'
+       '<a href="/acme/rocket/forks" class="x"><svg></svg> 678</a>'
+       '<span> 1,234 stars today </span></article>')
+_README = ("# Title\n\nSome text &middot; more\n\n- item one\n- item two\n\n"
+           "```\ncode block\n```\n")
+_gh = _more.GithubTrendingSource(FakeHttp(
+    bytes_routes={"trending": _GH.encode("utf-8"), "README.md": _README.encode("utf-8")},
+    cache=MemCache()))
+_gh.images_off = True
+_gp, _gn = _gh.list("今日", 0)
+check("GitHub 热榜：仓库名/今日星/语言/总星都对",
+      len(_gp) == 1 and _gp[0].title == "acme/rocket" and _gp[0].score == 1234
+      and _gp[0].tags[:2] == ["Rust", "12,345 star"],
+      (_gp[0].title, _gp[0].score, _gp[0].tags) if _gp else None)
+check("GitHub 热榜：摘要把 &amp; 解开了", _gp and _gp[0].excerpt == "A tiny rocket & tools.",
+      _gp[0].excerpt if _gp else None)
+_gd, _ = _gh.detail(_gp[0])
+check("GitHub 正文：README 的标题/段落/列表/代码块都成了块",
+      [b.kind for b in _gd.body][:5] == ["h", "p", "list", "list", "code"],
+      [b.kind for b in _gd.body])
+check("GitHub 正文：&middot; 这种实体解成文字",
+      any("·" in (b.text or "") for b in _gd.body), [b.text for b in _gd.body][:3])
+check("GitHub 热榜没有评论", _gh.comments(_gp[0])[0] == [] and _gh.comments(_gp[0])[1] == "")
+
+_SST_LIST = (b'<a href="/blog/first-post">First post</a>'
+             b'<a href="/blog/second-post">Second post</a><a href="/blog/">Blog</a>')
+_SST_POST = ('<html><head><meta property="og:title" content="First post | SST"></head><body>'
+             '<main><div class="sl-markdown-content astro-x"><p>正文一段。</p>'
+             '<h2>小节</h2><p>又一段。</p></div>'
+             '<div class="sl-markdown-content-other">不该进来的东西</div></main></body></html>')
+_sst = _more.SstSource(FakeHttp(
+    bytes_routes={"first-post": _SST_POST.encode("utf-8"),
+                  "sst.dev/blog/": _SST_LIST}, cache=MemCache()))
+_sst.images_off = True
+_sp, _ = _sst.list("博客", 0)
+check("SST：列表只认 /blog/<slug>（导航里的 /blog/ 不算一条）",
+      [p.id for p in _sp] == ["first-post", "second-post"], [p.id for p in _sp])
+_sd, _ = _sst.detail(_sp[0])
+check("SST：标题去掉 ' | SST' 尾巴", _sd.title == "First post", _sd.title)
+_sdt = " ".join(b.text or "" for b in _sd.body)
+check("SST：正文只取 .sl-markdown-content 那个 div",
+      "正文一段" in _sdt and "不该进来的" not in _sdt, _sdt[:60])
+check("SST 没有评论", _sst.comments(_sp[0])[0] == [])
+
+# 知乎：评论底下再一层子评论（真三层树的第二层）
+_ZC_PARENT = {"data": [
+    {"id": 11, "content": "<p>父评论</p>", "author": {"name": "甲"},
+     "created_time": 1700000000, "vote_count": 3},
+    {"id": 12, "content": "<p>第二条父评论</p>", "author": {"name": "乙"},
+     "created_time": 1700000000}]}
+_ZC_CHILD = {"data": [
+    {"id": 111, "content": "<p>子评论一</p>", "author": {"name": "丙"},
+     "created_time": 1700000000}]}
+_zc = feed_sources.ZhihuSource(FakeHttp({
+    "answers/9/comments": _ZC_PARENT,          # 注意：`a9` 会被 lstrip("a") 成 `9`
+    "comments/11/child_comments": _ZC_CHILD}, cache=MemCache()), {"cookie": "x"})
+_zc.images_off = True
+_zrows = _zc._answer_comments("a9")
+check("知乎：回答的评论能带出一层子评论",
+      len(_zrows) == 2 and len(_zrows[0].replies) == 1 and _zrows[0].replies[0].author == "丙",
+      [(c.author, len(c.replies)) for c in _zrows])
+check("知乎：没有子评论的那条就是空列表（不塞占位）", _zrows[1].replies == [],
+      _zrows[1].replies)
+_check = feed_mod.FeedNav()
+_check.set_detail(feed_mod.Post(source="zhihu", pid="a9", title="t"), _zrows)
+_depths = [d for _c, d, _p in _check.visible_comments()]
+check("知乎：三层树在导航里是 甲(0) → 丙(1) → 乙(0)（深度优先，子评论真缩进一层）",
+      _depths == [0, 1, 0], _depths)
+_check.collapsed.add(_zrows[0].id)
+check("收掉父评论：它下面那条子评论也跟着不显示（子树一起收）",
+      [c.id for c, _d, _p in _check.visible_comments()] == ["11", "12"],
+      [c.id for c, _d, _p in _check.visible_comments()])
+
 
 # ---------------------------------------------------------------- 收尾
 shutil.rmtree(TMP_CACHE, ignore_errors=True)
