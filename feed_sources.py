@@ -290,8 +290,9 @@ class IthomeSource(RealSource):
         ui = c.get("userInfo") or {}
         text = "".join(str(e.get("content") or "") for e in (c.get("elements") or [])
                        if isinstance(e, dict)).strip()
-        blocks = [Block(kind=BLOCK_P, text=text)] if text else \
-                 [Block(kind=BLOCK_P, text="（这条评论只有图片或表情）")]
+        # 正文为空（只有图/表情）就干脆不摆正文：以前这里塞一句"（这条评论只有图片或表情）"，
+        # 那是给开发者看的注释，不是内容。真人说过前端不要这种话。
+        blocks = [Block(kind=BLOCK_P, text=text)] if text else []
         quotes = []
         for k in [x for x in (c.get("children") or []) if isinstance(x, dict)][:6]:
             kui = k.get("userInfo") or {}
@@ -301,9 +302,7 @@ class IthomeSource(RealSource):
                 quotes.append("「%s：%s」" % (kui.get("userNick") or "某人", kt))
         if quotes:
             blocks.append(Block(kind=BLOCK_QUOTE, text="\n".join(quotes)))
-        more = int(c.get("expandCount") or 0) - len(quotes)
-        if more > 0:
-            blocks.append(Block(kind=BLOCK_QUOTE, text="还有 %d 条回复没展开。" % more))
+        # 没展开的回复**不写"还有 N 条"**：那是说明文字，不是评论内容。数量在页脚/折叠角里体现。
         ts = feed_mod.parse_time(c.get("postTime"))
         return Comment(
             cid=str(c.get("id") or ("c%d" % i)),
@@ -460,7 +459,10 @@ class DiscourseSource(RealSource):
                 cover=self._cover(t.get("image_url")) if i < COVER_PER_PAGE else "",
                 excerpt=feed_mod.strip_html(t.get("excerpt") or ""),
                 url="%s/t/%s/%s" % (self.base_url, slug, pid),
-                tags=[str(x) for x in (t.get("tags") or [])],
+                # Discourse 的 tags 是对象（{id,name,slug}），`str(x)` 会把整个字典
+                # 摆到界面上（真人看到的是一串 "{'id': 26, ...}"）。这里只取名字。
+                tags=[str(x.get("name") or x.get("slug") or "") if isinstance(x, dict)
+                      else str(x) for x in (t.get("tags") or [])],
             ))
         posts = [p for p in posts if p.title]
         # API 把置顶公告排在数组最前，而置顶公告的 last_posted_at 可能停在很多年前
@@ -775,30 +777,20 @@ class ZhihuSource(RealSource):
         if self._is_answer_post(post):
             # 推荐/关注里点开的是一条回答：正文只摆**摘要**（真人要求缩略，不要全文），
             # 下面"评论"那一栏给的是同一个问题下别的回答的摘要。
-            body.append(Block(kind=BLOCK_P, text=(
-                out.excerpt or "（这条回答没给摘要）")))
-            body.append(Block(kind=BLOCK_QUOTE, text=(
-                "这里只摆摘要：一条回答动辄几千字，正式读还是按 O 打开原帖。"
-                "下面那一栏是同一个问题下其它回答的摘要，按 J/K 挑、回车展开。")))
+            # 正文只摆一句摘要：知乎一条回答动辄几千字，正式读还是开原帖。
             out.body = body
             return out, None
         answers, why = self._answers(str(post.id)) if self.has_auth else ([], "")
         if answers:
-            n_all = int(post.n_comments or 0)
-            body.append(Block(kind=BLOCK_P, text=(
-                "这个问题下有 %s 条回答，下面按知乎的默认排序列出前 %d 条，**每条只摆摘要**"
-                "（全文按 O 去原帖看）。" % (n_all if n_all else "若干", len(answers)))))
+            pass             # 回答在"评论"那一栏里，正文不再写一句说明
         elif not self.has_auth:
-            body.append(Block(kind=BLOCK_QUOTE, text=(
-                "知乎的回答要登录才给（这个接口回 401）。把浏览器 Cookie 贴进 feed_auth.json 的 "
-                "\"zhihu\"，回答就会出现在下面这一栏里。\n\n现在这里只放热榜页给出的问题摘要，"
-                "按 O 可以打开原帖看全文。")))
+            # 只留一句事实。以前这里是一大段"怎么配 Cookie / 按 O 看全文"，
+            # 那是说明书，不是帖子内容（真人：前端不要注释性语言）。
+            body.append(Block(kind=BLOCK_QUOTE, text="回答需要登录"))
         else:
-            body.append(Block(kind=BLOCK_QUOTE, text=(
-                "这次没拿到回答：%s\n\n按 R 可以重试；按 O 打开原帖看全文。" % (why or "没给原因"))))
+            body.append(Block(kind=BLOCK_QUOTE, text="回答没取到（%s）" % (why or "没给原因")))
         if out.excerpt and not _zhihu_junk_excerpt(out.excerpt):
-            # 标清楚它不是回答：真人不要的正是"拿问题内容冒充正文"
-            body.append(Block(kind=BLOCK_QUOTE, text="问题摘要（热榜页给的，不是回答）：%s" % out.excerpt))
+            body.append(Block(kind=BLOCK_QUOTE, text=out.excerpt))
         out.body = body
         return out, None
 
@@ -868,8 +860,7 @@ class ZhihuSource(RealSource):
                 author=_zhihu_name(it.get("author")) or "匿名",
                 created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
                 score=int(it.get("voteup_count") or 0),
-                body=[Block(kind=BLOCK_P, text=(
-                    self._excerpt_of(it) or "（这条回答没给摘要，按 O 去原帖看）"))],
+                body=[Block(kind=BLOCK_P, text=(self._excerpt_of(it) or ""))],
             ))
         return out, None
 
@@ -984,12 +975,8 @@ class WeiboSource(RealSource):
         body = []
         if out.score:
             body.append(Block(kind=BLOCK_P, text="热度 %s（微博热搜榜）" % feed_mod._num(out.score)))
-        note = ("微博的正文和评论要登录才给（移动端接口返回 432、网页接口要前端签名），"
-                "这里只给热搜词条。按 O 去微博搜这个词看原帖。")
-        if self.has_auth:
-            # 不替微博打包票：贴的 Cookie 能不能让正文接口放行，我没有实测过，就不写"能"或"不能"。
-            note += "（已经贴了 Cookie，但这一层还没接正文接口——它另外要前端签名，能不能过要单独试。）"
-        body.append(Block(kind=BLOCK_QUOTE, text=note))
+        # 微博只给热搜词条：正文接口要登录 + 前端签名，这一层没接（详情见 README）。
+        # 以前这里塞了一大段解释，属于"注释性语言进前端"，删掉；拿不到就是没有正文。
         out.body = body
         return out, None
 
@@ -1484,8 +1471,7 @@ def _xhs_comments(obj):
         if not isinstance(it, dict):
             continue
         blocks = feed_mod.blocks_from_html(it.get("content") or "", max_blocks=8)
-        if not blocks:
-            blocks = [Block(kind=BLOCK_P, text="（这条评论只有图片或表情）")]
+        # 同上：空正文就是空正文，不补说明句。
         subs = []
         for sub in (it.get("sub_comments") or []):
             if not isinstance(sub, dict):
@@ -1498,9 +1484,7 @@ def _xhs_comments(obj):
         if subs:
             # 子评论（回复）不多，直接并到同一条里，比另起一层好读
             blocks.append(Block(kind=BLOCK_QUOTE, text="\n".join(subs[:6])))
-        more = int(it.get("sub_comment_count") or 0) - len(subs)
-        if more > 0:
-            blocks.append(Block(kind=BLOCK_QUOTE, text="还有 %d 条回复没展开。" % more))
+        # 没展开的子评论不写"还有 N 条"（理由同 IT之家那条）。
         out.append(Comment(
             cid=str(it.get("id") or ("c%d" % i)),
             author=((it.get("user_info") or {}).get("nickname") or "").strip() or "某人",
@@ -1680,11 +1664,11 @@ class XhsSource(RealSource):
             if isinstance(img, dict) and (img.get("urlDefault") or img.get("url")):
                 parts.append('<img src="%s"/>' % (img.get("urlDefault") or img.get("url")))
         body = self._localize_images(feed_mod.blocks_from_html("".join(parts), max_blocks=20), limit=9)
+        # 评论由界面层单独渲染，**不往正文里写"评论在下面（N 条）"**：那是说明文字，
+        # 不是笔记内容（真人明确说过前端不要这种话）。取不到就留空，原因进日志。
         cmts, why = self._comments_of(post)
-        if cmts:
-            body.append(Block(kind=BLOCK_QUOTE, text="评论在下面（%d 条）。" % len(cmts)))
-        else:
-            body.append(Block(kind=BLOCK_QUOTE, text=why or "这条笔记的评论没取到。"))
+        if why:
+            self.last_error = "评论没取到：%s" % why
         out.body = body
         return out, None
 
@@ -1739,12 +1723,11 @@ class XhsSource(RealSource):
                 why = "这条笔记还没有评论。"
         except FeedNetError as e:
             if "406" in str(e):
-                why = ("小红书这次判了 406（签名没过），可能是它又换了口径。"
-                       "真要看评论按 O 去原页。")
+                why = "406（签名没过，它可能又换了口径）"
             else:
-                why = "小红书的评论没取到（%s）。真要看评论按 O 去原页。" % e
+                why = str(e)
         except Exception as e:                     # 签名/解析出问题也不能把正文一起弄没
-            why = "小红书的评论没取到（%s）。真要看评论按 O 去原页。" % str(e)[:80]
+            why = str(e)[:80]
         self._cmts[nid] = (out, why)
         return self._cmts[nid]
 
@@ -1946,11 +1929,9 @@ class HupuSource(RealSource):
             feed_mod.blocks_from_html(th.get("content") or "", max_blocks=60), limit=4)
         if th.get("title"):
             out.title = feed_mod.strip_html(th["title"]) or out.title
-        if not body:
-            # 视频帖/纯图帖：正文那栏是空的，照实说并把视频地址写出来（Qt 放不了视频）
-            note = "（这帖没有正文文字"
-            note += "，是一段视频：%s" % th["video"] if th.get("video") else ""
-            body = [Block(kind=BLOCK_QUOTE, text=note + "。按 O 打开原帖看。）")]
+        if not body and th.get("video"):
+            # 视频帖：Qt 放不了视频，就把地址摆出来（地址本身是内容，不是说明文字）。
+            body = [Block(kind=BLOCK_P, text=str(th["video"]))]
         out.body = body
         return out, None
 

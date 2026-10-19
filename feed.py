@@ -714,9 +714,75 @@ def _nl(text):
     return esc(text).replace("\n", "<br>")
 
 
+FEED_FONT_STACK = ('"Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", '
+                   '"Segoe UI", "Noto Sans CJK SC", sans-serif')
+FEED_SIZE_DEFAULT = 15          # 社区页自己的默认字号：一屏能放下七八条
+TITLE_CLIP = 62                 # 标题最多这么多字，再多截断（见 _clip）
+EXCERPT_CLIP = 78
+
+
+def _font_css(family):
+    """把字体名拼成能塞进 style 的一串。
+
+    社区页默认用**界面无衬线字体栈**，不跟书页走：书页是长文，字号大、常常是宋体；
+    同一套字号搬到列表上就是"每屏两条巨字"。真人说过"帖子太难看"，一半来自这儿。
+
+    引号一律换成单引号：双引号写在 HTML 属性里会被转义成 `&quot;`，Qt 解析 font-family
+    时会当场断掉，于是又退回控件字体（实测就是被 Courier New 带跑的那次）。
+    """
+    fam = str(family or "").replace('"', "'").replace(";", " ").replace("<", " ")
+    return fam.strip() or FEED_FONT_STACK
+
+
+def _clip(text, limit):
+    """压成一行、超长截断。
+
+    截断只发生在**渲染**这一侧，所以 `post_needle()` 用的是同一个 `_clip`——否则界面层
+    拿完整标题去文档里找，永远找不着，高亮和"点第几条"一起失效。
+    """
+    s = " ".join(str(text or "").split())
+    if len(s) <= limit:
+        return s
+    return s[:limit].rstrip("，。、；：,.;:!?！？ ") + "…"
+
+
+def _scale(theme):
+    """字号阶梯：全部由社区页自己那个字号推出来，一份数字管全文。
+
+    比例而不是固定加减：人把字号调到 18 时，标题跟着涨到 23、元信息涨到 13，
+    层级关系不变；要是写死 `size+5 / size-4`，字号一大层级就先塌了。
+    """
+    s = int(theme["size"])
+    return {
+        "title": s + max(3, int(round(s * 0.30))),
+        "head": s + 2,
+        "body": s,
+        "sub": max(11, s - 1),
+        "meta": max(10, int(round(s * 0.72))),
+    }
+
+
+def _line_color(c):
+    """细线的颜色：比正文弱很多，但**透明度不许跟着掉**（透明窗口上会整条消失）。"""
+    r, g, b, a = _toward_mid(c, 0.62)
+    return (r, g, b, max(150, a))
+
+
+def _hairline(theme, top=16, bottom=0):
+    """一条 1px 细线，用来分隔帖子卡片 / 正文与评论。
+
+    只有"高 1px 的表格单元格底色"这一种写法真的会被 Qt 画出来：`<hr>` 不吃主题色
+    （透明窗口上等于没有），`──────` 是字符画，字体一换就断成虚线（都实测过）。
+    """
+    return ('<table width="100%%" cellspacing="0" cellpadding="0" border="0" '
+            'style="margin:%dpx 0 %dpx 0;"><tr><td style="height:1px; line-height:1px;'
+            ' font-size:1px; background-color:%s;">&nbsp;</td></tr></table>'
+            % (top, bottom, theme["line"]))
+
+
 def theme_from_config(cfg, width_px=420, text_color=None):
-    """把阅读器的排版设置折成渲染主题：社区页和书页**同一套字号/配色**，换字号、改透明度时
-    社区页跟着一起变——"接进现有排版"就是这个意思。
+    """把阅读器的排版设置折成渲染主题。**社区页有自己的字号和字体**（`feed_font_size` /
+    `feed_font_family`），不再拿书页那套顶上来——没配就用界面字体栈 + 15px。
 
     颜色一律从**正文此刻实际用的颜色**派生（`text_color` 由界面层传进来：auto/幽灵模式会把
     正文换成纯黑或纯白，透明窗口下这个值不能靠 config 猜）。派生规则只有一条：
@@ -729,17 +795,24 @@ def theme_from_config(cfg, width_px=420, text_color=None):
     两边的可读性都不塌。
     """
     p = _parse_color(text_color if text_color is not None else cfg.get("text_color"))
+    try:
+        size = int(cfg.get("feed_font_size") or 0)
+    except Exception:
+        size = 0
+    if not 11 <= size <= 22:                   # 没配、或者配了个不可能的数值
+        size = FEED_SIZE_DEFAULT
     return {
         "text": _rgba(p),
         "mark": _rgba(_toward_mid(p, -0.34)),      # 标题/强调：比正文更抢眼（浅色正文→更白）
         "dim": _rgba(_toward_mid(p, 0.24)),        # 次要信息（摘要）
         "faint": _rgba(_toward_mid(p, 0.42)),      # 更次要（时间、统计、来源）
-        "rule": _rgba(_toward_mid(p, 0.66)),       # 评论树的竖线
+        "rule": _rgba(_toward_mid(p, 0.66)),       # 旧版评论树的字符竖线（留作兼容）
+        "line": _rgba(_line_color(p)),             # 细线
         "accent": _rgba(_accent(p)),               # 来源名：色相偏蓝，亮度不动
-        "size": int(cfg.get("font_size", 14)),
-        "family": cfg.get("font_family", "Microsoft YaHei"),
+        "size": size,
+        "family": _font_css(cfg.get("feed_font_family")),
         "lowkey": bool(cfg.get("feed_lowkey", False)),
-        "width": max(200, int(width_px)),
+        "width": max(240, int(width_px)),
     }
 
 
@@ -808,20 +881,37 @@ def _num(n):
     return ("-" + s) if neg else s
 
 
-def _meta_line(post, theme):
-    """列表/详情的元信息行：来源（带色）+ 栏目 · 作者 · 时间。
+def _tag_text(tag):
+    """标签可能是字符串，也可能是来源自己的字典（V2EX 的节点就是 `{id,name,slug}`）。
 
-    分隔符用中点、不用全角空格：Qt 的 HTML 解析会把 `　` 折成半角空格，最后挤成一团；
-    中点既不会被折，也比空格更接近"reddit 那种一行信息"的读感。"""
+    以前直接把字典塞进 `esc()`，界面上会渲染出 `{'id': 26, 'name': 'emoji', ...}` 这种
+    原样字典——真人一眼就能看出是程序漏出来的东西。
+    """
+    if isinstance(tag, dict):
+        return str(tag.get("name") or tag.get("title") or tag.get("slug") or "").strip()
+    return str(tag or "").strip()
+
+
+def _meta_line(post, theme):
+    """一行元信息：来源（强调色）· 作者 · 时间 · 赞 / 评论数，最多四段。
+
+    以前赞和评论数单独压在卡片底部再打一行，两条帖子就是五六行小字，整屏全是灰点；
+    合成一行以后一屏能多看一条。**超过四段就截断**：知乎和 IT之家会把标签、阅读数一起塞
+    进来，不截的话这一行能比标题还长（实测那条有七段）。
+
+    分隔符用中点、不用全角空格：Qt 的 HTML 解析会把 `　` 折成半角空格，最后挤成一团。
+    """
     src = post.source_label or post.source
-    bits = [b for b in [post.channel, post.author, post.created] if b]
+    stat = []
+    if post.score:
+        stat.append("%s %s" % (_num(post.score), post.score_label or "赞"))
+    if post.n_comments:
+        stat.append("%s %s" % (_num(post.n_comments), post.comment_label or "条评论"))
+    tags = [x for x in (_tag_text(t) for t in list(post.tags or [])[:2]) if x]
+    bits = [b for b in [post.author, post.created] + stat + tags if b]
     head = f'<span style="color:{theme["accent"]};">{esc(src)}</span>' if src else ""
-    tail = " · ".join(esc(b) for b in bits)
-    # 标签（V2EX 的节点、微博的"新/热/爆"）用强调色跟在最后：这些是来源给的真信息，
-    # 拿到了就该显示，而不是收进对象里永远不露面。最多三条，别让元信息行比标题还长。
-    tags = " · ".join(f'<span style="color:{theme["accent"]};">{esc(t)}</span>'
-                      for t in (post.tags or [])[:3] if t)
-    return " · ".join([b for b in (head, tail, tags) if b])
+    tail = " · ".join(esc(b) for b in bits[:4])
+    return " · ".join([b for b in (head, tail) if b])
 
 
 def _img_tag(src, theme, max_w):
@@ -830,90 +920,79 @@ def _img_tag(src, theme, max_w):
 
 
 def render_list(posts, nav, theme):
-    """混流列表，按 reddit 那套版式语法排：
+    """混流列表：一条一段，靠留白和字号分层，卡片之间一条 1px 细线。
 
-        标题（加粗、比正文大 3px）
-        来源 · 栏目 · 作者 · 时间          ← 小一号、次要色
-        摘要                              ← 一行预览，正文色弱一档
-        [图]
-        428 赞 · 6 条评论                  ← 统计行压在卡片底部（reddit 的招牌就是它）
+        标题          比正文大 5px、加粗、强调色，最多两行（超了截断）
+        摘要          比正文小 1px、弱一档，两行以内
+        来源 · 作者 · 时间 · 428 赞 · 6 条评论      一行小字，压到最弱
+        [图]          缩到 240px 宽，不占满整屏
 
-    **一律不用底色块**：真人反馈过"这个区块不要用背景色，太显眼"，所以卡片之间靠留白
-    和字号层级分开，一条分隔线都不画（新版 reddit 的列表也是留白分行）。
-
-    这里也**不画"当前选中"的标记**：HTML 是上一次渲染的产物，光标一动标记就成了过期
-    信息（"高亮跟着光标走"这件事只有 extra selection 做得到）。文档本身与选中无关，
-    于是上下移动不必重排整篇 HTML。"""
+    **不用底色块**（真人说过"区块不要用背景色，太显眼"），也**不画"当前选中"标记**：
+    HTML 是上一次渲染的产物，光标一动标记就成了过期信息（高亮只由 extra selection 画）。
+    """
     if not posts:
-        return _wrap(theme, f'<p style="color:{theme["dim"]};">这个来源还没有内容。</p>')
-    small = max(10, theme["size"] - 3)
+        return _wrap(theme, f'<p style="margin:24px 0 0 0; color:{theme["faint"]};'
+                            f' font-size:{_scale(theme)["sub"]}px;">还没有内容</p>')
+    f = _scale(theme)
     parts = []
-    for p in posts:
+    for i, p in enumerate(posts):
+        if i:
+            parts.append(_hairline(theme, top=18, bottom=0))
         parts.append(f'<a name="post-{esc(p.id)}"></a>')
         parts.append(
-            f'<p style="margin:16px 0 0 0; color:{theme["mark"]};'
-            f' font-size:{theme["size"] + 3}px; font-weight:bold;">{esc(p.title)}</p>'
+            f'<p style="margin:0; color:{theme["mark"]}; font-size:{f["title"]}px;'
+            f' font-weight:bold; line-height:135%;">{esc(_clip(p.title, TITLE_CLIP))}</p>'
         )
-        meta = _meta_line(p, theme)
-        if meta:
-            parts.append(
-                f'<p style="margin:2px 0 0 0; color:{theme["faint"]};'
-                f' font-size:{small}px;">{meta}</p>'
-            )
         if p.excerpt:
             parts.append(
                 f'<p style="margin:5px 0 0 0; color:{theme["dim"]};'
-                f' font-size:{max(11, theme["size"] - 1)}px;">{_nl(p.excerpt)}</p>'
+                f' font-size:{f["sub"]}px; line-height:150%;">'
+                f'{esc(_clip(p.excerpt, EXCERPT_CLIP))}</p>'
+            )
+        meta = _meta_line(p, theme)
+        if meta:
+            parts.append(
+                f'<p style="margin:7px 0 0 0; color:{theme["faint"]};'
+                f' font-size:{f["meta"]}px;">{meta}</p>'
             )
         if p.cover:
             if theme["lowkey"]:
-                parts.append(f'<p style="margin:4px 0 0 0; color:{theme["faint"]};'
-                             f' font-size:{small}px;">[图]</p>')
+                parts.append(f'<p style="margin:7px 0 0 0; color:{theme["faint"]};'
+                             f' font-size:{f["meta"]}px;">[图]</p>')
             else:
-                parts.append(f'<p style="margin:6px 0 0 0;">{_img_tag(p.cover, theme, 320)}</p>')
-        stats = []
-        if p.score:
-            stats.append(f'{_num(p.score)} {p.score_label or "赞"}')
-        if p.n_comments:
-            stats.append(f'{_num(p.n_comments)} {p.comment_label or "条评论"}')
-        if stats:
-            parts.append(
-                f'<p style="margin:6px 0 0 0; color:{theme["faint"]};'
-                f' font-size:{small}px;">{esc(" · ".join(stats))}</p>'
-            )
+                parts.append(f'<p style="margin:9px 0 0 0;">'
+                             f'{_img_tag(p.cover, theme, 240)}</p>')
     return _wrap(theme, "".join(parts))
 
 
 def render_detail(post, nav, theme):
-    """帖子详情：标题 + 元信息 + 正文（我们自己的排版）+ 树状评论。"""
+    """帖子详情：标题 / 元信息 / 细线 / 正文 / 细线 / 评论区。
+
+    正文和评论之间只隔一条细线加一行"12 条评论"，**不往正文里插任何说明句**——
+    真人明确说过前端不要解释性文字（以前会写"评论在下面（10 条）。"这种东西）。
+    """
     if post is None:
-        return _wrap(theme, f'<p style="color:{theme["dim"]};">没有选中帖子。</p>')
+        return _wrap(theme, "")
+    f = _scale(theme)
     parts = [
-        f'<p style="margin:0 0 3px 0; color:{theme["mark"]}; font-size:{theme["size"] + 4}px;'
-        f' font-weight:bold;">{esc(post.title)}</p>',
-        f'<p style="margin:0 0 12px 0; color:{theme["faint"]};'
-        f' font-size:{max(10, theme["size"] - 3)}px;">{_meta_line(post, theme)}</p>',
+        f'<p style="margin:0; color:{theme["mark"]}; font-size:{f["title"] + 1}px;'
+        f' font-weight:bold; line-height:140%;">{esc(post.title)}</p>',
+        f'<p style="margin:7px 0 0 0; color:{theme["faint"]};'
+        f' font-size:{f["meta"]}px;">{_meta_line(post, theme)}</p>',
     ]
+    parts.append(_hairline(theme, top=14, bottom=12))
     parts.extend(_block_paragraphs(post.body, theme))
     total, _shown, nfold = nav.comment_stats() if nav.detail_loaded else (0, 0, 0)
     if total:
-        head = f'评论 {total} 条' + (f' · 折叠 {nfold} 处' if nfold else "")
-        # 一条短横线分开正文和评论区（reddit 也是这么分的）。用字符画而不是 <hr>：
-        # Qt 的 <hr> 颜色不走主题，在透明窗口上可能正好看不见。
+        parts.append(_hairline(theme, top=20, bottom=10))
+        head = "%s 条评论" % _num(total)
+        if nfold:
+            head += " · %d 处折叠" % nfold
         parts.append(
-            f'<p style="margin:20px 0 0 0; color:{theme["rule"]};'
-            f' font-size:{max(10, theme["size"] - 3)}px;">──────────</p>'
-        )
-        parts.append(
-            f'<p style="margin:4px 0 0 0; color:{theme["faint"]};'
-            f' font-size:{max(10, theme["size"] - 3)}px;">{esc(head)}</p>'
+            f'<p style="margin:0; color:{theme["faint"]};'
+            f' font-size:{f["meta"]}px;">{esc(head)}</p>'
         )
         parts.append(render_comment_tree(nav, theme))
-    elif nav.detail_loaded:
-        parts.append(
-            f'<p style="margin:20px 0 0 0; color:{theme["faint"]};'
-            f' font-size:{max(10, theme["size"] - 3)}px;">没有评论</p>'
-        )
     return _wrap(theme, "".join(parts))
 
 
@@ -931,42 +1010,43 @@ def _comment_header(c):
 
 
 def comment_guide(depth):
-    """评论树的线程线：一层一根竖线。
+    """旧版的"字符画竖线"，只给外部引用的地方留着（渲染已经不用它了）。
 
-    用字符画（`│ ` 重复）而不是缩进 + 边框：Qt 的富文本没有"段落左边框"这种属性，
-    能画出竖线的只有表格边框或者 1px 宽的底色格——前者颜色不跟主题、后者就是"底色块"
-    （真人反复说过不要）。字符画的竖线在任何字体、任何背景上都一定显示，
-    而且正文跟着表头一起走，层级一眼看得出来。"""
+    字符画当层级线在真机上很难看：字体一换就错位、缩进深了正文只剩一半宽度，
+    一条评论树看起来像半张棋盘。现在纯靠左边距分层次（见 render_comment_tree）。
+    """
     return "│ " * max(0, int(depth))
 
 
 def render_comment_tree(nav, theme):
-    """树状评论：一层一根竖线，折叠的节点显示"还藏着几条"。
+    """树状评论：用**左边距**分层次（每层 14px），不需要字符画。
 
-    和列表一样，**"哪一条是当前的"不画在 HTML 里**（那是 extra selection 的事）；
-    折叠角是数据本身的状态，所以照画。"""
+    折叠的节点在表头前面放 `▸ n`（n = 藏着几条），展开的是 `▾`；表头文本本身不动，
+    所以 `comment_needle()` 拿来定位照样命中（它是前缀）。
+    """
     vis = nav.visible_comments()
     if not vis:
-        return f'<p style="color:{theme["faint"]};">（评论都折叠了）</p>'
+        return ""
+    f = _scale(theme)
     parts = []
-    small = max(10, theme["size"] - 3)
     for c, depth, _p in vis:
-        guide = esc(comment_guide(depth))
-        bars = f'<span style="color:{theme["rule"]};">{guide}</span>'
+        ind = 14 * max(0, int(depth))
         head = _comment_header(c)
         if c.replies:
-            head += " · " + ("▸ 展开（藏着 %d 条）" % len(descendant_ids(c))
-                             if c.id in nav.collapsed else "▾")
+            if c.id in nav.collapsed:
+                head = "▸ %d · %s" % (len(descendant_ids(c)), head)
+            else:
+                head = "▾ · " + head
         parts.append(
-            f'<p style="margin:11px 0 0 0; color:{theme["faint"]};'
-            f' font-size:{small}px;">{bars}{esc(head)}</p>'
+            f'<p style="margin:13px 0 0 {ind}px; color:{theme["faint"]};'
+            f' font-size:{f["meta"]}px;">{esc(head)}</p>'
         )
-        inner = "".join(
-            f'<p style="margin:2px 0 0 0; color:{theme["text"]};'
-            f' font-size:{max(11, theme["size"] - 1)}px;">{bars}{_block_inline(b, theme)}</p>'
-            for b in (c.body or [])
-        )
-        parts.append(inner)
+        for b in (c.body or []):
+            parts.append(
+                f'<p style="margin:3px 0 0 {ind}px; color:{theme["text"]};'
+                f' font-size:{f["sub"]}px; line-height:160%;">'
+                f'{_block_inline(b, theme)}</p>'
+            )
     return "".join(parts)
 
 
@@ -977,44 +1057,52 @@ def _block_inline(b, theme):
     if b.kind == BLOCK_H:
         return f'<span style="font-weight:bold; color:{theme["mark"]};">{_nl(b.text)}</span>'
     if b.kind == BLOCK_QUOTE:
-        return f'<span style="color:{theme["dim"]};">｜{_nl(b.text)}</span>'
+        return f'<span style="color:{theme["dim"]};">{_nl(b.text)}</span>'
     if b.kind == BLOCK_CODE:
-        return f'<span style="font-family:Consolas,monospace; color:{theme["dim"]};">{_nl(b.text)}</span>'
+        return (f'<span style="font-family:Consolas,\'Courier New\',monospace;'
+                f' color:{theme["dim"]};">{_nl(b.text)}</span>')
     if b.kind == BLOCK_LIST:
         return f'<span>· {_nl(b.text)}</span>'
     return _nl(b.text)
 
 
 def _block_paragraphs(blocks, theme):
-    """正文块渲染成独立段落（每块一个 <p>，有自己的间距）。
+    """正文块渲染成独立段落（每块一个 <p>，有自己的间距和行高）。
 
-    不用 <br> 把整篇串成一整段：那样段间距全丢，一屏密密麻麻，和书页排版完全两回事。"""
+    不用 <br> 把整篇串成一整段：那样段间距全丢，一屏密密麻麻，和书页排版完全两回事。
+    行高统一 175%——中文正文在 1.7 上下最好读，压到 1.4 就成"报纸广告"。
+    """
+    f = _scale(theme)
     out = []
     for b in blocks:
         if b.kind == BLOCK_IMG:
             if theme["lowkey"]:
-                out.append(f'<p style="margin:8px 0; color:{theme["faint"]};">[图]</p>')
+                out.append(f'<p style="margin:11px 0 0 0; color:{theme["faint"]};'
+                           f' font-size:{f["meta"]}px;">[图]</p>')
             else:
-                out.append(f'<p style="margin:8px 0;">{_img_tag(b.url or b.text, theme, 420)}</p>')
+                out.append(f'<p style="margin:11px 0 0 0;">'
+                           f'{_img_tag(b.url or b.text, theme, 460)}</p>')
             continue
-        style = f'margin:0 0 9px 0; padding:0; font-size:{theme["size"]}px;'
         if b.kind == BLOCK_H:
-            style += f' color:{theme["mark"]}; font-weight:bold;'
+            style = (f'margin:17px 0 0 0; font-size:{f["head"]}px; line-height:150%;'
+                     f' font-weight:bold; color:{theme["mark"]};')
         elif b.kind == BLOCK_QUOTE:
-            style += f' color:{theme["dim"]};'
+            style = (f'margin:10px 0 0 12px; font-size:{f["body"]}px; line-height:175%;'
+                     f' color:{theme["dim"]};')
         elif b.kind == BLOCK_CODE:
-            style += f' color:{theme["dim"]}; font-family:Consolas,monospace;'
-        elif b.kind == BLOCK_LIST:
-            style += f' color:{theme["text"]};'
+            style = (f'margin:10px 0 0 0; font-size:{f["sub"]}px; line-height:150%;'
+                     f' color:{theme["dim"]}; font-family:Consolas,monospace;')
         else:
-            style += f' color:{theme["text"]};'
+            style = (f'margin:9px 0 0 0; font-size:{f["body"]}px; line-height:175%;'
+                     f' color:{theme["text"]};')
         text = ("· " + b.text) if b.kind == BLOCK_LIST else b.text
         out.append(f'<p style="{style}">{_nl(text)}</p>')
     return out
 
 
 def _wrap(theme, body):
-    return f'<div style="font-family:{esc(theme["family"])}; color:{theme["text"]};">{body}</div>'
+    return (f'<div style="font-family:{theme["family"]}; color:{theme["text"]};'
+            f' line-height:150%;">{body}</div>')
 
 
 def status_text(nav, source_label=""):
@@ -1050,8 +1138,11 @@ def status_text(nav, source_label=""):
 
 
 def post_needle(post):
-    """列表里定位一条帖子用的文本（就是标题那一行）。"""
-    return post.title if post is not None else ""
+    """列表里定位一条帖子用的文本：标题那一行，**和渲染一样先截断**。
+
+    渲染会把长标题截到 `TITLE_CLIP`，定位这里要是拿完整标题去文档里找，长标题的帖子
+    就永远高亮不上、鼠标点也不认（探针抓过这种"渲染和定位两套文本"的漂移）。"""
+    return _clip(post.title, TITLE_CLIP) if post is not None else ""
 
 
 def comment_needle(comment):
@@ -1069,7 +1160,7 @@ def item_needles(nav):
         return []
     if nav.view == "detail":
         return [(c, "comment", _comment_header(c)) for c, _d, _p in nav.visible_comments()]
-    return [(p, "post", p.title) for p in nav.posts]
+    return [(p, "post", post_needle(p)) for p in nav.posts]
 
 
 def selection_needle(nav):

@@ -51,11 +51,13 @@ except Exception as _anki_import_err:      # pragma: no cover
 # 社区统一流：数据模型 / 来源适配器 / HTML 渲染（纯标准库）。缺文件也不该让阅读器起不来。
 try:
     import feed as feed_mod
+    import feed_net
     FEED_OK = True
     FEED_IMPORT_HINT = ""
 except Exception as _feed_import_err:      # pragma: no cover
     FEED_OK = False
     feed_mod = None
+    feed_net = None
     FEED_IMPORT_HINT = f"社区统一流需要 feed.py（本目录下），当前加载失败：{_feed_import_err}"
 
 # 微信读书书架：只到"读到哪了"（正文不做，原因写在 weread.py 里）。同样缺文件也不该起不来。
@@ -4222,11 +4224,15 @@ class StealthReader(QWidget):
         note = self.feed_source_note()
         return f"{base}｜{note}" if note else base
 
-    def feed_load(self, what, post=None):
+    def feed_load(self, what, post=None, fresh=False):
         """社区页取数：一律后台线程 + 信号回主线程。
 
         批次 A 的来源是离线夹具（读本地 JSON），但走的**和真实来源完全同一条路**——
-        省得等真网络接上来才发现线程/信号这套接错了地方。"""
+        省得等真网络接上来才发现线程/信号这套接错了地方。
+
+        `fresh=True` 时这一趟**不吃缓存**（人按 R 要的就是"现在这一下"）：列表缓 5 分钟、
+        正文缓一天，以前按 R 只是把缓存又读了一遍，屏幕上当然什么都不变——真人报的
+        "怎么不支持刷新"就是这个。开关是线程本地的（见 `feed_net.set_fresh`）。"""
         if not FEED_OK or self.feed_nav is None or self.feed_busy:
             return
         nav = self.feed_nav
@@ -4251,6 +4257,7 @@ class StealthReader(QWidget):
         gen = self.feed_gen               # 这次取的是哪一"代"视图：回来时也要核对
 
         def work():
+            feed_net.set_fresh(fresh)
             try:
                 if what in ("list", "more"):
                     posts, nxt = src.list(channel, cursor)
@@ -4264,6 +4271,8 @@ class StealthReader(QWidget):
                     self.feed_data_signal.emit("error", (str(e), gen, tag))
                 except Exception:
                     pass
+            finally:
+                feed_net.set_fresh(False)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -4399,28 +4408,29 @@ class StealthReader(QWidget):
         return f"rgba({col.red()}, {col.green()}, {col.blue()}, {col.alpha()})"
 
     def feed_font(self):
-        """社区页自己的字体：**没配就完全跟着书页走**（和以前一样），配了才单独生效。
+        """社区页自己的字体：**没配就是界面无衬线字体栈 + 15px**，不再跟着书页走。
 
-        两个键各自独立：只配了字号就只换字号，字体仍跟书页。取值一律夹在合理范围内，
+        以前没配就完全跟书页：书页为了读长文会把字号调到 14pt 上下、字体常是宋体，
+        搬到列表上就是"每屏两条巨字"，真人原话是"帖子太难看"。社区页是浏览界面，
+        和正文本来就不是一类东西，所以各用各的默认值。
+
+        两个键各自独立：只配字号就只换字号，字体用界面栈。取值夹在 11~22，
         免得 config.json 里手写个 0 或 999 把页面弄成一行一个字。
         """
-        fam = str(self.config.get("feed_font_family") or "").strip() \
-            or self.config.get("font_family", "Microsoft YaHei")
+        fam = str(self.config.get("feed_font_family") or "").strip() or "Microsoft YaHei UI"
         try:
-            size = int(self.config.get("feed_font_size") or 0) \
-                or int(self.config.get("font_size", 14))
+            size = int(self.config.get("feed_font_size") or 0)
         except (TypeError, ValueError):
-            size = 14
-        return QFont(fam, max(6, min(72, size)))
+            size = 0
+        if not 11 <= size <= 22:
+            size = getattr(feed_mod, "FEED_SIZE_DEFAULT", 15)
+        return QFont(fam, size)
 
     def feed_theme(self):
-        # 主题里的 size/family 就是 HTML 用的那套，所以要把"社区页字体"覆盖进去，
-        # 否则字号只改了 QTextEdit 的默认字体、网页那块还是老字号（两处不一致最难看）。
-        cfg = dict(self.config or {})
-        font = self.feed_font()
-        cfg["font_size"] = font.pointSize()
-        cfg["font_family"] = font.family()
-        return feed_mod.theme_from_config(cfg, max(240, self.width() - 40),
+        # 主题自己去读 `feed_font_size` / `feed_font_family`（见 feed.theme_from_config），
+        # 这里只把**正文此刻实际的颜色**递进去：auto/幽灵模式会换色，靠 config 猜就不准了。
+        return feed_mod.theme_from_config(dict(self.config or {}),
+                                          max(240, self.width() - 40),
                                           text_color=self.feed_text_color())
 
     def feed_item_blocks(self):
@@ -4613,12 +4623,20 @@ class StealthReader(QWidget):
         return True
 
     def feed_reload(self):
+        """R：重新拉一次，**这一次不吃缓存**（列表 5 分钟、正文一天，吃缓存等于没刷新）。
+
+        列表和详情都支持；在详情里刷新是重新取这一篇的正文和评论，取回来仍停在详情。
+        按下去先给一句反馈，免得人以为键没生效（取数本身在后台线程，几百毫秒到几秒）。
+        """
         nav = self.feed_nav
         if nav is None:
             return False
         self.feed_error = ""
         self.feed_gen += 1
-        self.feed_load("detail" if nav.view == "detail" else "list")
+        what = "detail" if nav.view == "detail" else "list"
+        self.review_hint("刷新中…", 900)
+        self.feed_load(what, fresh=True)
+        log_event("社区：刷新（%s，不吃缓存）" % what)
         return True
 
     def feed_board_key(self):

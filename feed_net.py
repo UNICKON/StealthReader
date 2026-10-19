@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 
 try:
@@ -40,6 +41,20 @@ TTL_FOREVER = 0
 
 class FeedNetError(Exception):
     """取数失败。message 直接给真人看，所以一律是中文短句。"""
+
+
+# 「这一趟不吃缓存」的开关：按 R 刷新时，取数线程里 `set_fresh(True)`，这一线程里所有
+# `Cache.read_*` 都当没有缓存。**必须是线程本地**——社区页的取数一律在后台线程跑，
+# 用全局开关会把同一时刻别的请求（比如图片落地）也一起打穿缓存。
+_FRESH = threading.local()
+
+
+def set_fresh(flag=True):
+    _FRESH.on = bool(flag)
+
+
+def is_fresh():
+    return bool(getattr(_FRESH, "on", False))
 
 
 def _short_err(e):
@@ -85,6 +100,8 @@ class Cache(object):
         return os.path.join(sub, self.key(url) + ext)
 
     def read_json(self, url, ttl):
+        if is_fresh():
+            return None                      # 人按了"刷新"：这一次不许吃缓存
         path = self._path(self.json_dir, url, ".json")
         try:
             age = time.time() - os.path.getmtime(path)
@@ -106,6 +123,8 @@ class Cache(object):
             pass
 
     def read_bytes(self, url, ttl):
+        if is_fresh():
+            return None
         path = self._path(self.bin_dir, url, ".bin")
         try:
             age = time.time() - os.path.getmtime(path)

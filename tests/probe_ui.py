@@ -198,9 +198,13 @@ check("按时间倒序", all((w.feed_nav.posts[i].ts or 0) >= (w.feed_nav.posts[
                      for i in range(len(w.feed_nav.posts) - 1)))
 html = w.text_edit.toHtml()
 check("知乎的'热度/回答'、微博的'热度'都渲染出来了", "热度" in html and "回答" in html)
-check("微博的'新/热/爆'标记进界面了（tags 现在真的会显示）",
-      any((">%s</span>" % t) in html for t in ("新", "热", "爆", "沸", "商")),
-      [p.tags for p in w.feed_nav.posts if p.tags][:4])
+_tag_exp = [t if not isinstance(t, dict) else str(t.get("name") or t.get("slug") or "")
+            for p in w.feed_nav.posts for t in (p.tags or [])[:2]]
+_tag_exp = [t for t in _tag_exp if t]
+check("标签进界面了，字典型标签（V2EX 节点）只露名字、不漏原始字典",
+      _tag_exp and all(t in html for t in _tag_exp)
+      and "{'id'" not in html and "&#39;id&#39;" not in html,
+      (_tag_exp[:4], [p.tags for p in w.feed_nav.posts if p.tags][:4]))
 
 print("\n=== 3. `[` `]` 轮完所有来源 ===")
 seq = []
@@ -259,8 +263,8 @@ check("进了知乎详情", w.feed_nav.view == "detail", w.feed_nav.view)
 texts = " ".join(b.text for b in w.feed_nav.post.body)
 check("知乎正文不再拿问题摘要冒充内容（回答归评论那一栏）",
       w.feed_nav.post.body and (w.feed_nav.posts[0].excerpt or "") != texts.strip(), texts[:40])
-check("没 Cookie 时详情直说回答要登录、去哪儿配",
-      "登录" in texts and "feed_auth.json" in texts, texts[:60])
+check("没 Cookie 时详情只留一句「回答需要登录」（不再是一段配置说明）",
+      "回答需要登录" in texts and "feed_auth.json" not in texts, texts[:60])
 check("知乎详情没有伪造评论（回答要真拿到才显示）", w.feed_nav.roots == [])
 check("O 打开的是真原帖地址", w.feed_open_original() is False
       and OPENED and "zhihu.com/question/" in OPENED[-1], OPENED[-1:])
@@ -468,6 +472,10 @@ for i in (0, 3, 5):
           (w.feed_nav.view, w.feed_nav.index))
 
 # 8.2 选中已经看得见的那一条，页面一个像素都不该动
+# 窗口先拉高：新版版式一条帖子带图会占掉大半屏，原尺寸下"下一条"本来就在屏幕外，
+# 那时滚动是**对的**（ensure_visible 该干活），验不出"不该滚"这件事。
+_old_size = w.size()
+w.resize(560, 1600)
 w.feed_nav.view = "list"
 w.feed_gen += 1
 w.render_feed()
@@ -481,6 +489,9 @@ qapp.processEvents()
 check("选中的下一条本来就看得见，页面不会被带着跳",
       w.text_edit.verticalScrollBar().value() == _v0,
       (_v0, w.text_edit.verticalScrollBar().value()))
+w.resize(_old_size)
+w.render_feed()
+qapp.processEvents()
 
 # 8.3 真按键（走 Qt 事件，不是直接调 on_feed_key——以前探针只验了后者）
 from PyQt5.QtGui import QKeyEvent                                          # noqa: E402
@@ -653,11 +664,35 @@ check("设置里有「社区页用单独字体」，一改就落到 config",
       (w.config.get("feed_font_size"), w.config.get("feed_font_family")))
 _set_dlg.feed_font_check.setChecked(False)
 qapp.processEvents()
-check("取消勾选 = 回到\"跟着书页走\"（键删掉，不是留个 0）",
+check("取消勾选 = 回到界面默认那套（键删掉，不是留个 0）",
       "feed_font_size" not in w.config and "feed_font_family" not in w.config,
       (w.config.get("feed_font_size"), w.config.get("feed_font_family")))
 _set_dlg.reject()
 qapp.processEvents()
+
+# 8.5.1 按 R 刷新：必须**明确要求不吃缓存**（列表缓 5 分钟、正文缓一天，吃缓存等于没刷新）
+_calls = []
+_orig_load = w.feed_load
+w.feed_load = lambda what, post=None, fresh=False: (_calls.append((what, fresh)),
+                                                    _orig_load(what, post, fresh))[0]
+w.feed_nav.view = "list"
+w.feed_gen += 1
+w.render_feed()
+w.on_feed_key(Qt.Key_R)
+pump(lambda: not w.feed_busy)
+check("列表里按 R：确实去取数了，而且带上了「这一趟不吃缓存」",
+      _calls and _calls[-1] == ("list", True), _calls)
+_calls[:] = []
+w.feed_nav.index = 0
+w.feed_open()
+pump(lambda: w.feed_nav.view == "detail" and not w.feed_busy, 8.0)
+w.on_feed_key(Qt.Key_R)
+pump(lambda: not w.feed_busy)
+check("详情里按 R：重新取这一篇（也是不吃缓存），视图不被打回列表",
+      _calls and _calls[-1] == ("detail", True) and w.feed_nav.view == "detail", _calls)
+w.feed_load = _orig_load
+w.feed_back()
+pump(lambda: w.feed_nav.view == "list")
 
 # 8.6 换社区 / 换板块：右键菜单里得看得见，选了要立刻生效，还要按来源记住
 print("--- 换社区 / 换板块 ---")

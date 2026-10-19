@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -244,10 +245,10 @@ else:
         check("  热度文案 %-12s -> %s" % (repr(text), want), got == want, got)
     zd, _ = zs.detail(zp[0])
     zd_txt = " ".join(b.text for b in zd.body)
-    check("没 Cookie 时正文直说回答要登录（不再拿问题内容冒充正文）",
-          "登录" in zd_txt and "feed_auth.json" in zd_txt, zd_txt[:60])
-    check("热榜给的摘要还在，但标明了它不是回答",
-          (not zp[0].excerpt) or any(zp[0].excerpt in b.text and "不是回答" in b.text for b in zd.body),
+    check("没 Cookie 时正文只留一句「回答需要登录」（不再是整段说明书）",
+          "回答需要登录" in zd_txt and "feed_auth.json" not in zd_txt, zd_txt[:60])
+    check("热榜给的摘要照样摆出来（不冒充回答，也不加说明框）",
+          (not zp[0].excerpt) or any(zp[0].excerpt[:16] in b.text for b in zd.body),
           [b.text[:26] for b in zd.body])
     check("知乎评论如实为空（没 Cookie 就不编回答）", zs.comments(zp[0]) == ([], None))
 
@@ -275,8 +276,9 @@ else:
     check("话题转义正确",
           ws._search_url("#测试话题#") == "https://s.weibo.com/weibo?q=%23%E6%B5%8B%E8%AF%95%E8%AF%9D%E9%A2%98%23")
     wd, _ = ws.detail(wp[0])
-    check("微博详情给出热度并直说要登录",
-          any("热度" in b.text for b in wd.body) and any("登录" in b.text for b in wd.body))
+    check("微博详情只给热度（拿不到正文就不编，也不写说明书）",
+          any("热度" in b.text for b in wd.body)
+          and not any("登录" in b.text or "按 O" in b.text for b in wd.body))
     check("微博评论如实为空", ws.comments(wp[0]) == ([], None))
 
 # ---------------------------------------------------------------- 单位与渲染
@@ -301,8 +303,9 @@ check("两个新字段进了 to_dict/from_dict",
 tagged = feed_mod.Post(source="v2ex", pid="1", title="t", tags=["分享发现", "标签二", "标签三",
                                                                "标签四"])
 thtml = feed_mod.render_list([tagged], feed_mod.FeedNav(), theme)
-check("标签渲染出来了（最多三条）",
-      all(t in thtml for t in ("分享发现", "标签二", "标签三")) and "标签四" not in thtml)
+check("标签渲染出来了，但元信息行最多四段（多了就别塞）",
+      "分享发现" in thtml and ("标签二" in thtml or "标签三" in thtml)
+      and "标签四" not in thtml)
 check("标签用的是强调色", "color:%s" % theme["accent"] in thtml)
 
 # ---------------------------------------------------------------- 混流
@@ -690,15 +693,15 @@ zlist = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, cache=MemCache())
 zp0, _ = zlist.list("热榜", 0)
 d_noauth, _ = zlist.detail(zp0[0])
 noauth_txt = " ".join(b.text for b in d_noauth.body)
-check("没配 Cookie：正文直说回答要登录，并告诉去哪儿配",
-      "登录" in noauth_txt and "feed_auth.json" in noauth_txt, noauth_txt[:60])
+check("没配 Cookie：正文只留一句回答需要登录（不写配置说明）",
+      "回答需要登录" in noauth_txt and "feed_auth.json" not in noauth_txt, noauth_txt[:60])
 check("没配 Cookie：不编回答", zlist.comments(zp0[0]) == ([], None))
 zdeny = feed_sources.ZhihuSource(FakeHttp({"hot-list": raw_z}, fail=["answers"], cache=MemCache()),
                                  {"cookie": "z_c0=expired"})
 d_deny, _ = zdeny.detail(zp0[0])
 deny_txt = " ".join(b.text for b in d_deny.body)
-check("配了 Cookie 但接口拦住：实话里带上了失败原因，而不是假装没配",
-      "这次没拿到回答" in deny_txt and "连接超时" in deny_txt, deny_txt[-80:])
+check("配了 Cookie 但接口拦住：短句里带上失败原因，而不是假装没配",
+      "回答没取到" in deny_txt and "连接超时" in deny_txt, deny_txt[-80:])
 check("而且不再把'还要前端签名'那句没验证过的猜测写给人看",
       "x-zse-96" not in deny_txt and "zse" not in deny_txt)
 # 401 和 403 是两回事（403 风控是本机实测撞到过的：同一段代码几分钟前还在正常取 20 条评论）
@@ -749,8 +752,8 @@ else:
     ok_txt = " ".join(b.text for b in d_ok.body)
     d_c, _ = zok.comments(zp0[0])
     got_txt = " ".join(b.text for c in d_c for b in c.body)
-    check("（真夹具）有 Cookie 时正文改说\"回答在下面这一栏\"",
-          "回答" in ok_txt and "下面" in ok_txt, ok_txt[:60])
+    check("（真夹具）有 Cookie 时正文不再写任何说明句（回答都在评论栏里）",
+          "下面" not in ok_txt and "这一栏" not in ok_txt, ok_txt[:60])
     check("（真夹具）正文里**不再**塞回答内容（回答归评论那一栏）",
           (not plain) or plain[:20] not in ok_txt, (len(plain), ok_txt[:40]))
     check("（真夹具）回答真的显示出来了，而且一个字没被吞",
@@ -856,8 +859,8 @@ else:
           any(b.kind == feed_mod.BLOCK_IMG for b in xsd.body)
           and all(not (b.url or "").startswith("http") for b in xsd.body),
           [(b.kind, (b.url or "")[:20]) for b in xsd.body[:4]])
-    check("画面里把评论那件事说清楚了（签名算出来了，但它判 406，不是'没人评论'）",
-          "406" in d_txt and "签名" in d_txt and "O" in d_txt, d_txt[-80:])
+    check("评论没取到时正文保持干净（原因进 last_error，不写进画面）",
+          "406" not in d_txt and "按 O" not in d_txt and "签名" not in d_txt, d_txt[-80:])
     check("小红书的评论如实为空（接口要它的 x-s 签名，实测连插件自己算的也 406）",
           xs3.comments(seed) == ([], None))
     # 详情和评论共用一次请求：第二次不该再去拉
@@ -939,9 +942,9 @@ else:
            '{"props":{"pageProps":{"detail":%s}}}</script></body></html>' % vid_json).encode("utf-8")
     hp2 = feed_sources.HupuSource(FakeHttp(bytes_routes={"1.html": vid}, cache=MemCache()))
     vd, _ = hp2.detail(feed_sources.Post(source="hupu", pid="1", title="视频帖"))
-    check("（手写形状）只有视频、没有正文时如实说是视频（并给出地址）",
-          any("视频" in b.text for b in vd.body) and any("x.mp4" in b.text for b in vd.body),
-          [b.text[:46] for b in vd.body])
+    check("（手写形状）只有视频、没有正文时把视频地址摆出来（不写说明句）",
+          any("x.mp4" in b.text for b in vd.body)
+          and not any("按 O" in b.text for b in vd.body), [b.text[:46] for b in vd.body])
     check("时间解析：'10-19 11:10' / '11:10' 能解，空的和乱写的不硬编",
           feed_sources._hupu_time("10-19 11:10") > 0
           and feed_sources._hupu_time("11:10") > 0
@@ -1051,12 +1054,12 @@ check("评论解析：作者 / 赞数 / 时间 / 正文都对得上",
       len(_xc) == 2 and _xc[0].author == "张三" and _xc[0].score == 12
       and _xc[0].created and _xc[0].body[0].text == "这个真好用",
       [(c.author, c.score) for c in _xc])
-check("子评论并进同一条，还有几条没展开也说出来",
+check("子评论并进同一条（不再写「还有 1 条回复」这种说明句）",
       any("李四" in b.text for b in _xc[0].body)
-      and any("还有 1 条回复" in b.text for b in _xc[0].body),
+      and not any("没展开" in b.text for b in _xc[0].body),
       [b.text for b in _xc[0].body])
-check("空内容的评论给一句占位，不留空白条",
-      _xc[1].body[0].text.startswith("（") and _xc[1].author == "某人")
+check("空内容的评论正文就是空（不补占位句），作者空着就叫某人",
+      _xc[1].body == [] and _xc[1].author == "某人", [b.text for b in _xc[1].body])
 
 _xsign_src = feed_sources.XhsSource(
     FakeHttp(routes={"edith.xiaohongshu.com": _xhs_obj}, cache=MemCache()),
@@ -1124,12 +1127,13 @@ check("IT之家评论解析：作者 / 赞 / 正文都对得上，三组合并�
       and _ic[0].body[0].text.startswith("不知道为啥")
       and [c.id for c in _ic] == ["77110764", "77110765", "77110766"],
       [(c.id, c.author, c.score) for c in _ic])
-check("回复并进同一条，还有几条没展开也说出来",
+check("回复并进同一条（不再写「还有 N 条没展开」这种说明句）",
       any("李四" in b.text for b in _ic[0].body)
-      and any("还有 3 条回复没展开" in b.text for b in _ic[0].body),
+      and not any("没展开" in b.text for b in _ic[0].body),
       [b.text for b in _ic[0].body])
-check("空内容的评论给一句占位，作者空着就叫某人",
-      _ic[1].body[0].text.startswith("（") and _ic[1].author == "某人")
+check("空内容的评论就留空正文，不塞「这条评论只有图片或表情」之类的注释",
+      _ic[1].body == [] and _ic[1].author == "某人",
+      [b.text for b in _ic[1].body])
 check("拿不到短 id 就明说没有，绝不去猜一个 id 乱问",
       _ith.comments(feed_sources.Post(source="ithome", pid="1", title="x", url=""))[0] == [])
 # 它自己的"新闻不存在"也要当成没有，而不是崩
@@ -1170,6 +1174,81 @@ check("limit 之外的一张都不下（少几张好过让正文等半天）",
 check("已经落过地的块再经过一次不会被当成坏地址丢掉（幂等）",
       [b.url for b in _isz._localize_images(list(_out))] == ["", "a.jpg", "c.jpg"],
       [b.url for b in _isz._localize_images(list(_out))])
+
+# ---------------------------------------------------------------- 21
+print("\n=== 21. 版式：字号阶梯 / 细线 / 截断 / 前端不出现说明性文字 ===")
+_th = feed_mod.theme_from_config({"feed_font_size": 15}, 520)
+_sc = feed_mod._scale(_th)
+check("字号阶梯随社区页字号走，标题 > 正文 > 摘要 > 元信息",
+      _sc["title"] > _sc["body"] > _sc["sub"] > _sc["meta"], _sc)
+_th22 = feed_mod.theme_from_config({"feed_font_size": 22}, 520)
+_sc22 = feed_mod._scale(_th22)
+check("把字号调到 22，整条阶梯一起涨（层级比例不塌）",
+      _sc22["title"] > _sc["title"] and _sc22["meta"] > _sc["meta"]
+      and _sc22["title"] - _sc22["body"] >= 5, (_sc, _sc22))
+check("没配就用 15px + 界面无衬线字体栈（不再拿书页的宋体大字号顶上来）",
+      feed_mod.theme_from_config({}, 520)["size"] == 15
+      and "YaHei" in feed_mod.theme_from_config({}, 520)["family"],
+      feed_mod.theme_from_config({}, 520))
+check("配了社区字体就听配置的；配了个不可能的值就退回默认",
+      feed_mod.theme_from_config({"feed_font_size": 18,
+                                  "feed_font_family": "微软雅黑"}, 520)["size"] == 18
+      and feed_mod.theme_from_config({"feed_font_size": 999}, 520)["size"] == 15)
+_long = "标题" * 60
+check("长标题会被截断并加省略号（一屏不被一条帖子占满）",
+      len(feed_mod._clip(_long, feed_mod.TITLE_CLIP)) <= feed_mod.TITLE_CLIP + 1
+      and feed_mod._clip(_long, feed_mod.TITLE_CLIP).endswith("…"))
+_pl = feed_sources.Post(source="x", source_label="X", pid="1", title=_long)
+check("定位文本和渲染用的是同一份截断（否则高亮和点击都落不上）",
+      feed_mod.post_needle(_pl) == feed_mod._clip(_long, feed_mod.TITLE_CLIP)
+      and feed_mod.post_needle(_pl) in feed_mod.render_list([_pl], feed_mod.FeedNav(), _th))
+_lh = feed_mod.render_list([_pl, feed_sources.Post(source="x", pid="2", title="第二条")],
+                           feed_mod.FeedNav(), _th)
+check("帖子之间用 1px 细线分开（表格单元格底色那种，Qt 真的会画）",
+      _lh.count("background-color") == 1 and "height:1px" in _lh, _lh.count("background-color"))
+check("不再用字符画（竖线/破折号）当分隔线和评论层级",
+      "────" not in _lh and "│" not in _lh)
+_det = feed_mod.render_detail(
+    feed_sources.Post(source="x", source_label="X", pid="1", title="标题",
+                      body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="正文")]),
+    feed_mod.FeedNav(), _th)
+check("详情里也不出现「按 O / 按 R / 评论在下面」这类说明文字",
+      not any(k in _det for k in ("按 O", "按 R", "评论在下面", "这里只", "下面那一栏")),
+      _det[:200])
+_cn = feed_mod.FeedNav()
+_cn.set_detail(feed_sources.Post(source="x", pid="1", title="t"),
+               [feed_sources.Comment(cid="1", author="某人", body=[])])
+_ct = feed_mod.render_comment_tree(_cn, _th)
+check("空正文的评论不补占位句（正文为空就是空）",
+      not any(k in _ct for k in ("只有图片", "没展开", "还藏着")), _ct[:120])
+_src_lines = open(os.path.join(SR, "feed_sources.py"), encoding="utf-8").read().splitlines()
+_bad = [(i + 1, ln.strip()) for i, ln in enumerate(_src_lines)
+        if not ln.strip().startswith("#")
+        and any(k in ln for k in ("评论在下面", "条回复没展开", "只有图片或表情"))]
+check("来源代码里不再往正文塞说明句（这些词只允许出现在注释里）", not _bad, _bad[:3])
+# 刷新必须真的绕开缓存（真人报的"怎么不支持刷新"）
+_cc = feed_net.Cache(os.path.join(TMP_CACHE, "fresh"))
+_cc.write_json("https://x/a", {"v": 1})
+_plain = _cc.read_json("https://x/a", 999)
+feed_net.set_fresh(True)
+_fresh = _cc.read_json("https://x/a", 999)
+_res = {}
+
+
+def _other_thread():
+    _res["v"] = _cc.read_json("https://x/a", 999)
+
+
+_t = threading.Thread(target=_other_thread)
+_t.start()
+_t.join()
+feed_net.set_fresh(False)
+_back = _cc.read_json("https://x/a", 999)
+check("按 R 刷新时这一趟不吃缓存，刷新完立刻恢复",
+      _plain == {"v": 1} and _fresh is None and _back == {"v": 1},
+      (_plain, _fresh, _back))
+check("刷新开关是线程本地的：别的线程照常吃缓存（不会顺手把图片也一起打穿）",
+      _res.get("v") == {"v": 1}, _res)
 
 # ---------------------------------------------------------------- 收尾
 shutil.rmtree(TMP_CACHE, ignore_errors=True)
