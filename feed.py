@@ -965,7 +965,13 @@ def render_detail(post, nav, theme):
     parts.extend(_block_paragraphs(post.body, theme))
     total, _shown, nfold = nav.comment_stats() if nav.detail_loaded else (0, 0, 0)
     if total:
-        head = "%s 条评论" % _num(total)
+        # 知乎一个问题底下列的是**回答**，不是评论（真人点名了这三层的名字）；
+        # 其它来源都叫评论。数字用总条数（含子回复），表头只说这一层是什么。
+        label = "回答" if (post.source == "zhihu" and str(post.id).isdigit()) else "评论"
+        # 「回答」这一层数的是**几条回答**（根节点），不是把每条回答底下的评论也算进去；
+        # 评论那一栏照旧数总数（含子回复），那才是"这帖下有多少条话"。
+        n_head = len(nav.roots) if (label == "回答" and nav.detail_loaded) else total
+        head = "%s 条%s" % (_num(n_head), label)
         if nfold:
             head += " · %d 处折叠" % nfold
         parts.append(
@@ -988,14 +994,6 @@ def _comment_header(c):
         bits.append(f"{c.score} 赞")
     return " · ".join(bits)
 
-
-def comment_guide(depth):
-    """旧版的"字符画竖线"，只给外部引用的地方留着（渲染已经不用它了）。
-
-    字符画当层级线在真机上很难看：字体一换就错位、缩进深了正文只剩一半宽度，
-    一条评论树看起来像半张棋盘。现在纯靠左边距分层次（见 render_comment_tree）。
-    """
-    return "│ " * max(0, int(depth))
 
 
 COMMENT_INDENT = 16        # 每层缩进

@@ -610,9 +610,21 @@ class ZhihuSource(RealSource):
     # 关注：同一套形状（`data[i].target` 是回答或文章）。没人可关注时它就是空列表，
     # 不报错——空着如实显示"这一栏还没内容"，不要假装网络出问题。
     FOLLOW_URL = "https://api.zhihu.com/moments?limit=10&offset=0"
-    # 一次问这么多条回答：它们就是详情页的"评论"那一栏。10 条足够一屏读，文档也不会太沉。
-    ANSWERS_LIMIT = 10
-    # 真人要求"热榜详情内容应该缩略而不是全文显示"：回答只摆摘要，最长这么多字。
+    # 一次问这么多条回答：它们就是详情页的"评论"那一栏。**每条都摆全文**，
+    # 所以从 10 收到 6——再多一页就是几万字，翻起来像在读一本书。
+    ANSWERS_LIMIT = 6
+    # 只有前几条回答去拉"它自己的评论"：一条回答一次请求，全拉一遍要去十几次。
+    ANSWERS_WITH_COMMENTS = 3
+    ANSWER_COMMENTS_LIMIT = 8
+    # 一条回答最多摆多少块（一块 = 一个段落或一张图）。
+    # **帖子正文那一份不设小上限**：真人要的就是"能读完一条长回答"，按 40 块截断等于又省略了
+    # （实测一条 9000 字的回答有 100+ 块）。300 块是防疯的兜底，正常回答根本到不了。
+    ANSWER_BLOCKS_BODY = 300
+    # 摆成"评论"的回答每条 60 块：一页里可能有 6 条，再多就翻不动了。
+    ANSWER_BLOCKS_COMMENT = 60
+    # 正文短于这么多字就怀疑是被截断了（单条回答接口对长答案是"前 N 段 + 展开"）。
+    TRUNC_HINT = 400
+    # 列表里的摘要长度（`_excerpt_of`）。详情页的回答走全文，不用这把尺子。
     EXCERPT_CHARS = 220
     # 失败只记这么久。以前失败也缓存一辈子，于是第一次撞上风控之后，这个问题到进程结束都打不开。
     RETRY_AFTER = 90
@@ -771,13 +783,23 @@ class ZhihuSource(RealSource):
         out = Post.from_dict(post.to_dict())
         body = []
         if self._is_answer_post(post):
-            # 推荐/关注里点开的是一条回答。回答正文接口要 `x-zse-96` 签名（实测 404），
-            # 所以正文只有列表已经给我们的那段摘要——**但绝不能空着**：
-            # 上一版这里 `out.body = body`（body 是空列表），详情页就只剩标题和一行元信息，
-            # 真人报的"知乎点进详情没内容了"就是这么来的。
-            txt = (out.excerpt or "").strip() or (post.excerpt or "").strip()
-            if txt:
-                out.body = [Block(kind=BLOCK_P, text=txt)]
+            # 推荐/关注里点开的是一条回答：正文走**全文**（`/api/v4/answers/<id>`），
+            # 不是列表那 220 字摘要——真人要的是"能看完整条回答"。
+            # 拿不到全文时退回摘要（**绝不空着**：上一版这里给过一页空白）。
+            item, _why = self._answer_full(post.id) if self.has_auth else ({}, "")
+            blocks = self._localize_images(
+                feed_mod.blocks_from_html(str((item or {}).get("content") or ""),
+                                          max_blocks=self.ANSWER_BLOCKS_BODY), limit=4)
+            if not blocks:
+                txt = (out.excerpt or "").strip() or (post.excerpt or "").strip()
+                blocks = [Block(kind=BLOCK_P, text=txt)] if txt else []
+            if item.get("question") and item["question"].get("title"):
+                out.title = feed_mod.strip_html(item["question"]["title"]) or out.title
+            if item.get("voteup_count"):
+                out.score, out.score_label = int(item["voteup_count"]), "赞"
+            if item.get("comment_count"):
+                out.n_comments = int(item["comment_count"])
+            out.body = blocks
             return out, None
         answers, why = self._answers(str(post.id)) if self.has_auth else ([], "")
         if answers:
@@ -795,6 +817,86 @@ class ZhihuSource(RealSource):
             body.append(Block(kind=BLOCK_P, text=out.excerpt.strip()))
         out.body = body
         return out, None
+
+    def _answer_full(self, aid):
+        """一条回答的**全文**：`/api/v4/answers/<数字 id>`（2026-10-19 实测免签名，HTTP 200）。
+
+        上一版详情里只有列表给的 220 字摘要，真人一句"知乎的长答案直接被省略了"就点在这：
+        接口明明给全文，却只摆了个摘要。返回 (dict, 失败原因)。
+        """
+        aid = str(aid).lstrip("a")
+        key = "a:" + aid
+        hit = self._ans.get(key)
+        if hit is not None:
+            item, why, when = hit
+            if item or (time.time() - when) < self.RETRY_AFTER:
+                return item, why
+        url = ("%s/api/v4/answers/%s?include=content,excerpt,voteup_count,comment_count,"
+               "created_time,author.name,question.title" % (self.base_url, aid))
+        item, why = {}, ""
+        try:
+            data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎回答正文",
+                                      headers={"x-requested-with": "fetch"}, timeout=LIST_TIMEOUT)
+        except FeedNetError as e:
+            why = str(e)
+        except Exception as e:
+            why = type(e).__name__
+        else:
+            item = data if isinstance(data, dict) else {}
+            if not (item.get("content") or item.get("excerpt")):
+                why = "接口回了 200 但没内容"
+            elif item.get("content_need_truncated") or len(str(item.get("content") or "")) < self.TRUNC_HINT:
+                # 单条接口对长回答只给前几百字（`content_need_truncated: true`），
+                # 但"问题的回答列表"里那份是**完整的**。拿 question.id 去列表里捞同一条。
+                qid = str(((item.get("question") or {}).get("id")) or "")
+                if qid:
+                    rows, _w = self._answers(qid)
+                    for r in rows:
+                        if str(r.get("id") or "") == aid:
+                            item = dict(item)
+                            item["content"] = r.get("content") or item.get("content")
+                            item["content_need_truncated"] = False
+                            break
+        self._ans[key] = (item, _zhihu_why(why) if why else "", time.time())
+        return self._ans[key][0], self._ans[key][1]
+
+    def _answer_comments(self, aid, limit=None):
+        """一条回答底下的评论（知乎的"评论"就是这一层，挂在回答下面当子节点）。
+
+        `author` 是 `{role, member:{name}}` 那种嵌一层的形状，`_zhihu_name` 认得出。
+        """
+        aid = str(aid).lstrip("a")
+        key = "c:" + aid
+        hit = self._ans.get(key)
+        if hit is not None:
+            items, _why, when = hit
+            if items or (time.time() - when) < self.RETRY_AFTER:
+                return list(items)
+        limit = int(limit or self.ANSWER_COMMENTS_LIMIT)
+        url = ("%s/api/v4/answers/%s/comments?limit=%d&offset=0&order=normal"
+               "&include=data[*].content,like_count,created_time,author.name"
+               % (self.base_url, aid, limit))
+        out = []
+        try:
+            data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎回答评论",
+                                      headers={"x-requested-with": "fetch"},
+                                      timeout=LIST_TIMEOUT)
+        except Exception:
+            data = {}
+        rows = (data or {}).get("data") if isinstance(data, dict) else None
+        for i, it in enumerate([r for r in (rows or []) if isinstance(r, dict)]):
+            body = feed_mod.blocks_from_html(str(it.get("content") or ""), max_blocks=6)
+            if not body:
+                continue
+            out.append(Comment(
+                cid=str(it.get("id") or ("zc%d" % i)),
+                author=_zhihu_name(it.get("author")) or "匿名",
+                created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
+                score=int(it.get("vote_count") or it.get("like_count") or 0),
+                body=body,
+            ))
+        self._ans[key] = (out, "", time.time())
+        return out
 
     def _answers(self, qid):
         """问一次这个问题的回答列表。返回 (list[dict], 失败原因)。
@@ -845,24 +947,34 @@ class ZhihuSource(RealSource):
         """
         if not self.has_auth:
             return [], None
+        if self._is_answer_post(post):
+            # 点开的是一条回答：评论栏就是**这条回答底下**的评论（问题→回答→评论三层里的第三层）。
+            return self._answer_comments(post.id), None
         qid = self._question_id(post)
         if not qid:
             return [], None
         answers, _why = self._answers(qid)
-        # 点开的就是其中一条回答时，别再把它自己列一遍
-        skip = ""
-        if self._is_answer_post(post):
-            skip = str(post.id)[1:] if str(post.id).startswith("a") else str(post.id)
         out = []
         for i, it in enumerate(answers):
-            if skip and str(it.get("id") or "") == skip:
-                continue
+            # 回答摆**全文**：它是"评论"这一层的正文，缩成摘要就变成"长答案被省略"了。
+            blocks = self._localize_images(
+                feed_mod.blocks_from_html(str(it.get("content") or ""),
+                                          max_blocks=self.ANSWER_BLOCKS_COMMENT), limit=3)
+            if not blocks:
+                txt = self._excerpt_of(it)
+                blocks = [Block(kind=BLOCK_P, text=txt)] if txt else []
+            aid = str(it.get("id") or "")
+            reps = []
+            if (aid and i < self.ANSWERS_WITH_COMMENTS
+                    and int(it.get("comment_count") or 0) > 0):
+                reps = self._answer_comments(aid)
             out.append(Comment(
-                cid=str(it.get("id") or ("a%d" % i)),
+                cid=aid or ("a%d" % i),
                 author=_zhihu_name(it.get("author")) or "匿名",
                 created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
                 score=int(it.get("voteup_count") or 0),
-                body=[Block(kind=BLOCK_P, text=(self._excerpt_of(it) or ""))],
+                body=blocks,
+                replies=reps,
             ))
         return out, None
 

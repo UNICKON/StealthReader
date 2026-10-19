@@ -764,8 +764,15 @@ else:
           and d_c[0].score == int(answers[0].get("voteup_count") or 0),
           (d_c[0].author if d_c else None, d_c[0].score if d_c else None,
            feed_sources._zhihu_name(answers[0].get("author"))))
-    check("（真夹具）同一问题只请求一次（详情和评论共用 `_ans`）",
-          zok.http.calls == 1, zok.http.calls)
+    # 知乎现在是三层：问题 / 回答 / 回答底下的评论。一次详情 = 回答列表 1 次 +
+    # 前几条回答各自的评论各 1 次（ANSWERS_WITH_COMMENTS）。再多就是重复请求了。
+    check("（真夹具）回答列表只取一次，回答底下的评论各取一次",
+          1 <= zok.http.calls <= 1 + feed_sources.ZhihuSource.ANSWERS_WITH_COMMENTS,
+          zok.http.calls)
+    _calls_before = zok.http.calls
+    zok.comments(zp0[0])
+    check("（真夹具）评论区再取一次不会再发请求（回答和它下面的评论都走缓存）",
+          zok.http.calls == _calls_before, (zok.http.calls, _calls_before))
     check("作者的两种形状都认（回答是 author.name，评论才是嵌一层的 member.name）",
           feed_sources._zhihu_name({"name": "甲"}) == "甲"
           and feed_sources._zhihu_name({"role": "normal", "member": {"name": "乙"}}) == "乙")
@@ -774,8 +781,9 @@ else:
     check("回答里没给正文时不留一条空评论（漏出原因或摘要）",
           all(c.body and c.body[0].text for c in d_c))
     check("回答拿不到时如实为空", zdeny.comments(zp0[0]) == ([], None))
-    check("同一个问题不会为详情和评论各下一次（_ans 共用）",
-          len(zok._ans) == 1, list(zok._ans.keys())[:2])
+    check("同一个问题不会为详情和评论各下一次（_ans 共用；每条回答的评论另有自己的键）",
+          any(not k.startswith("c:") for k in zok._ans) and len(zok._ans) <= 1 + 3,
+          sorted(zok._ans.keys())[:4])
 
 print("\n=== 14. 小红书（批次 E）：免登录是空壳，带上 Cookie 后内容在页面的状态块里 ===")
 check("小红书标记为需要凭据", feed_sources.XhsSource.needs_auth is True)
@@ -1254,6 +1262,23 @@ check("折叠父节点：整棵子树一起收，表头写「▸ 2」",
 _nv.collapsed.discard("c1")
 check("展开状态下有回复的节点带 ▾",
       "▾ 父" in feed_mod.render_comment_tree(_nv, _th))
+
+# 知乎那三层：问题帖的评论栏其实是「回答」，回答帖/其它来源才是「评论」
+def _label_of(post):
+    nv = feed_mod.FeedNav()
+    nv.set_detail(post, [feed_sources.Comment(cid="1", author="甲", body=[
+        feed_sources.Block(kind=feed_sources.BLOCK_P, text="一句")])])
+    h = feed_mod.render_detail(post, nv, _th)
+    return "条回答" if "条回答" in h else ("条评论" if "条评论" in h else "")
+
+check("知乎问题帖那一栏写「N 条回答」（问题→回答→评论里的第二层要点名）",
+      _label_of(feed_sources.Post(source="zhihu", source_label="知乎",
+                                  pid="2090011710354633282", title="问题？")) == "条回答")
+check("知乎回答帖和别的来源那一栏写「N 条评论」",
+      _label_of(feed_sources.Post(source="zhihu", source_label="知乎",
+                                  pid="a1996154806155368317", title="回答？")) == "条评论"
+      and _label_of(feed_sources.Post(source="ithome", source_label="IT之家",
+                                      pid="1", title="帖子")) == "条评论")
 
 _src_lines = open(os.path.join(SR, "feed_sources.py"), encoding="utf-8").read().splitlines()
 _bad = [(i + 1, ln.strip()) for i, ln in enumerate(_src_lines)
