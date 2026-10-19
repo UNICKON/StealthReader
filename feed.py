@@ -749,35 +749,17 @@ def _clip(text, limit):
 def _scale(theme):
     """字号阶梯：全部由社区页自己那个字号推出来，一份数字管全文。
 
-    比例而不是固定加减：人把字号调到 18 时，标题跟着涨到 23、元信息涨到 13，
-    层级关系不变；要是写死 `size+5 / size-4`，字号一大层级就先塌了。
+    标题**只比正文大 1px**（真人两轮反馈："标题太大太显眼"）——靠加粗和亮一档的强调色
+    分层就够了，字号别再往上顶；一屏里标题比正文还抢眼的话，读起来像公告栏不像信息流。
     """
     s = int(theme["size"])
     return {
-        "title": s + max(3, int(round(s * 0.30))),
-        "head": s + 2,
+        "title": s + 1,
+        "head": s,
         "body": s,
         "sub": max(11, s - 1),
         "meta": max(10, int(round(s * 0.72))),
     }
-
-
-def _line_color(c):
-    """细线的颜色：比正文弱很多，但**透明度不许跟着掉**（透明窗口上会整条消失）。"""
-    r, g, b, a = _toward_mid(c, 0.62)
-    return (r, g, b, max(150, a))
-
-
-def _hairline(theme, top=16, bottom=0):
-    """一条 1px 细线，用来分隔帖子卡片 / 正文与评论。
-
-    只有"高 1px 的表格单元格底色"这一种写法真的会被 Qt 画出来：`<hr>` 不吃主题色
-    （透明窗口上等于没有），`──────` 是字符画，字体一换就断成虚线（都实测过）。
-    """
-    return ('<table width="100%%" cellspacing="0" cellpadding="0" border="0" '
-            'style="margin:%dpx 0 %dpx 0;"><tr><td style="height:1px; line-height:1px;'
-            ' font-size:1px; background-color:%s;">&nbsp;</td></tr></table>'
-            % (top, bottom, theme["line"]))
 
 
 def theme_from_config(cfg, width_px=420, text_color=None):
@@ -806,8 +788,6 @@ def theme_from_config(cfg, width_px=420, text_color=None):
         "mark": _rgba(_toward_mid(p, -0.34)),      # 标题/强调：比正文更抢眼（浅色正文→更白）
         "dim": _rgba(_toward_mid(p, 0.24)),        # 次要信息（摘要）
         "faint": _rgba(_toward_mid(p, 0.42)),      # 更次要（时间、统计、来源）
-        "rule": _rgba(_toward_mid(p, 0.66)),       # 旧版评论树的字符竖线（留作兼容）
-        "line": _rgba(_line_color(p)),             # 细线
         "accent": _rgba(_accent(p)),               # 来源名：色相偏蓝，亮度不动
         "size": size,
         "family": _font_css(cfg.get("feed_font_family")),
@@ -920,15 +900,17 @@ def _img_tag(src, theme, max_w):
 
 
 def render_list(posts, nav, theme):
-    """混流列表：一条一段，靠留白和字号分层，卡片之间一条 1px 细线。
+    """列表：一条一段，**只靠留白分层，不画分隔线**。
 
-        标题          比正文大 5px、加粗、强调色，最多两行（超了截断）
+        标题          比正文大 1px、加粗、强调色，最多两行（超了截断）
         摘要          比正文小 1px、弱一档，两行以内
         来源 · 作者 · 时间 · 428 赞 · 6 条评论      一行小字，压到最弱
         [图]          缩到 240px 宽，不占满整屏
 
-    **不用底色块**（真人说过"区块不要用背景色，太显眼"），也**不画"当前选中"标记**：
-    HTML 是上一次渲染的产物，光标一动标记就成了过期信息（高亮只由 extra selection 画）。
+    真人两轮都提到这一列：先说"太难看"，再说"不要用横线隔开、标题太大太显眼"。
+    所以分隔线全删了（细线在透明窗口上本来就偏显眼），改用**条与条之间 22px 的空白**；
+    标题只比正文大 1px。**不用底色块**，也**不画"当前选中"标记**：HTML 是上一次渲染的
+    产物，光标一动标记就成了过期信息（高亮只由 extra selection 画）。
     """
     if not posts:
         return _wrap(theme, f'<p style="margin:24px 0 0 0; color:{theme["faint"]};'
@@ -936,60 +918,58 @@ def render_list(posts, nav, theme):
     f = _scale(theme)
     parts = []
     for i, p in enumerate(posts):
-        if i:
-            parts.append(_hairline(theme, top=18, bottom=0))
+        gap = 22 if i else 0                 # 条与条之间用留白分开，不画线
         parts.append(f'<a name="post-{esc(p.id)}"></a>')
         parts.append(
-            f'<p style="margin:0; color:{theme["mark"]}; font-size:{f["title"]}px;'
+            f'<p style="margin:{gap}px 0 0 0; color:{theme["mark"]};'
+            f' font-size:{f["title"]}px;'
             f' font-weight:bold; line-height:135%;">{esc(_clip(p.title, TITLE_CLIP))}</p>'
         )
         if p.excerpt:
             parts.append(
-                f'<p style="margin:5px 0 0 0; color:{theme["dim"]};'
+                f'<p style="margin:4px 0 0 0; color:{theme["dim"]};'
                 f' font-size:{f["sub"]}px; line-height:150%;">'
                 f'{esc(_clip(p.excerpt, EXCERPT_CLIP))}</p>'
             )
         meta = _meta_line(p, theme)
         if meta:
             parts.append(
-                f'<p style="margin:7px 0 0 0; color:{theme["faint"]};'
+                f'<p style="margin:6px 0 0 0; color:{theme["faint"]};'
                 f' font-size:{f["meta"]}px;">{meta}</p>'
             )
         if p.cover:
             if theme["lowkey"]:
-                parts.append(f'<p style="margin:7px 0 0 0; color:{theme["faint"]};'
+                parts.append(f'<p style="margin:6px 0 0 0; color:{theme["faint"]};'
                              f' font-size:{f["meta"]}px;">[图]</p>')
             else:
-                parts.append(f'<p style="margin:9px 0 0 0;">'
+                parts.append(f'<p style="margin:8px 0 0 0;">'
                              f'{_img_tag(p.cover, theme, 240)}</p>')
     return _wrap(theme, "".join(parts))
 
 
 def render_detail(post, nav, theme):
-    """帖子详情：标题 / 元信息 / 细线 / 正文 / 细线 / 评论区。
+    """帖子详情：标题 / 元信息 / 正文 / 评论区，全用留白分层，不画横线。
 
-    正文和评论之间只隔一条细线加一行"12 条评论"，**不往正文里插任何说明句**——
+    评论区和正文之间只留一行"12 条评论"，**不往正文里插任何说明句**——
     真人明确说过前端不要解释性文字（以前会写"评论在下面（10 条）。"这种东西）。
     """
     if post is None:
         return _wrap(theme, "")
     f = _scale(theme)
     parts = [
-        f'<p style="margin:0; color:{theme["mark"]}; font-size:{f["title"] + 1}px;'
+        f'<p style="margin:0; color:{theme["mark"]}; font-size:{f["title"]}px;'
         f' font-weight:bold; line-height:140%;">{esc(post.title)}</p>',
-        f'<p style="margin:7px 0 0 0; color:{theme["faint"]};'
+        f'<p style="margin:6px 0 0 0; color:{theme["faint"]};'
         f' font-size:{f["meta"]}px;">{_meta_line(post, theme)}</p>',
     ]
-    parts.append(_hairline(theme, top=14, bottom=12))
     parts.extend(_block_paragraphs(post.body, theme))
     total, _shown, nfold = nav.comment_stats() if nav.detail_loaded else (0, 0, 0)
     if total:
-        parts.append(_hairline(theme, top=20, bottom=10))
         head = "%s 条评论" % _num(total)
         if nfold:
             head += " · %d 处折叠" % nfold
         parts.append(
-            f'<p style="margin:0; color:{theme["faint"]};'
+            f'<p style="margin:26px 0 0 0; color:{theme["faint"]};'
             f' font-size:{f["meta"]}px;">{esc(head)}</p>'
         )
         parts.append(render_comment_tree(nav, theme))
@@ -1018,11 +998,22 @@ def comment_guide(depth):
     return "│ " * max(0, int(depth))
 
 
-def render_comment_tree(nav, theme):
-    """树状评论：用**左边距**分层次（每层 14px），不需要字符画。
+COMMENT_INDENT = 16        # 每层缩进
+COMMENT_MAX_DEPTH = 6      # 缩进封顶：再深就挤成一列字了（reddit 也是到一定层数就不再缩）
 
-    折叠的节点在表头前面放 `▸ n`（n = 藏着几条），展开的是 `▾`；表头文本本身不动，
-    所以 `comment_needle()` 拿来定位照样命中（它是前缀）。
+
+def render_comment_tree(nav, theme):
+    """树状评论，照 reddit 那套排：**每条一个作者行，回复往里缩一层**。
+
+    以前是把子回复折成一行 `「李四：同意」` 塞进父评论正文里——看着像引用，其实是回复，
+    层级全丢了，真人原话"评论和子评论没处理好，应该像 reddit 那样"。
+
+    现在：
+    - 每条评论 = 作者行（作者 · 时间 · 赞，最小号、最弱色）+ 正文（正文号、正常色）；
+    - 子回复作为独立一条，左边距多 16px，层级一眼看出来；缩进封顶 6 层，再深就不再往里缩
+      （否则第 10 层只剩几个字宽）；
+    - 有回复的节点，作者行前面放 `▾`（展开）/ `▸ n`（折叠，n = 藏着的条数）；`Z` 切换；
+    - 表头文本本身不动，`comment_needle()` 拿来定位照样命中（它匹配的是表头那段）。
     """
     vis = nav.visible_comments()
     if not vis:
@@ -1030,20 +1021,22 @@ def render_comment_tree(nav, theme):
     f = _scale(theme)
     parts = []
     for c, depth, _p in vis:
-        ind = 14 * max(0, int(depth))
+        depth = max(0, int(depth))
+        ind = COMMENT_INDENT * min(depth, COMMENT_MAX_DEPTH)
+        gap = 14 if depth == 0 else 8
         head = _comment_header(c)
         if c.replies:
             if c.id in nav.collapsed:
                 head = "▸ %d · %s" % (len(descendant_ids(c)), head)
             else:
-                head = "▾ · " + head
+                head = "▾ " + head
         parts.append(
-            f'<p style="margin:13px 0 0 {ind}px; color:{theme["faint"]};'
+            f'<p style="margin:{gap}px 0 0 {ind}px; color:{theme["faint"]};'
             f' font-size:{f["meta"]}px;">{esc(head)}</p>'
         )
         for b in (c.body or []):
             parts.append(
-                f'<p style="margin:3px 0 0 {ind}px; color:{theme["text"]};'
+                f'<p style="margin:2px 0 0 {ind}px; color:{theme["text"]};'
                 f' font-size:{f["sub"]}px; line-height:160%;">'
                 f'{_block_inline(b, theme)}</p>'
             )

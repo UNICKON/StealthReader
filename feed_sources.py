@@ -293,16 +293,11 @@ class IthomeSource(RealSource):
         # 正文为空（只有图/表情）就干脆不摆正文：以前这里塞一句"（这条评论只有图片或表情）"，
         # 那是给开发者看的注释，不是内容。真人说过前端不要这种话。
         blocks = [Block(kind=BLOCK_P, text=text)] if text else []
-        quotes = []
-        for k in [x for x in (c.get("children") or []) if isinstance(x, dict)][:6]:
-            kui = k.get("userInfo") or {}
-            kt = "".join(str(e.get("content") or "") for e in (k.get("elements") or [])
-                         if isinstance(e, dict)).strip()
-            if kt:
-                quotes.append("「%s：%s」" % (kui.get("userNick") or "某人", kt))
-        if quotes:
-            blocks.append(Block(kind=BLOCK_QUOTE, text="\n".join(quotes)))
-        # 没展开的回复**不写"还有 N 条"**：那是说明文字，不是评论内容。数量在页脚/折叠角里体现。
+        # 回复作为**真子节点**往下缩一层（reddit 那样）。以前是折成一行
+        # `「李四：同意」` 塞进父评论正文——看着像引用、其实是回复，层级全丢了，
+        # 真人的原话就是"评论和子评论没处理好，应该像 reddit 那样"。
+        replies = [self._to_comment(k, j) for j, k in enumerate(
+            [x for x in (c.get("children") or []) if isinstance(x, dict)][:8])]
         ts = feed_mod.parse_time(c.get("postTime"))
         return Comment(
             cid=str(c.get("id") or ("c%d" % i)),
@@ -310,6 +305,7 @@ class IthomeSource(RealSource):
             created=feed_mod.human_time(ts) if ts else "",
             score=int(c.get("support") or 0),
             body=blocks,
+            replies=replies,
         )
 
     def comments(self, post, cursor=None):
@@ -775,10 +771,13 @@ class ZhihuSource(RealSource):
         out = Post.from_dict(post.to_dict())
         body = []
         if self._is_answer_post(post):
-            # 推荐/关注里点开的是一条回答：正文只摆**摘要**（真人要求缩略，不要全文），
-            # 下面"评论"那一栏给的是同一个问题下别的回答的摘要。
-            # 正文只摆一句摘要：知乎一条回答动辄几千字，正式读还是开原帖。
-            out.body = body
+            # 推荐/关注里点开的是一条回答。回答正文接口要 `x-zse-96` 签名（实测 404），
+            # 所以正文只有列表已经给我们的那段摘要——**但绝不能空着**：
+            # 上一版这里 `out.body = body`（body 是空列表），详情页就只剩标题和一行元信息，
+            # 真人报的"知乎点进详情没内容了"就是这么来的。
+            txt = (out.excerpt or "").strip() or (post.excerpt or "").strip()
+            if txt:
+                out.body = [Block(kind=BLOCK_P, text=txt)]
             return out, None
         answers, why = self._answers(str(post.id)) if self.has_auth else ([], "")
         if answers:
@@ -790,7 +789,10 @@ class ZhihuSource(RealSource):
         else:
             body.append(Block(kind=BLOCK_QUOTE, text="回答没取到（%s）" % (why or "没给原因")))
         if out.excerpt and not _zhihu_junk_excerpt(out.excerpt):
-            body.append(Block(kind=BLOCK_QUOTE, text=out.excerpt))
+            body.append(Block(kind=BLOCK_P, text=out.excerpt))
+        if not body and (out.excerpt or "").strip():
+            # 兜底：一句话都没有的时候宁可把摘要摆上，也不给一页空白。
+            body.append(Block(kind=BLOCK_P, text=out.excerpt.strip()))
         out.body = body
         return out, None
 
@@ -1333,7 +1335,7 @@ class NgaSource(RealSource):
             _nga_blocks(first.get("content") or "", limit=40, attach_base=self._attach_base(data)),
             limit=8)
         if not out.body:
-            out.body = [Block(kind=BLOCK_QUOTE, text="这条帖子的正文没取到（可能是权限或者改版了）。")]
+            out.body = [Block(kind=BLOCK_QUOTE, text="正文没取到")]
         return out, None
 
     def comments(self, post, cursor=None):
@@ -1471,26 +1473,28 @@ def _xhs_comments(obj):
         if not isinstance(it, dict):
             continue
         blocks = feed_mod.blocks_from_html(it.get("content") or "", max_blocks=8)
-        # 同上：空正文就是空正文，不补说明句。
+        # 同上：空正文就是空正文，不补说明句。子评论作为**真子节点**往下缩一层。
         subs = []
-        for sub in (it.get("sub_comments") or []):
-            if not isinstance(sub, dict):
-                continue
-            stext = feed_mod.strip_html(sub.get("content") or "")
-            if not stext:
-                continue
+        for j, sub in enumerate([x for x in (it.get("sub_comments") or [])
+                                 if isinstance(x, dict)][:8]):
+            sblocks = feed_mod.blocks_from_html(sub.get("content") or "", max_blocks=6)
             who = ((sub.get("user_info") or {}).get("nickname") or "").strip()
-            subs.append("「%s：%s」" % (who or "某人", stext))
-        if subs:
-            # 子评论（回复）不多，直接并到同一条里，比另起一层好读
-            blocks.append(Block(kind=BLOCK_QUOTE, text="\n".join(subs[:6])))
-        # 没展开的子评论不写"还有 N 条"（理由同 IT之家那条）。
+            if not sblocks and not who:
+                continue
+            subs.append(Comment(
+                cid=str(sub.get("id") or ("s%s-%d" % (it.get("id"), j))),
+                author=who or "某人",
+                created=feed_mod.human_time(int(sub.get("create_time") or 0) / 1000.0),
+                score=int(sub.get("like_count") or 0),
+                body=sblocks,
+            ))
         out.append(Comment(
             cid=str(it.get("id") or ("c%d" % i)),
             author=((it.get("user_info") or {}).get("nickname") or "").strip() or "某人",
             created=feed_mod.human_time(int(it.get("create_time") or 0) / 1000.0),
             score=int(it.get("like_count") or 0),
             body=blocks,
+            replies=subs,
         ))
     return out
 
@@ -1942,8 +1946,7 @@ class HupuSource(RealSource):
         out = []
         for i, it in enumerate(rows):
             blocks = feed_mod.blocks_from_html(it.get("content") or "", max_blocks=12)
-            if not blocks:
-                blocks = [Block(kind=BLOCK_P, text="（这条回复没内容）")]
+            # 没内容的回复就是没内容（以前塞一句"（这条回复没内容）"，属于说明文字）。
             out.append(Comment(
                 cid=str(it.get("pid") or ("r%d" % i)),
                 author=_hupu_name(it.get("author")) or "匿名",

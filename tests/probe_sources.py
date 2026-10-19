@@ -1054,10 +1054,13 @@ check("评论解析：作者 / 赞数 / 时间 / 正文都对得上",
       len(_xc) == 2 and _xc[0].author == "张三" and _xc[0].score == 12
       and _xc[0].created and _xc[0].body[0].text == "这个真好用",
       [(c.author, c.score) for c in _xc])
-check("子评论并进同一条（不再写「还有 1 条回复」这种说明句）",
-      any("李四" in b.text for b in _xc[0].body)
-      and not any("没展开" in b.text for b in _xc[0].body),
-      [b.text for b in _xc[0].body])
+check("子评论是真子节点（reddit 那样往里缩一层），不再折成「李四：同意」塞进父正文",
+      [r.author for r in _xc[0].replies] == ["李四"]
+      and _xc[0].replies[0].body
+      and _xc[0].replies[0].body[0].text == "同意"
+      and not any("「" in b.text for b in _xc[0].body),
+      ([b.text for b in _xc[0].body], [(r.author, [b.text for b in r.body])
+                                       for r in _xc[0].replies]))
 check("空内容的评论正文就是空（不补占位句），作者空着就叫某人",
       _xc[1].body == [] and _xc[1].author == "某人", [b.text for b in _xc[1].body])
 
@@ -1127,10 +1130,12 @@ check("IT之家评论解析：作者 / 赞 / 正文都对得上，三组合并�
       and _ic[0].body[0].text.startswith("不知道为啥")
       and [c.id for c in _ic] == ["77110764", "77110765", "77110766"],
       [(c.id, c.author, c.score) for c in _ic])
-check("回复并进同一条（不再写「还有 N 条没展开」这种说明句）",
-      any("李四" in b.text for b in _ic[0].body)
-      and not any("没展开" in b.text for b in _ic[0].body),
-      [b.text for b in _ic[0].body])
+check("回复是真子节点（作者/正文各自一条），不再折进父评论正文",
+      [r.author for r in _ic[0].replies] == ["李四"]
+      and _ic[0].replies[0].body[0].text == "同感"
+      and not any("「" in b.text for b in _ic[0].body),
+      ([b.text for b in _ic[0].body],
+       [(r.author, [b.text for b in r.body]) for r in _ic[0].replies]))
 check("空内容的评论就留空正文，不塞「这条评论只有图片或表情」之类的注释",
       _ic[1].body == [] and _ic[1].author == "某人",
       [b.text for b in _ic[1].body])
@@ -1183,9 +1188,9 @@ check("字号阶梯随社区页字号走，标题 > 正文 > 摘要 > 元信息"
       _sc["title"] > _sc["body"] > _sc["sub"] > _sc["meta"], _sc)
 _th22 = feed_mod.theme_from_config({"feed_font_size": 22}, 520)
 _sc22 = feed_mod._scale(_th22)
-check("把字号调到 22，整条阶梯一起涨（层级比例不塌）",
-      _sc22["title"] > _sc["title"] and _sc22["meta"] > _sc["meta"]
-      and _sc22["title"] - _sc22["body"] >= 5, (_sc, _sc22))
+check("标题只比正文大 1px（真人：标题太大太显眼）",
+      _sc["title"] == _sc["body"] + 1 and _sc22["title"] == _sc22["body"] + 1
+      and _sc22["title"] > _sc["title"] and _sc22["meta"] > _sc["meta"], (_sc, _sc22))
 check("没配就用 15px + 界面无衬线字体栈（不再拿书页的宋体大字号顶上来）",
       feed_mod.theme_from_config({}, 520)["size"] == 15
       and "YaHei" in feed_mod.theme_from_config({}, 520)["family"],
@@ -1204,8 +1209,9 @@ check("定位文本和渲染用的是同一份截断（否则高亮和点击都�
       and feed_mod.post_needle(_pl) in feed_mod.render_list([_pl], feed_mod.FeedNav(), _th))
 _lh = feed_mod.render_list([_pl, feed_sources.Post(source="x", pid="2", title="第二条")],
                            feed_mod.FeedNav(), _th)
-check("帖子之间用 1px 细线分开（表格单元格底色那种，Qt 真的会画）",
-      _lh.count("background-color") == 1 and "height:1px" in _lh, _lh.count("background-color"))
+check("帖子之间不画分隔线（真人：不要用横线隔开），只留上留白",
+      "background-color" not in _lh and "<hr" not in _lh and "margin:22px 0 0 0" in _lh,
+      _lh.count("background-color"))
 check("不再用字符画（竖线/破折号）当分隔线和评论层级",
       "────" not in _lh and "│" not in _lh)
 _det = feed_mod.render_detail(
@@ -1221,6 +1227,34 @@ _cn.set_detail(feed_sources.Post(source="x", pid="1", title="t"),
 _ct = feed_mod.render_comment_tree(_cn, _th)
 check("空正文的评论不补占位句（正文为空就是空）",
       not any(k in _ct for k in ("只有图片", "没展开", "还藏着")), _ct[:120])
+# 评论树的层级：父 0px、子 16px、孙 32px，且每条都有自己的作者行
+def _mk_tree():
+    leaf = feed_sources.Comment(cid="c3", author="孙", body=[
+        feed_sources.Block(kind=feed_sources.BLOCK_P, text="孙的话")])
+    child = feed_sources.Comment(cid="c2", author="子", score=3, body=[
+        feed_sources.Block(kind=feed_sources.BLOCK_P, text="子的话")], replies=[leaf])
+    root = feed_sources.Comment(cid="c1", author="父", body=[
+        feed_sources.Block(kind=feed_sources.BLOCK_P, text="父的话")], replies=[child])
+    nv = feed_mod.FeedNav()
+    nv.set_detail(feed_sources.Post(source="x", pid="1", title="t"), [root])
+    return nv, root
+
+_nv, _root = _mk_tree()
+_cth = feed_mod.render_comment_tree(_nv, _th)
+check("评论树按层缩进：父 0px、子 16px、孙 32px（像 reddit 那样往里缩）",
+      "margin:14px 0 0 0px" in _cth and "margin:8px 0 0 16px" in _cth
+      and "margin:8px 0 0 32px" in _cth, _cth[:260])
+check("每条评论都有自己的作者行（子回复不是折进父正文的「某某：…」）",
+      ">▾ 父</p>" in _cth and ">▾ 子 · 3 赞</p>" in _cth
+      and ">孙</p>" in _cth and "「" not in _cth, _cth.count("margin:"))
+_nv.collapsed.add("c1")
+_cth2 = feed_mod.render_comment_tree(_nv, _th)
+check("折叠父节点：整棵子树一起收，表头写「▸ 2」",
+      "▸ 2 · 父" in _cth2 and "子的话" not in _cth2 and "孙的话" not in _cth2, _cth2[:160])
+_nv.collapsed.discard("c1")
+check("展开状态下有回复的节点带 ▾",
+      "▾ 父" in feed_mod.render_comment_tree(_nv, _th))
+
 _src_lines = open(os.path.join(SR, "feed_sources.py"), encoding="utf-8").read().splitlines()
 _bad = [(i + 1, ln.strip()) for i, ln in enumerate(_src_lines)
         if not ln.strip().startswith("#")
