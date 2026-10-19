@@ -908,6 +908,9 @@ class ZhihuSource(RealSource):
                 created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
                 score=int(it.get("vote_count") or it.get("like_count") or 0),
                 body=body,
+                # 子评论里既有"回这条评论的"也有"回另一个子评论那人的"；
+                # 接口给了 `reply_to_author`，照它写才不会全标成父评论作者
+                reply_to=_zhihu_name(it.get("reply_to_author")),
             ))
         self._ans[key] = (out, "", time.time())
         return out
@@ -951,6 +954,7 @@ class ZhihuSource(RealSource):
                 created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
                 score=int(it.get("vote_count") or it.get("like_count") or 0),
                 body=body,
+                reply_to=_zhihu_name(it.get("reply_to_author")),
             )
             out.append(c)
             built[i] = c
@@ -2321,7 +2325,7 @@ class HupuSource(RealSource):
         detail = self._detail_json(post.id)
         th = detail.get("thread") or {}
         body = self._localize_images(
-            feed_mod.blocks_from_html(th.get("content") or "", max_blocks=60), limit=4)
+            feed_mod.blocks_from_html(th.get("content") or "", max_blocks=60), limit=12)
         if th.get("title"):
             out.title = feed_mod.strip_html(th["title"]) or out.title
         if not body and th.get("video"):
@@ -2336,7 +2340,8 @@ class HupuSource(RealSource):
         rows = ((detail.get("replies") or {}).get("list")) or []
         out = []
         for i, it in enumerate(rows):
-            blocks = feed_mod.blocks_from_html(it.get("content") or "", max_blocks=12)
+            blocks = self._localize_images(
+                feed_mod.blocks_from_html(it.get("content") or "", max_blocks=12), limit=2)
             # 没内容的回复就是没内容（以前塞一句"（这条回复没内容）"，属于说明文字）。
             out.append(Comment(
                 cid=str(it.get("pid") or ("r%d" % i)),

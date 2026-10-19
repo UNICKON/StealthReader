@@ -1584,22 +1584,32 @@ _ZC_PARENT = {"data": [
      "created_time": 1700000000}]}
 _ZC_CHILD = {"data": [
     {"id": 111, "content": "<p>子评论一</p>", "author": {"name": "丙"},
-     "created_time": 1700000000}]}
+     "created_time": 1700000000,
+     "reply_to_author": {"role": "normal", "member": {"name": "甲"}}},
+    {"id": 112, "content": "<p>子评论二</p>", "author": {"name": "丁"},
+     "created_time": 1700000000,
+     "reply_to_author": {"role": "normal", "member": {"name": "丙"}}}]}
 _zc = feed_sources.ZhihuSource(FakeHttp({
     "answers/9/comments": _ZC_PARENT,          # 注意：`a9` 会被 lstrip("a") 成 `9`
     "comments/11/child_comments": _ZC_CHILD}, cache=MemCache()), {"cookie": "x"})
 _zc.images_off = True
 _zrows = _zc._answer_comments("a9")
 check("知乎：回答的评论能带出一层子评论",
-      len(_zrows) == 2 and len(_zrows[0].replies) == 1 and _zrows[0].replies[0].author == "丙",
+      len(_zrows) == 2 and len(_zrows[0].replies) == 2 and _zrows[0].replies[0].author == "丙",
       [(c.author, len(c.replies)) for c in _zrows])
 check("知乎：没有子评论的那条就是空列表（不塞占位）", _zrows[1].replies == [],
       _zrows[1].replies)
+check("知乎：子评论“回复谁”照接口的 reply_to_author 写（不是一律父评论作者）",
+      _zrows[0].replies[0].reply_to == "甲" and _zrows[0].replies[1].reply_to == "丙",
+      [c.reply_to for c in _zrows[0].replies])
+check("知乎：回另一个子评论的人时，表头写的是那个人",
+      feed_mod.FeedNav().reply_to_of(_zrows[0].replies[1]) == "丙",
+      feed_mod.FeedNav().reply_to_of(_zrows[0].replies[1]))
 _check = feed_mod.FeedNav()
 _check.set_detail(feed_mod.Post(source="zhihu", pid="a9", title="t"), _zrows)
 _depths = [d for _c, d, _p in _check.visible_comments()]
-check("知乎：三层树在导航里是 甲(0) → 丙(1) → 乙(0)（深度优先，子评论真缩进一层）",
-      _depths == [0, 1, 0], _depths)
+check("知乎：三层树在导航里是 甲(0) → 丙(1) → 丁(1) → 乙(0)（深度优先，子评论真缩进一层）",
+      _depths == [0, 1, 1, 0], _depths)
 _check.collapsed.add(_zrows[0].id)
 check("收掉父评论：它下面那条子评论也跟着不显示（子树一起收）",
       [c.id for c, _d, _p in _check.visible_comments()] == ["11", "12"],

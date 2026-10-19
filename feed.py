@@ -282,6 +282,7 @@ class _BlocksHTMLParser(HTMLParser):
         self.buf = []
         self.kind = BLOCK_P
         self.stack = []
+        self.stack_via = []     # 与 stack 同步：每层是"怎么进来的"
         self.skip = 0
         self.pre = 0
         self.max_blocks = max_blocks
@@ -615,6 +616,7 @@ class FeedNav(object):
         # 详情里还能再进一层时用它回退（知乎：某个回答 → 这个问题的全部回答）。
         # 退格先退栈，栈空了才回列表。
         self.stack = []
+        self.stack_via = []     # 与 stack 同步：每层是"怎么进来的"
 
     # --- 列表 ---
     def reset(self, channel=None):
@@ -635,6 +637,7 @@ class FeedNav(object):
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
         self.stack = []
+        self.stack_via = []     # 与 stack 同步：每层是"怎么进来的"
         if channel is not None:
             self.channel = channel
 
@@ -682,7 +685,7 @@ class FeedNav(object):
         self.child_show = {}        # 每条评论已经摊开几条回复
         return True
 
-    def open_detail(self, post):
+    def open_detail(self, post, via=""):
         """详情里再进一层（知乎：回答 → 它所属问题的全部回答）。
 
         当前这一层整份压进 `stack`，退格原样回来——不用重新取数，也不丢折叠状态。
@@ -692,6 +695,7 @@ class FeedNav(object):
         if self.view == "detail" and self.post is not None:
             self.stack.append((self.post, self.roots, self.flat,
                                self.c_index, set(self.collapsed)))
+            self.stack_via.append(via or "")
         self.view = "detail"
         self.post = post
         self.roots = []
@@ -772,6 +776,8 @@ class FeedNav(object):
         if self.stack:
             # 栈里还有一层：回上一层详情，内容原样（不重新取数）
             self.post, self.roots, self.flat, self.c_index, self.collapsed = self.stack.pop()
+            if self.stack_via:
+                self.stack_via.pop()
             self.view = "detail"
             self.detail_loaded = True
             return True
@@ -787,7 +793,19 @@ class FeedNav(object):
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
         self.stack = []
+        self.stack_via = []     # 与 stack 同步：每层是"怎么进来的"
         return True
+
+    def home(self):
+        """**一次退到列表主页**：详情里不管压了几层（知乎：回答 → 这个问题）都退到底。
+
+        真人要的是"在回答里点标题进了问题页，Esc/Z 就直接回主页"，不是先退回那个回答。
+        """
+        if self.view == "list":
+            return False
+        while self.back():
+            pass
+        return self.view == "list"
 
     def move_comment(self, step):
         """上下移动光标——**在"看得见的评论"里移动**，不是在整个拍平序列里。

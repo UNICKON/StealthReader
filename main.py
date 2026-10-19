@@ -1094,6 +1094,19 @@ REVIEW_KEY_NAMES = {
 # 设置里关掉"偷瞄时也捕获空格/回车"之后，全局层仍然要收这些（评分与退出必须能收到）
 REVIEW_KEY_NAMES_MIN = {"1", "2", "3", "4", "u", "r", "esc"}
 
+# 偷瞄 + 社区页时归我们的键（vkCode → Qt 键码）。**不含 Esc**：Esc 仍然是"退出偷瞄"。
+# 字母的 vkCode 正好等于 ASCII 大写，Qt 的 Qt.Key_A…Qt.Key_Z 也是这个值。
+FEED_KEY_NAMES = {
+    0x20: Qt.Key_Space, 0x0D: Qt.Key_Return, 0x08: Qt.Key_Backspace,
+    0x26: Qt.Key_Up, 0x28: Qt.Key_Down,
+    0x21: Qt.Key_PageUp, 0x22: Qt.Key_PageDown,
+    0x24: Qt.Key_Home, 0x23: Qt.Key_End,
+    0xDB: Qt.Key_BracketLeft, 0xDD: Qt.Key_BracketRight,
+    0xBC: Qt.Key_Comma, 0xBE: Qt.Key_Period,
+}
+for _ch in "CEJKORVZ":
+    FEED_KEY_NAMES[ord(_ch)] = getattr(Qt, "Key_" + _ch)
+
 # 窗口内的 Qt 键 → 复习键名。窗口内这一套走 keyPressEvent，不经过任何钩子：
 # 窗口不是当前活动窗口就收不到，所以不会妨碍你在别的软件里打字。
 # 空格/回车在窗口内**永远**是翻面键（不翻面就没法用）；设置项只管"偷瞄时要不要全局捕获"。
@@ -1250,6 +1263,14 @@ class GlobalInputHook:
                         if name and name != "esc" and (
                                 self.owner.review_swallow_all() or name in REVIEW_KEY_NAMES_MIN):
                             self.owner.review_key_signal.emit(name)
+                            return 1
+                    if self.owner.peek_captures_feed_keys():
+                        # 偷瞄着看社区页时，c/v/e/z/j/k/空格… 这些是**我们自己的快捷键**：
+                        # 收下来交给主线程（窗口不聚焦也能用），并不收起窗口。
+                        # 以前这里一律"任意键 → 退出偷瞄"，按一下 C 窗口就没了。
+                        fk = FEED_KEY_NAMES.get(int(info.vkCode))
+                        if fk is not None:
+                            self.owner.feed_key_signal.emit(int(fk))
                             return 1
                     self.owner.peek_exit_signal.emit("key")
                     return 0  # 其他按键放行（也退出偷瞄）
@@ -2361,6 +2382,8 @@ class StealthReader(QWidget):
     bookshelf_updated_signal = pyqtSignal(list)
     # 背诵模式的按键也来自钩子线程（那里不能碰界面），一律发信号回主线程处理
     review_key_signal = pyqtSignal(str)
+    # 社区页的键也来自钩子线程（偷瞄时窗口不聚焦，只能在全局层收），发回主线程处理
+    feed_key_signal = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
@@ -2434,6 +2457,11 @@ class StealthReader(QWidget):
         self.feed_board_pending = False  # 正在拉板块表（回来要弹选择器，见 feed_load_boards）
         self.feed_boards_tried = set()   # 拉过全量板块表的来源（拉不到也别反复去拉）
         self.feed_detail_top = False     # 刚点进帖子：正文回来时把视图钉在顶部
+        self.feed_switch_prev = None     # 上次切社区/切板块之前的样子（Z 撤回用）
+        self.feed_list_pos = {}          # (来源, 板块) -> 列表滚到哪了（本次会话内有效）
+        self.feed_restore_pos = None     # 下一次重画之后要落到的位置（None = 保持原样）
+        self._feed_pending_scroll = None  # 已经排上队、还没执行的那次恢复（可以被取消）
+        self._feed_press_had_sel = False  # 按下那一刻是不是正选着字（选字就别折叠/别进帖）
         self.feed_gen = 0               # "视图代次"：换代后回来的旧结果一律丢掉（见 on_feed_data）
         # 内存里留一份刚取到的内容：切栏目/退回列表/再进同一个帖子时**先把它画上去**，
         # 后台照旧去取（磁盘缓存 TTL 一到就得重新请求，小红书那一页要 1.7 秒），
@@ -2517,6 +2545,7 @@ class StealthReader(QWidget):
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
+        self.feed_key_signal.connect(self.on_feed_peek_key, Qt.QueuedConnection)
         self.bookshelf_updated_signal.connect(self.on_bookshelf_updated)
         # 最后一道保险：任何退出路径（托盘退出、右键退出、关窗、异常退出）都要停掉 Anki
         # 后台线程。QThread 还在跑就被析构，PyQt 会直接崩，而且 Anki 可能停在"藏起来"的状态。
@@ -3608,6 +3637,9 @@ class StealthReader(QWidget):
                 self.feed_click(event.pos(), force=True)
                 self.clear_text_selection()
                 return True
+            if event.type() == QEvent.MouseButtonPress:
+                # 按下这一刻记一下有没有选区：鼠标一按选区就没了，等到 release 再问就问不出来
+                self._feed_press_had_sel = bool(self.text_edit.textCursor().hasSelection())
             if event.type() == QEvent.MouseButtonPress and self.on_viewport_press(event):
                 return True
             if event.type() == QEvent.MouseMove and self.on_viewport_move(event):
@@ -4657,6 +4689,11 @@ class StealthReader(QWidget):
             html = feed_mod.render_detail(nav.post, nav, theme)
         else:
             html = feed_mod.render_list(nav.posts, nav, theme)
+        before = None
+        try:
+            before = int(self.text_edit.verticalScrollBar().value())
+        except Exception:
+            before = None
         doc = self.text_edit.document()
         doc.setDefaultStyleSheet("")
         base = self.feed_image_dir()
@@ -4669,6 +4706,15 @@ class StealthReader(QWidget):
         self.feed_highlight()
         self.update_review_bar()
         self._feed_sig = self._feed_sig_now()
+        want = self.feed_restore_pos
+        self.feed_restore_pos = None
+        if want is None and nav.view == "list":
+            want = before       # 同一屏重画（比如到底续了一页）别把人弹回顶部
+        if want:
+            # 文档刚换完，高度还没算出来，得等这一轮事件走完再滚；期间要是又有人
+            # 明确要求"回顶部"（feed_scroll_top），这次恢复就作废，别把它拽回去。
+            self._feed_pending_scroll = want
+            QTimer.singleShot(0, self._feed_apply_pending_scroll)
 
     def apply_feed_style(self):
         """社区页排版：左对齐、不首行缩进、行距沿用阅读设置；卡片间距和评论缩进由 HTML 自带。
@@ -4803,6 +4849,9 @@ class StealthReader(QWidget):
         nav = self.feed_nav
         if nav is None:
             return False
+        if getattr(self, "_feed_press_had_sel", False):
+            self._feed_press_had_sel = False
+            return False        # 先把字划上了再点：那是选字复制，不是折叠/进帖
         block_no = self.text_edit.cursorForPosition(pos).blockNumber()
         if nav.view == "detail" and block_no == 0 and self.feed_question_id():
             # 详情页点标题 = 进这个问题的全部回答（标题就是问题）
@@ -4897,10 +4946,124 @@ class StealthReader(QWidget):
 
     def feed_scroll_top(self):
         """换了一屏内容（进详情/切来源/切栏目）就回到最上面——不然会停在上一屏的位置。"""
+        self.feed_restore_pos = 0
+        self._feed_pending_scroll = None    # 排队中的"恢复旧位置"作废：现在就要顶部
         try:
             self.text_edit.verticalScrollBar().setValue(0)
         except Exception:
             pass
+
+    def _feed_pos_key(self):
+        return (str(getattr(self.feed_source(), "key", "")),
+                str(getattr(self.feed_nav, "channel", "") or ""))
+
+    def _feed_save_pos(self):
+        """把列表此刻滚到哪记下来（按来源+板块分）。详情页不记：它是另一个页面。"""
+        nav = self.feed_nav
+        if nav is None or nav.view != "list" or not self.feed_mode:
+            return
+        try:
+            self.feed_list_pos[self._feed_pos_key()] = int(
+                self.text_edit.verticalScrollBar().value())
+        except Exception:
+            pass
+
+    def _feed_apply_pending_scroll(self):
+        want = self._feed_pending_scroll
+        self._feed_pending_scroll = None
+        if want:
+            self._feed_set_scroll(want)
+
+    def _feed_set_scroll(self, value):
+        try:
+            sb = self.text_edit.verticalScrollBar()
+            sb.setValue(max(sb.minimum(), min(sb.maximum(), int(value))))
+        except Exception:
+            pass
+
+    def _feed_from_answer(self):
+        """当前详情是不是"从某个回答点标题进来的问题页"。"""
+        nav = self.feed_nav
+        return bool(nav is not None and nav.stack_via and nav.stack_via[-1] == "question_from_answer")
+
+    def feed_home(self):
+        """回列表主页：详情里不管压了几层都退到底，并回到刚才读到的那一行。"""
+        nav = self.feed_nav
+        if nav is None or nav.view != "detail":
+            return False
+        if not nav.home():
+            return False
+        self.feed_gen += 1                  # 还在飞的详情结果不许再把视图弹回详情
+        self.feed_restore_pos = self.feed_list_pos.get(self._feed_pos_key())
+        self.render_feed()
+        self.update_review_bar()
+        return True
+
+    def feed_scroll_comments_top(self):
+        """E：跳到评论区顶部（第一条评论的表头那一行）。"""
+        nav = self.feed_nav
+        if nav is None or nav.view != "detail":
+            return False
+        vis = nav.visible_comments()
+        if not vis:
+            sb = self.text_edit.verticalScrollBar()
+            sb.setValue(sb.maximum())        # 没有评论就停在正文末尾
+            return True
+        needle = feed_mod.comment_needle(vis[0][0], nav)
+        if not needle:
+            return False
+        doc = self.text_edit.document()
+        cur = QTextCursor(doc)
+        cur.movePosition(QTextCursor.Start)
+        hit = doc.find(needle, cur)
+        if hit.isNull():
+            return False
+        return self.feed_scroll_to(hit)
+
+    def _feed_switch_mark(self, kind):
+        """记下"切换之前"的样子：来源下标、板块、以及列表滚到哪（Z 撤回用）。"""
+        self._feed_save_pos()          # 现在是旧来源/旧栏目，位置要记在它们头上
+        self.feed_switch_prev = {
+            "kind": kind,
+            "source_i": self.feed_source_i,
+            "channel": str(getattr(self.feed_nav, "channel", "") or ""),
+            "pos": self.feed_list_pos.get(self._feed_pos_key()),
+        }
+
+    def feed_undo_switch(self):
+        """Z：撤回上一次切社区/切板块（回到切换前那个来源、那个板块、那个位置）。"""
+        nav = self.feed_nav
+        prev = self.feed_switch_prev
+        if nav is None:
+            return False
+        if not prev:
+            self.review_hint("没有可撤回的切换", 1200)
+            return False
+        self.feed_switch_prev = None
+        changed = False
+        if prev["source_i"] != self.feed_source_i and self.feed_sources:
+            i = max(0, min(len(self.feed_sources) - 1, int(prev["source_i"])))
+            self.feed_source_i = i
+            self.config["feed_source"] = getattr(self.feed_source(), "key", "")
+            changed = True
+        channel = prev.get("channel") or ""
+        if channel and channel != nav.channel:
+            nav.channel = channel
+            self.config[self.feed_board_key()] = channel
+            changed = True
+        if not changed:
+            return False
+        self.feed_error = ""
+        self.feed_gen += 1
+        nav.reset()
+        nav.channel = channel or nav.channel or self.feed_first_channel()
+        src = self.feed_source()
+        self.feed_restore_pos = prev.get("pos")
+        self.render_feed()
+        self.update_review_bar()
+        self.feed_load("list")
+        log_event("社区：撤回到 %s · %s" % (getattr(src, "label", ""), nav.channel))
+        return True
 
     def feed_autoload_more(self, *_args):
         """列表页滚到底（离底 60px 以内）就自动续下一页。
@@ -5025,7 +5188,7 @@ class StealthReader(QWidget):
             pid=qid, title=cur.title, url="https://www.zhihu.com/question/%s" % qid,
             score=cur.score, score_label=cur.score_label, comment_label="回答",
         )
-        if not nav.open_detail(qp):
+        if not nav.open_detail(qp, via="question_from_answer"):
             return False
         self.feed_gen += 1
         self.render_feed()
@@ -5139,6 +5302,10 @@ class StealthReader(QWidget):
         键位不好记，所以右键菜单里也有同名的两项（见 build_feed_menu）。"""
         if not self.feed_sources:
             return False
+        if len(self.feed_sources) <= 1:
+            self.review_hint("只有一个社区可切", 1200)
+            return False
+        self._feed_switch_mark("source")
         n = len(self.feed_sources)
         self.feed_source_i = (self.feed_source_i + step) % n
         src = self.feed_source()
@@ -5175,7 +5342,9 @@ class StealthReader(QWidget):
         except Exception:
             channels = ["全部"]
         if len(channels) <= 1:
+            self.review_hint("这个社区只有一栏（全部）", 1500)
             return False
+        self._feed_switch_mark("channel")
         try:
             i = channels.index(self.feed_nav.channel)
         except ValueError:
@@ -5200,6 +5369,7 @@ class StealthReader(QWidget):
         channel = str(channel or "")
         if not channel or channel == nav.channel:
             return False
+        self._feed_switch_mark("channel")
         self.feed_nav.channel = channel
         self.config[self.feed_board_key()] = channel
         self.feed_error = ""
@@ -5252,6 +5422,14 @@ class StealthReader(QWidget):
             boards = list(src.boards() or [])
         except Exception:
             boards = []
+        if not boards:
+            # 没有 boards()（IT之家/知乎/微博/V2EX/linux.do 都是"只有栏目"）：
+            # 它的 channels() 就是能切的那几栏，别一口咬定"没有板块"
+            try:
+                boards = [{"label": ch, "fid": "", "group": ""}
+                          for ch in (src.channels() or [])]
+            except Exception:
+                boards = []
         if not boards:
             self.review_hint("这个来源没有板块列表", 1500)
             return False
@@ -5329,12 +5507,21 @@ class StealthReader(QWidget):
             return True
         if key == Qt.Key_Escape:
             if nav.view == "detail":
-                self.feed_back()
+                if self._feed_from_answer():
+                    # 知乎：回答 → 点标题进问题 这一层，Esc 直接回主页（不先退回那个回答）
+                    self.feed_home()
+                else:
+                    self.feed_back()
                 return True
             return False                # 不在详情里就不抢 Esc（老板键可能就挂在它上面）
         if key == Qt.Key_Z:
-            self.feed_toggle_collapse()
-            return True
+            # Z：详情里 = 回主页；列表里 = 撤回上一次切社区/切板块
+            if nav.view == "detail":
+                return self.feed_home()
+            return self.feed_undo_switch()
+        if key == Qt.Key_E:
+            # E：直接到评论区顶部（正文再长也不用一段段滚）
+            return self.feed_scroll_comments_top()
         if key == Qt.Key_BracketLeft:
             self.feed_cycle_source(-1)
             return True
@@ -5354,13 +5541,12 @@ class StealthReader(QWidget):
             self.feed_open_original()
             return True
         if key == Qt.Key_C:
-            # C = 换社区（来源）。键位不好记，所以右键菜单里也有同名项（见 build_feed_menu）
-            self.feed_source_picker()
-            return True
+            # C = **直接**切到下一个社区（不弹窗、不用确认）；Z 撤回。
+            # 想挑某一个再走右键菜单里的"选择社区…"（见 build_feed_menu）
+            return self.feed_cycle_source(1)
         if key == Qt.Key_V:
-            # V = 换板块（栏目）。NGA 那样几百个版面也能在这儿打字搜
-            self.feed_board_picker()
-            return True
+            # V = 直接切到下一个板块（来源内的栏目），Z 撤回
+            return self.feed_cycle_channel(1)
         sb = self.text_edit.verticalScrollBar()
         page = max(1, self.text_edit.viewport().height())
         if key in (Qt.Key_Space, Qt.Key_PageDown):
@@ -5405,6 +5591,7 @@ class StealthReader(QWidget):
         self.update_review_bar()
         self.apply_style()              # 先刷样式：别让文字停在别的页面留下的透明态
         self.text_edit.setExtraSelections([])
+        self.feed_restore_pos = self.feed_list_pos.get(self._feed_pos_key()) or 0
         self.render_feed()              # 先落一个空壳，正文随后台取数回来
         self.feed_load("list")
         self.update_tray_tooltip()
@@ -5413,6 +5600,7 @@ class StealthReader(QWidget):
     def exit_feed_mode(self, reason=""):
         if not self.feed_mode:
             return
+        self._feed_save_pos()           # 下次进来还坐在这儿
         self.feed_mode = False
         snap = self.feed_snapshot
         self.feed_snapshot = None
@@ -5930,6 +6118,16 @@ class StealthReader(QWidget):
         才响应——在别的软件里打字再也不会把卡片翻掉或评掉。
         """
         return bool(self.peek_mode and self.review_mode and not self.safe_mode)
+
+    def peek_captures_feed_keys(self):
+        """偷瞄这一层要不要把社区键收下来：偷瞄中 + 当前页是社区 + 没被安全文档盖住。"""
+        return bool(self.peek_mode and self.feed_mode and not self.safe_mode)
+
+    def on_feed_peek_key(self, key):
+        """偷瞄时收到的社区键（信号从钩子线程来，这里是主线程）。"""
+        if not self.feed_mode:
+            return
+        self.on_feed_key(int(key))
 
     def on_review_key(self, name):
         """复习键回调。信号从钩子线程发过来，QueuedConnection 保证在这里是主线程。"""
@@ -7133,7 +7331,9 @@ class StealthReader(QWidget):
             act.setChecked(i == self.feed_source_i)
             act.triggered.connect(lambda _=False, idx=i: self.feed_goto_source(idx))
         src_menu.addSeparator()
-        src_menu.addAction("🔍 列表里搜…（C）").triggered.connect(self.feed_source_picker)
+        src_menu.addAction("▶️ 下一个社区（C）").triggered.connect(
+            lambda: self.feed_cycle_source(1))
+        src_menu.addAction("🔍 选一个社区…").triggered.connect(self.feed_source_picker)
         # 换板块（栏目）
         try:
             channels = list(src.channels() or []) if src is not None else []
@@ -7150,7 +7350,9 @@ class StealthReader(QWidget):
             board_menu.addSeparator()
             board_menu.addAction("　…还有 %d 个（用下面的列表搜）" % (len(channels) - 24)).setEnabled(False)
         board_menu.addSeparator()
-        board_menu.addAction("🔍 列表里搜…（V）").triggered.connect(self.feed_board_picker)
+        board_menu.addAction("▶️ 下一个板块（V）").triggered.connect(
+            lambda: self.feed_cycle_channel(1))
+        board_menu.addAction("🔍 选一个板块…").triggered.connect(self.feed_board_picker)
         cmenu.addSeparator()
         cmenu.addAction("🔄 重新拉取（R）").triggered.connect(self.feed_reload)
         if nav is not None and nav.view == "detail":

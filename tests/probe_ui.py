@@ -1225,6 +1225,108 @@ w.enter_feed_mode()
 w.feed_load("list")
 pump(lambda: w.feed_nav.posts and not w.feed_busy)
 check("示例源照常出内容", len(w.feed_nav.posts) >= 5, len(w.feed_nav.posts))
+
+# 10. 这一轮的键位：C/V 直接切、Z 撤回与回主页、E 到评论区、选字不折叠、偷瞄不收起
+_i0 = w.feed_source_i
+_n = len(w.feed_sources)
+w.feed_switch_prev = None
+check("C 直接切到下一个社区（不弹窗、不换页）",
+      w.on_feed_key(Qt.Key_C) is True and w.feed_source_i == (_i0 + 1) % _n,
+      (w.feed_source_i, _i0, _n))
+pump(lambda: not w.feed_busy)
+check("Z 撤回上一次切社区", w.on_feed_key(Qt.Key_Z) is True and w.feed_source_i == _i0,
+      (w.feed_source_i, _i0))
+pump(lambda: not w.feed_busy)
+check("撤完再按 Z 就说“没得撤”，不装作成功",
+      w.on_feed_key(Qt.Key_Z) is False)
+_ith = [i for i, _s in enumerate(w.feed_sources) if _s.key == "ithome"]
+if _ith:
+    w.feed_source_i = _ith[0]
+    w.feed_nav.channel = w.feed_first_channel()
+    _ch0 = w.feed_nav.channel
+    check("V 直接切到下一栏（不弹窗）",
+          w.on_feed_key(Qt.Key_V) is True and w.feed_nav.channel != _ch0,
+          (w.feed_nav.channel, _ch0))
+    pump(lambda: not w.feed_busy)
+    check("Z 撤回板块切换", w.on_feed_key(Qt.Key_Z) is True and w.feed_nav.channel == _ch0,
+          (w.feed_nav.channel, _ch0))
+    pump(lambda: not w.feed_busy)
+    w.feed_source_i = _i0
+
+# 列表位置：进出社区页不该每次回到顶部（"每次打开都定位到顶部"）
+w.feed_nav.view = "list"
+w.render_feed()
+qapp.processEvents()
+_sb = w.text_edit.verticalScrollBar()
+_want = min(40, _sb.maximum())
+w.feed_restore_pos = _want
+w.render_feed()
+qapp.processEvents()
+qapp.processEvents()
+check("重画之后还能落回刚才那一行（不是永远顶部）",
+      w.text_edit.verticalScrollBar().value() == _want,
+      (_want, w.text_edit.verticalScrollBar().value()))
+
+# 详情：E 到评论区顶部、Z 一口气回列表、知乎"回答→问题"的 Esc 也回列表
+def _fake_detail(via=""):
+    nav = w.feed_nav
+    nav.view = "detail"
+    nav.post = feed_sources.Post(
+        source="demo", source_label="示例", pid="z1", title="标题",
+        body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="正文段落。" * 120)
+              for _ in range(5)])
+    nav.roots = [feed_sources.Comment(
+        cid="e%d" % i, author="甲%d" % i,
+        body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="正文" * 80)])
+        for i in range(6)]
+    nav.flat = feed_mod.comment_forest(nav.roots)
+    nav.detail_loaded = True
+    nav.c_index = 0
+    nav.stack = [(feed_sources.Post(source="demo", pid="z0", title="上一层"),
+                  [], [], 0, set())]
+    nav.stack_via = [via] if via else []
+    w.render_feed()
+    w.feed_scroll_top()
+    qapp.processEvents()
+
+
+_fake_detail()
+_e_ok = w.on_feed_key(Qt.Key_E)
+_sb2 = w.text_edit.verticalScrollBar()
+check("E 直接跳到评论区（不用一段段滚）",
+      _e_ok is True and _sb2.value() > 0, (_e_ok, _sb2.value()))
+_fake_detail()
+check("详情里 Z 一次回到列表主页",
+      w.on_feed_key(Qt.Key_Z) is True and w.feed_nav.view == "list"
+      and not w.feed_nav.stack and not w.feed_nav.stack_via,
+      (w.feed_nav.view, len(w.feed_nav.stack)))
+_fake_detail(via="question_from_answer")
+check("知乎：回答→问题 这一层按 Esc 直接回主页（不先退回那个回答）",
+      w.on_feed_key(Qt.Key_Escape) is True and w.feed_nav.view == "list",
+      (w.feed_nav.view, len(w.feed_nav.stack)))
+_fake_detail()
+check("普通详情 Esc 还是只退一层（没有多退）",
+      w.on_feed_key(Qt.Key_Escape) is True and w.feed_nav.view == "detail"
+      and w.feed_nav.post.id == "z0",
+      (w.feed_nav.view, getattr(w.feed_nav.post, "id", "")))
+
+# 先划字再点：那是选字复制，不许折叠/进帖
+w._feed_press_had_sel = True
+_anypt = w.text_edit.cursorRect(w.text_edit.textCursor()).center()
+check("先选着字再点：不折叠、不进帖", w.feed_click(_anypt) is False)
+check("用掉之后标志会清掉（不会一直挡着点击）", w._feed_press_had_sel is False)
+
+# 偷瞄（Ctrl+E）+ 社区页：c/v/e/z 归我们，不再"按任意键就收起窗口"
+import main as _main_mod
+w.peek_mode, w.safe_mode = True, False
+check("偷瞄 + 社区页：社区键被我们收下（c/v/e/z 都在表里）",
+      w.peek_captures_feed_keys() is True
+      and all(ord(ch) in _main_mod.FEED_KEY_NAMES for ch in "CEVZJKO"))
+check("偷瞄只对社区页生效（书页照旧“任意键退出”）",
+      (setattr(w, "feed_mode", False) or w.peek_captures_feed_keys() is False))
+w.feed_mode = True
+w.peek_mode = False
+
 w.exit_feed_mode(reason="probe")
 try:
     w.hide()
