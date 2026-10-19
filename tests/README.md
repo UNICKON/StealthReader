@@ -44,7 +44,7 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 它把 `save_annotations`、`log_event`、全局热键、`os.startfile` 全换成桩，
 并且停掉进度保存定时器。**但光靠这些桩不够**：本轮真出现过"探针把真人 config.json 改坏"（社区字体被写成 Helvetica、多出个 `feed_board_boardsrc`、阅读进度被清成 0），
 有些路绕过了替身直接落了盘。所以三个探针现在**开跑前备份、`atexit` 原样写回**，
-**速度（内存先画 / 预取选中那条 / 内容没变不重排 / 过期缓存先给后取）**、跑完 `config.json` 一个字节都不变（探针自己比 SHA-256）；`probe_ui.py` 还额外把
+**速度（内存先画 / 预取前三条与悬停那条 / 内容没变不重排 / 过期缓存先给后取 / 低调模式不下图）**、跑完 `config.json` 一个字节都不变（探针自己比 SHA-256）；`probe_ui.py` 还额外把
 模块级 `save_config` 也堵上。
 
 `check_auth.py` 只读、不发帖不点赞；**带 Cookie 拿到的响应只写到

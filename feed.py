@@ -895,6 +895,10 @@ def _meta_line(post, theme):
 
 
 def _img_tag(src, theme, max_w):
+    src = str(src or "")
+    if "." not in src:
+        # 低调模式下来源给的占位（不是文件名）：照样标出"这里有图"，但不放 <img>
+        return f'<span style="color:{theme["faint"]};">[图]</span>'
     w = max(80, min(theme["width"] - 40, max_w))
     return f'<img src="{esc(src)}" width="{w}">'
 

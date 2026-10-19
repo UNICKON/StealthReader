@@ -856,6 +856,18 @@ else:
     except FeedNetError as e:
         check("空壳页会如实说'要登录'", "feed_auth.json" in str(e) and "登录" in str(e), str(e))
 
+# 建来源时要把"不下图"这个开关带到每个来源上（不然低调模式只在渲染层生效，图还是照下）
+_made_off = feed_sources.build_real_sources(
+    cache_root=None, config={"feed_lowkey": True, "feed_sources": ["ithome", "zhihu"]})
+check("feed_lowkey 打开时，每个来源都带上「不下图」",
+      bool(_made_off) and all(getattr(s, "images_off", False) for s in _made_off),
+      [(getattr(s, "key", "?"), getattr(s, "images_off", None)) for s in _made_off])
+_made_on = feed_sources.build_real_sources(
+    cache_root=None, config={"feed_lowkey": False, "feed_sources": ["ithome"]})
+check("没开低调模式时这个开关是关的",
+      bool(_made_on) and not any(getattr(s, "images_off", True) for s in _made_on),
+      [(getattr(s, "key", "?"), getattr(s, "images_off", None)) for s in (_made_on or [])])
+
 if not raw_xn:
     skip("小红书正文", "缺 xhs_note_state.json")
 else:
@@ -912,6 +924,25 @@ else:
         feed_net.set_fresh(False)
     check("按 R 时小红书的内存缓存让路（平时 0 次请求，刷新时每次都真取）",
           _cached_calls == 0 and _fresh_calls >= 2, (_cached_calls, _fresh_calls))
+    # 低调模式（feed_lowkey）：正文只画 [图]，那就一张图都别下——
+    # 实测一条 9 图的笔记光下图就要 2.5 秒，而这 2.5 秒换来的只是屏幕上的 [图]。
+    xs_off = feed_sources.XhsSource(
+        FakeHttp(bytes_routes={"/explore/": _xhs_page(raw_xn)},
+                 status={"edith.xiaohongshu.com": 406}, cache=MemCache()), cred)
+    xs_off.images_off = True
+    xs_off._cover("https://img.example.com/cover.jpg")
+    d_off, _ = xs_off.detail(seed)
+    off_imgs = [b for b in d_off.body if b.kind == feed_mod.BLOCK_IMG]
+    check("低调模式下正文的图块还在、但都不带本地文件（渲染层画 [图]）",
+          bool(off_imgs) and all(not b.url for b in off_imgs), len(off_imgs))
+    check("低调模式下封面和正文图一个都不下（省时间也省流量）",
+          xs_off.http.image_calls == [], xs_off.http.image_calls[:3])
+    check("低调模式下列表还是知道「这条有图」（占位不是文件名）",
+          xs_off._cover("https://img.example.com/c.jpg") == "lowkey"
+          and "." not in xs_off._cover("https://img.example.com/c.jpg"))
+    check("低调模式不影响正文文字", any(b.text for b in d_off.body),
+          [b.text[:10] for b in d_off.body[:3]])
+
     # token 丢了就打不开——如实说，不去瞎猜
     xs4 = feed_sources.XhsSource(FakeHttp(cache=MemCache()), cred)
     seed2 = feed_sources.Post(source="xhs", pid="deadbeef", title="t", url="https://www.xiaohongshu.com/explore/deadbeef")
@@ -1258,6 +1289,14 @@ check("帖子之间不画分隔线（真人：不要用横线隔开），只留�
       _lh.count("background-color"))
 check("不再用字符画（竖线/破折号）当分隔线和评论层级",
       "────" not in _lh and "│" not in _lh)
+_th_low = feed_mod.theme_from_config({"feed_lowkey": True, "feed_font_size": 18}, 520)
+_low = feed_mod.render_list(
+    [feed_sources.Post(source="x", source_label="X", pid="3", title="带图的一条",
+                       cover="lowkey")], feed_mod.FeedNav(), _th_low)
+check("低调模式：列表仍标出「有图」，但一张图都不下（没有 <img>）",
+      "[图]" in _low and "<img" not in _low, _low[-140:])
+check("低调模式的占位不会被当成图片路径（不会画坏图）",
+      "<img" not in feed_mod._img_tag("lowkey", _th, 240))
 _det = feed_mod.render_detail(
     feed_sources.Post(source="x", source_label="X", pid="1", title="标题",
                       body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="正文")]),

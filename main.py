@@ -2293,7 +2293,15 @@ class SettingsDialog(QDialog):
         self.config["safe_doc_path"] = self.safe_doc_input.text().strip()
         self.config["anki_key"] = self.anki_key_input.text().strip() or "ctrl+alt+a"
         self.config["feed_key"] = self.feed_key_input.text().strip() or "ctrl+alt+f"
-        self.config["feed_lowkey"] = self.feed_lowkey_check.isChecked()
+        lowkey_now = self.feed_lowkey_check.isChecked()
+        if lowkey_now != bool(self.config.get("feed_lowkey", False)):
+            self._feed_memo.clear()          # 图要不要落地变了，手里那份得重取
+        self.config["feed_lowkey"] = lowkey_now
+        for _src in (self.feed_sources or []):
+            try:
+                _src.images_off = lowkey_now
+            except Exception:
+                pass
         self.config["anki_deck"] = self.anki_deck_input.text().strip()
         self.config["anki_swallow_keys"] = self.anki_swallow_check.isChecked()
         self.config["anki_conceal"] = self.anki_conceal_check.isChecked()
@@ -2421,6 +2429,11 @@ class StealthReader(QWidget):
         self._feed_sig = None           # 上次真正画出来的内容签名（见 _feed_sig_now）
         self._feed_inflight = {}        # 正在取的 key -> Event：后来的等前面那个，不重复发请求
         self.FEED_MEMO_TTL = 90         # 内存里这份多久算"还热"（秒）：热就不发请求，"刷新"照样真取
+        self._feed_warm_post = None     # 光标底下那条（停稳了就去预取它）
+        self._feed_warm_timer = QTimer(self)
+        self._feed_warm_timer.setSingleShot(True)
+        self._feed_warm_timer.setInterval(150)
+        self._feed_warm_timer.timeout.connect(self._feed_warm_now)
         if FEED_OK:
             try:
                 self.feed_sources = feed_mod.build_sources(
@@ -4293,9 +4306,6 @@ class StealthReader(QWidget):
                         self._feed_memo_put(memo_key, (posts, nxt, what == "more"))
                     self.feed_data_signal.emit("list", (posts, nxt, what == "more", gen, tag))
                     # 提前渲染：列表刚回来就把第一条的正文/评论预取回来放着。
-                    # 人一般就是往下按回车，等他把光标挪到第二条时第一屏早就热了。
-                    if what == "list" and posts:
-                        _prefetch(src, posts[0])
                 else:
                     ev, mine = self._feed_lock(memo_key)
                     if not mine and not fresh:
@@ -4317,26 +4327,6 @@ class StealthReader(QWidget):
             finally:
                 feed_net.set_fresh(False)
 
-        def _prefetch(src_, p_):
-            """把一条帖子的详情+评论先取回来存进内存。失败一声不响（进帖时还会再取一次）。"""
-            key = ("detail", tag, p_.id)
-            if key in self._feed_memo:
-                return
-            ev, mine = self._feed_lock(key)
-            if not mine:
-                return                   # 这一条已经有人在取了（人按下的那次），不重复
-            try:
-                dp, _e = src_.detail(p_)
-                cm, _c = src_.comments(p_)
-                self._feed_memo_put(key, (dp, cm))
-            except Exception:
-                return
-            finally:
-                self._feed_unlock(key, ev)
-            try:
-                self.feed_data_signal.emit("prefetch", (dp, cm, gen, tag))
-            except Exception:
-                pass
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -4358,6 +4348,130 @@ class StealthReader(QWidget):
             ev.set()
         except Exception:
             pass
+
+    def feed_post_at(self, pos):
+        """鼠标底下是列表里的哪一条（不在列表页、或者点的是空白就 None）。"""
+        nav = self.feed_nav
+        if nav is None or nav.view != "list" or not nav.posts:
+            return None
+        try:
+            block_no = self.text_edit.cursorForPosition(pos).blockNumber()
+            hit = None
+            for obj, kind, cur in self.feed_item_blocks():
+                if cur.blockNumber() <= block_no:
+                    hit = (obj, kind)
+                else:
+                    break
+        except Exception:
+            return None
+        if hit is None or hit[1] != "post":
+            return None
+        return hit[0]
+
+    def feed_warm_soon(self, post):
+        """光标落到某条上：等它停 180ms 再把正文取回来（扫过去的时候不会乱发请求）。"""
+        if post is None or not self.feed_mode or not self._feed_warm_enabled():
+            return False
+        nav = self.feed_nav
+        if nav is None or nav.view != "list":
+            return False
+        if self._feed_warm_post is not None and str(self._feed_warm_post.id) == str(post.id):
+            return False
+        self._feed_warm_post = post
+        self._feed_warm_timer.start()
+        return True
+
+    def _feed_warm_enabled(self):
+        return True
+
+    def _feed_warm_now(self):
+        post = self._feed_warm_post
+        self._feed_warm_post = None
+        if post is not None:
+            self.feed_warm(post)
+        return False
+
+    def feed_warm(self, post=None):
+        """把一条帖子的正文 + 评论提前取回来放在内存里（人按回车时就是 0 毫秒）。
+
+        和"人按下的那次"共用 `_feed_lock`：同一条只会有一个线程在取，绝不会各发一遍请求。
+        """
+        nav = self.feed_nav
+        if not self.feed_mode or nav is None:
+            return False
+        if post is None:
+            post = nav.selected()
+        if post is None:
+            return False
+        try:
+            tag = getattr(self.feed_source(), "key", "")
+            key = ("detail", tag, post.id)
+            if key in self._feed_memo or key in self._feed_inflight:
+                return False
+            ev, mine = self._feed_lock(key)
+            if not mine:
+                return False
+            src = self.feed_source()
+            gen = self.feed_gen
+
+            def work():
+                try:
+                    dp, _e = src.detail(post)
+                    cm, _c = src.comments(post)
+                    self._feed_memo_put(key, (dp, cm))
+                    self.feed_data_signal.emit("prefetch", (dp, cm, gen, tag))
+                except Exception:
+                    pass
+                finally:
+                    self._feed_unlock(key, ev)
+
+            threading.Thread(target=work, daemon=True).start()
+            return True
+        except Exception:
+            return False
+
+    def feed_warm_top(self, posts=None, n=3):
+        """列表回来：串着把前 n 条的正文取回来（一条一条来，别一上来就并发打人家）。
+
+        人看列表的这几秒正好用来预热——等他点的时候前几条已经是 0 毫秒。
+        同一条永远只取一次（`_feed_lock`），换来源/换栏目/进详情就立刻收手。
+        """
+        nav = self.feed_nav
+        if not self.feed_mode or nav is None:
+            return False
+        try:
+            posts = list(posts or nav.posts)[:n]
+        except Exception:
+            return False
+        if not posts:
+            return False
+        src = self.feed_source()
+        tag = getattr(src, "key", "")
+        gen = self.feed_gen
+
+        def work():
+            for p in posts:
+                if gen != self.feed_gen or tag != getattr(self.feed_source(), "key", ""):
+                    return
+                key = ("detail", tag, p.id)
+                if key in self._feed_memo:
+                    continue
+                try:
+                    ev, mine = self._feed_lock(key)
+                    if not mine:
+                        continue
+                    try:
+                        dp, _e = src.detail(p)
+                        cm, _c = src.comments(p)
+                        self._feed_memo_put(key, (dp, cm))
+                        self.feed_data_signal.emit("prefetch", (dp, cm, gen, tag))
+                    finally:
+                        self._feed_unlock(key, ev)
+                except Exception:
+                    continue
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
 
     def _feed_memo_put(self, key, value):
         """存一份到内存（带取到的时间）。只留最近 80 份，再多就丢最旧的。"""
@@ -4447,7 +4561,11 @@ class StealthReader(QWidget):
             if kind == "list":
                 if not append:
                     nav.reset()
-                nav.add_page(posts, nxt)
+                    nav.add_page(posts, nxt)
+                    if nav.posts:
+                        self.feed_warm_top(nav.posts)    # 顺手把前三条的正文取回来放着
+                else:
+                    nav.add_page(posts, nxt)
             elif kind == "detail":
                 nav.set_detail(post, cmts)
             if self._feed_sig_now() != self._feed_sig:
@@ -4710,6 +4828,8 @@ class StealthReader(QWidget):
             return False
         self.feed_highlight()
         self.update_review_bar()
+        if nav.view == "list":
+            self.feed_warm_soon(nav.selected())      # 光标停在哪条，就把哪条先取回来
         if nav.view == "list" and nav.near_end():
             self.feed_load("more")      # 快到底就续下一页（取数在后台，界面不等）
         return True
@@ -6597,6 +6717,11 @@ class StealthReader(QWidget):
             delta = event.globalPos() - self.filter_drag_origin
             self.move(self.filter_drag_window_pos + delta)
             return True
+        if self.feed_mode:
+            # 列表是"单击就进"，所以鼠标一停在哪条上就该开始取那条（不用等人按下去）
+            post = self.feed_post_at(event.pos())
+            if post is not None:
+                self.feed_warm_soon(post)
         return False
 
     def on_viewport_release(self, event):

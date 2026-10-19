@@ -107,6 +107,10 @@ class RealSource(SourceAdapter):
         """封面图落地；失败就是没有封面（列表里少一张图，不影响别的）。"""
         if not url:
             return ""
+        if getattr(self, "images_off", False):
+            # 低调模式下列表只画 [图]：封面一张都不用下（一页 6 张封面 ≈ 一秒）。
+            # 返一个"不是文件名"的占位（没有点号），渲染层据此写 [图]，不会当成图片路径。
+            return "lowkey"
         try:
             return self.http.fetch_image(url)
         except Exception:
@@ -123,6 +127,11 @@ class RealSource(SourceAdapter):
         下，顺序仍按正文原来的次序摆；单张的超时也压短了（图是锦上添花，不值得为它等）。
         """
         blocks = list(blocks or [])
+        if getattr(self, "images_off", False):
+            # 低调模式：正文只画 [图]，那就一张都别下（这条笔记能省掉一半以上的等待）。
+            # 图块保留、url 清空：位置和"这里有图"的信息都还在，切回正常模式只要重进一次。
+            return [Block(b.kind, b.text, "", b.lang) if b.kind == BLOCK_IMG else b
+                    for b in blocks]
         slots = [(i, b) for i, b in enumerate(blocks) if b.kind == BLOCK_IMG][:limit]
         got = {}
         if slots:
@@ -2211,7 +2220,14 @@ def build_real_sources(cache_root=None, config=None, log=None):
 
     if not made:
         return []
-    return [MixSource(made)] + made
+    off = bool(config.get("feed_lowkey", False))
+    mix = MixSource(made)
+    for src in [mix] + made:
+        try:
+            src.images_off = off          # 低调模式：封面和正文图都不落地（渲染层画 [图]）
+        except Exception:
+            pass
+    return [mix] + made
 
 
 def _cookies_from(text):

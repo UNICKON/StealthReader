@@ -940,19 +940,20 @@ check("（前置）列表铺好了", len(w.feed_nav.posts) >= 5, len(w.feed_nav.
 check("（前置）列表只取了一次", cs.n_list == 1, cs.n_list)
 
 # 预取：列表回来之后，同一条线程顺手把第一条的详情取回来放着
-pump(lambda: any(k[0] == "detail" and k not in _pre0 for k in w._feed_memo), 10.0)
+pump(lambda: len([k for k in w._feed_memo if k[0] == "detail" and k not in _pre0]) >= 3, 20.0)
 _new = [k for k in w._feed_memo if k[0] == "detail" and k not in _pre0]
-check("列表回来会顺手预取第一条的详情（人往下按回车时它已经热了）",
-      len(_new) == 1 and _new[0][2] == w.feed_nav.posts[0].id, _new[:2])
-check("预取只取一次详情 + 一次评论", (cs.n_detail, cs.n_comments) == (1, 1),
-      (cs.n_detail, cs.n_comments))
+_ids = [k[2] for k in _new]
+check("列表回来会顺手把前三条的正文取回来（人往下按回车时它已经热了）",
+      len(_new) == 3 and w.feed_nav.posts[0].id in _ids, (len(_new), _ids[:3]))
+check("预取每条都是详情 + 评论各一次（同一条绝不重复取）",
+      cs.n_detail == cs.n_comments == 3, (cs.n_detail, cs.n_comments))
 
 # 进帖：命中预取，不许再发请求
 w.feed_nav.index = 0
 w.feed_open()
 pump(lambda: w.feed_nav.view == "detail" and w.feed_nav.detail_loaded and not w.feed_busy, 10.0)
 check("进帖用的是预取那份（没有再发一次详情/评论请求）",
-      (cs.n_detail, cs.n_comments) == (1, 1), (cs.n_detail, cs.n_comments))
+      (cs.n_detail, cs.n_comments) == (3, 3), (cs.n_detail, cs.n_comments))
 
 # 退回再进：全走内存
 w.on_feed_key(Qt.Key_Backspace)
@@ -960,7 +961,7 @@ pump(lambda: w.feed_nav.view == "list")
 w.feed_nav.index = 0
 w.feed_open()
 pump(lambda: w.feed_nav.view == "detail" and w.feed_nav.detail_loaded and not w.feed_busy, 10.0)
-check("退回再进同一条：仍然一次请求都没多发", (cs.n_detail, cs.n_comments) == (1, 1),
+check("退回再进同一条：仍然一次请求都没多发", (cs.n_detail, cs.n_comments) == (3, 3),
       (cs.n_detail, cs.n_comments))
 w.on_feed_key(Qt.Key_Backspace)
 pump(lambda: w.feed_nav.view == "list")
