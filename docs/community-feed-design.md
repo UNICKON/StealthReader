@@ -1,4 +1,4 @@
-﻿# 社区统一流（Community Feed）设计
+# 社区统一流（Community Feed）设计
 
 > 目标：把知乎 / V2EX / NGA / linux.do / IT之家 / Chiphell / 微博 / 小红书的**列表、正文、评论**
 > 统一成一套自己的界面（Reddit 那种），落在阅读器窗口里当一个新页面；微信读书接进现有"书"那一套。
@@ -611,6 +611,43 @@ TouchFish 那边是这么做的：**每个站一个"当前板块"配置项 + 一
   `probe_ui.py` **81 项**（社区页字体那条加严成"换一个字体 + 校验文档默认字体"；知乎那节从"只有一栏"改成三栏闭环）、
   `probe_weread.py` 47 项，全过。
 
+### K 轮实现笔记（小红书评论：去把摸鱼插件那套签名弄明白）
+
+用户问的是"TouchFish 为什么能拿到小红书的评论"。答案在它的 VS Code 包里：
+评论走 `getXhsComments({note_id, cursor, xsec_token})` → `GET edith.xiaohongshu.com/api/sns/web/v2/comment/page`，
+请求头里带 `x-s` / `x-t` / `x-s-common`，而**这套签名是它自己在本地用 JS 算的**——
+`dist/extension.js` 里的 `XhsClient`（`signTier` / `xsCommon` / `generateB1` / `DsFetcher`），
+没有 wasm、没有二次验签服务，全是 `md5` + 定长异或 + 自定义 base64 表，所以搬得动。
+
+于是新增 `xhs_sign.py`（纯标准库），把那条链原样搬到 Python：
+
+- 明文 = 路径(含查询串) + body + `a1` + 毫秒时间戳 + 自增序号 + 一份 `dsf` 定长散列；
+  `x-s` = `mns0301_` + 用密钥流异或后的自定义 base64；
+- `x-s-common` = base64 的 JSON 指纹（`x8` 装 `b1`、`x12` 装 `"<dsllt>;<ds>"`——**这两个不是同一个东西**，
+  一开始并成一个参数，算出来的串长了一倍、服务端直接不认）；
+- `b1` = 一份浏览器指纹，RC4 之后**还要按 UTF-8 再编一遍**（`String.fromCharCode` → `Buffer.from(s,"utf8")`
+  那个隐式膨胀：少这一步 base64 只有 1248 位，JS 版是 1884 位）；
+- `ds` 去 `as.xiaohongshu.com/api/sec/v1/ds?appId=xhs-pc-web` 里抠 `getdss()` 返回的 13 位数字，
+  拿不到就退回时间戳（和 JS 版的兜底一致）。
+
+**怎么确认搬对了**：把插件那两个模块单独抽出来在 Node 里跑（`dist/extension.js` 里的
+`91961` / `4985` / `86780` / `1667` 四个模块用 `new Function` 装进假 `n()` 里），
+同一组输入下把**签名明文、`mns0301_` 串、`b1`、`x-s-common`、CRC、自定义 base64**
+六样东西逐字节比了一遍，全部一致；这六样现在钉成了 `probe_sources.py` §17 的断言
+（纯函数，和网络无关，改算法立刻红）。
+
+**结论（如实记）**：签名算对了，接口还是 **406 `{"code":-1,"success":false}`**。
+判据是**拿插件自己那份实现跑也是同一个 406**，连不带 Cookie、`a1` 随便填的请求也一样——
+所以卡的不是"我们算法错"，是它对签名版本/风控的口径（它 2026-10 之后明显收紧了）。
+因此这一轮的落点是：
+- 评论这条路**通了就能用**（`_xhs_comments` 已按它的真实形状写好：作者 / 赞 / 时间 /
+  子评论并进同一条 / 还有几条没展开）；
+- 拿不到时**照实说"签名算出来了但被判 406"**，正文下面给一句人话，不装成"这条没人评论"；
+- 顺手把 `webBuild` 改成优先读 Cookie 里那个（它自己前端就是这么取的）。
+
+- 验收：`probe_sources.py` **209 项**（新增 §17 小红书签名 14 条）、`probe_ui.py` 81 项、
+  `probe_weread.py` 47 项，全过。真机跑一遍：列表 33 条、正文 3 块、评论区如实空并给出原因。
+
 ## 8. 这轮明确不做
 视频、音频、发帖/点赞/转发等写操作、多账号、整站离线下载、自建代理、云同步阅读进度。
 另外一条是**有意不做**，不是没来得及：**微信读书的正文抓取**（要移植它的签名与校验去绕过
@@ -622,7 +659,7 @@ TouchFish 那边是这么做的：**每个站一个"当前板块"配置项 + 一
   A 轮的夹具是手写的（`feed_demo/posts.json`），B 轮起换成真实响应存下来的夹具。
   **E 轮起探针与夹具都进仓库**（`tests/`），所以"零网络"是可复现、可回归的：
   `probe_sources.py` / `probe_ui.py` / `probe_weread.py` 开头就把 `requests` 换成抛异常。
-  现状：`probe_sources.py` 195 项、`probe_ui.py` 81 项、`probe_weread.py` 47 项，全过。
+  现状：`probe_sources.py` 209 项、`probe_ui.py` 81 项、`probe_weread.py` 47 项，全过。
 - 网络路径只做一次手动"真实拉取"冒烟；失败必须降级到缓存并给出可见提示。
 - 排版、老板键、偷瞄、防截屏沿用现有探针回归（一条都不能退）。
 

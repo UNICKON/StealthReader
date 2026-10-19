@@ -26,11 +26,12 @@ import re
 import threading
 import time
 from html import escape as html_escape
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import feed as feed_mod
 from feed import Block, Comment, Post, SourceAdapter, BLOCK_IMG, BLOCK_P, BLOCK_QUOTE
 import feed_net
+import xhs_sign
 from feed_net import FeedNetError, Http, TTL_LIST, TTL_DETAIL, TTL_FOREVER
 
 PAGE_MIX = 12           # 混流每页几条
@@ -1374,6 +1375,47 @@ def _xhs_cover(cover):
     return ""
 
 
+def _xhs_comments(obj):
+    """把 `/api/sns/web/v2/comment/page` 的返回翻成 Comment。
+
+    形状（它自己的前端就是这么读的）：`data.comments[]`，每条 `id` / `content` /
+    `create_time`（毫秒）/ `like_count` / `user_info.nickname` / `sub_comments[]`
+    （子评论同样有 `content` / `user_info`），`data.cursor` + `data.has_more` 管翻页。
+    """
+    data = ((obj or {}).get("data") or {}) if isinstance(obj, dict) else {}
+    rows = data.get("comments") or []
+    out = []
+    for i, it in enumerate(rows):
+        if not isinstance(it, dict):
+            continue
+        blocks = feed_mod.blocks_from_html(it.get("content") or "", max_blocks=8)
+        if not blocks:
+            blocks = [Block(kind=BLOCK_P, text="（这条评论只有图片或表情）")]
+        subs = []
+        for sub in (it.get("sub_comments") or []):
+            if not isinstance(sub, dict):
+                continue
+            stext = feed_mod.strip_html(sub.get("content") or "")
+            if not stext:
+                continue
+            who = ((sub.get("user_info") or {}).get("nickname") or "").strip()
+            subs.append("「%s：%s」" % (who or "某人", stext))
+        if subs:
+            # 子评论（回复）不多，直接并到同一条里，比另起一层好读
+            blocks.append(Block(kind=BLOCK_QUOTE, text="\n".join(subs[:6])))
+        more = int(it.get("sub_comment_count") or 0) - len(subs)
+        if more > 0:
+            blocks.append(Block(kind=BLOCK_QUOTE, text="还有 %d 条回复没展开。" % more))
+        out.append(Comment(
+            cid=str(it.get("id") or ("c%d" % i)),
+            author=((it.get("user_info") or {}).get("nickname") or "").strip() or "某人",
+            created=feed_mod.human_time(int(it.get("create_time") or 0) / 1000.0),
+            score=int(it.get("like_count") or 0),
+            body=blocks,
+        ))
+    return out
+
+
 class XhsSource(RealSource):
     """小红书。**免登录只有空壳**，要贴浏览器 Cookie——这个站把内容服务端渲染在页面里。
 
@@ -1385,10 +1427,15 @@ class XhsSource(RealSource):
       - 详情：`/explore/<id>?xsec_token=<token>&xsec_source=pc_feed` 200，
         `note.noteDetailMap[<id>].note` 里有 `desc`（正文）/ `imageList` / `tagList` /
         `interactInfo`；`time` 是**毫秒**时间戳（不除 1000 会显示成 5 万年后）；
-      - **评论只有页面自带的那几条**：评论接口 `/api/sns/web/v2/comment/page` 实测
-        **406 `{"code":-1,"success":false}`**（要前端签名），所以不做"滚动加载"，
-        页面里带几条就显示几条，一条都没有就如实说没有。
       - 视频笔记跳过（`noteCard.type == "video"`）：这个窗口不放视频，收下来也只是个壳。
+
+    **评论为什么难**：`/api/sns/web/v2/comment/page` 不接受裸 Cookie，每个请求都要
+    `x-s` / `x-t` / `x-s-common` 三个头，而 `x-s` 是它自己那套算法算出来的。
+    那套算法在 `xhs_sign.py` 里（照 VS Code 摸鱼插件 TouchFish 的纯 JS 实现搬的，
+    逐字节对得上：明文、`mns0301_` 串、`b1`、`x-s-common` 全部一致）。
+    2026-10-19 实测：**签名算对了也一样 406 `{"code":-1,"success":false}`，
+    连插件自己那份实现、乃至不带 Cookie 的请求，返回的都是同一个 406**——所以卡的不是
+    我们的写法，是它对签名版本/风控的口径。能取到就照实解析，取不到就明说。
     """
 
     key = "xhs"
@@ -1397,10 +1444,15 @@ class XhsSource(RealSource):
     needs_auth = True                  # 免登录拿到的是一张空壳页
     CHANNELS = ("推荐",)
     MAX_PAGE_BYTES = 3000000
+    COMMENT_API = "/api/sns/web/v2/comment/page"
+    COMMENT_URL = "https://edith.xiaohongshu.com" + COMMENT_API
+    COMMENT_TIMEOUT = 12
+    DS_URL = "https://as.xiaohongshu.com/api/sec/v1/ds?appId=xhs-pc-web"
 
     def __init__(self, http, auth=None):
         RealSource.__init__(self, http, auth)
         self._notes = {}               # note id -> (note, comments, 说明)：详情和评论共用一次请求
+        self._cmts = {}                # note id -> (评论表, 拿不到的原因)
 
     def channels(self):
         return list(self.CHANNELS)
@@ -1530,21 +1582,78 @@ class XhsSource(RealSource):
             if isinstance(img, dict) and (img.get("urlDefault") or img.get("url")):
                 parts.append('<img src="%s"/>' % (img.get("urlDefault") or img.get("url")))
         body = self._localize_images(feed_mod.blocks_from_html("".join(parts), max_blocks=20), limit=9)
-        body.append(Block(kind=BLOCK_QUOTE, text=(
-            "这里只有正文和图片：小红书的评论**拿不到**。2026-10-19 又试了一轮——"
-            "`edith.xiaohongshu.com/api/sns/web/v2/comment/page` 406（要前端算的 `x-s` 签名）、"
-            "`/web/v1/comment/page` 404、`www.xiaohongshu.com/api/sns/v3|v2/comment/page` 500，"
-            "笔记页自带的 `comments.list` 连看 4 条笔记全是空的（评论是打开后才去拉的）。"
-            "真要看评论按 O 去原页。")))
+        cmts, why = self._comments_of(post)
+        if cmts:
+            body.append(Block(kind=BLOCK_QUOTE, text="评论在下面（%d 条）。" % len(cmts)))
+        else:
+            body.append(Block(kind=BLOCK_QUOTE, text=why or "这条笔记的评论没取到。"))
         out.body = body
         return out, None
 
+    # ------------------------------------------------------------ 评论
+
+    def _web_build(self):
+        """Cookie 里的 `webBuild`（它自己前端签名时用的就是它）。"""
+        for part in str((self.auth or {}).get("cookie") or "").split(";"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                if k.strip() == "webBuild":
+                    return v.strip()
+        return ""
+
+    def _ds_text(self, url):
+        """`ds` 那个参数：`as.xiaohongshu.com` 上一段 JS 里写死的 13 位数字。"""
+        raw = self.http.get_bytes(url, ttl=TTL_DETAIL, max_bytes=200000, timeout=8)
+        if isinstance(raw, (bytes, bytearray)):
+            return raw.decode("utf-8", "replace")
+        return str(raw)
+
+    def _token_of(self, post):
+        m = re.search(r"xsec_token=([^&]+)", post.url or "")
+        return unquote(m.group(1)) if m else ""
+
+    def _signed_get(self, path, params):
+        """带它那套签名去请求一次（签名见 `xhs_sign.py`）。"""
+        cookie = str((self.auth or {}).get("cookie") or "")
+        full = xhs_sign.path_with_query(path, params)
+        sig = xhs_sign.sign(full, "", cookie, "GET",
+                            fetch=self._ds_text, web_build=self._web_build())
+        return self.http.get_json("https://edith.xiaohongshu.com" + full, ttl=0,
+                                  headers=xhs_sign.headers_for(sig, cookie),
+                                  timeout=self.COMMENT_TIMEOUT)
+
+    def _comments_of(self, post):
+        """评论 + 拿不到时的原因（详情和评论共用一次请求，失败也算结果，不抛）。"""
+        nid = str(post.id or "")
+        hit = self._cmts.get(nid)
+        if hit is not None:
+            return hit
+        params = {"note_id": nid, "cursor": "", "top_comment_id": "",
+                  "image_formats": "jpg,webp,avif"}
+        token = self._token_of(post)
+        if token:
+            params["xsec_token"] = token
+        out, why = [], ""
+        try:
+            obj = self._signed_get(self.COMMENT_API, params)
+            out = _xhs_comments(obj)
+            if not out:
+                why = "这条笔记还没有评论。"
+        except FeedNetError as e:
+            if "406" in str(e):
+                why = ("小红书的评论接口要它自己的 `x-s` 签名。签名算法已经搬过来了"
+                       "（`xhs_sign.py`，和摸鱼插件那份逐字节一致），但它现在连插件自己"
+                       "算的签名也照样判 406——不是写法的问题，是它换了口径。"
+                       "真要看评论按 O 去原页。")
+            else:
+                why = "小红书的评论没取到（%s）。真要看评论按 O 去原页。" % e
+        except Exception as e:                     # 签名/解析出问题也不能把正文一起弄没
+            why = "小红书的评论没取到（%s）。真要看评论按 O 去原页。" % str(e)[:80]
+        self._cmts[nid] = (out, why)
+        return self._cmts[nid]
+
     def comments(self, post, cursor=None):
-        # **故意返回空**：评论接口要前端签名（`/api/sns/web/v2/comment/page` 实测
-        # 406 `{"code":-1,"success":false}`），页面自带的 `comments.list` 十次里九次是空的
-        # （录夹具时连看 10 条笔记，一条都没带上）。既然拿不到真数据，就不写"猜出来的解析"：
-        # 宁可明说没有，也不把别人的评论编出来。哪天录到一份真带的，再把这一层打开。
-        return [], None
+        return self._comments_of(post)[0], None
 
 
 HUPU_BOARDS = (

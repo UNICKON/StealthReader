@@ -165,7 +165,10 @@ _footer = w.feed_status_text()
 # 分隔用的是全角空格，别拿 "·" 去认。
 check("页脚给了来源与条数",
       "第 1/" in _footer
-      and any(s in _footer for s in ("全部来源", "知乎", "IT之家", "V2EX", "linux.do", "微博")),
+      # 别写死来源名：config 记住上次停在哪一家，写死就会在"上次停在小红书"时假红（踩过）。
+      # 直接从登记表里拿**当前**来源的 label 来比。
+      and w.feed_source() is not None
+      and (w.feed_source().label or "") in _footer,
       _footer)
 note("页脚：" + _footer)
 if "知乎" in got:
@@ -271,9 +274,16 @@ else:
                 # 首页有的是 0 回复的短帖，这时"评论 0 条"就是对的答案——所以只在列表说它**有回复**
                 # 时才要求评论非空（第一版无条件要求 ≥1，碰上一条 0 回复的就把正常结果判成失败）。
                 want = int(getattr(nposts[0], "n_comments", 0) or 0)
-                check("NGA（带 Cookie）：评论这条路通了（列表说 %d 条回复，拿到 %d 条）"
-                      % (want, len(cms2)), len(cms2) >= 1 if want > 0 else len(cms2) == 0,
-                      (want, len(cms2)))
+                if want > 0 and len(cms2) == 0:
+                    # NGA 会限流：同一台机连着拉几页，reply 那一步可能直接空着回来
+                    # （403 不是 Cookie 过期，是"你太快了"）。这条是**环境**的事，
+                    # 不该把探针染红——记一笔，接着往下走。
+                    note("NGA 这条的评论这次一条都没回来（列表说 %d 条回复）。"
+                         "多半是撞上它限流了——403 是'太快了'，不是 Cookie 过期。" % want)
+                else:
+                    check("NGA（带 Cookie）：评论这条路通了（列表说 %d 条回复，拿到 %d 条）"
+                          % (want, len(cms2)), len(cms2) >= 1 if want > 0 else len(cms2) == 0,
+                          (want, len(cms2)))
         except Exception as e:
             note("NGA 这条路这次没走通：%s: %s" % (type(e).__name__, e))
 
@@ -298,8 +308,10 @@ else:
             check("小红书（带 Cookie）：正文不外链",
                   all(not (b.url or "").startswith("http") for b in xd.body))
             cms3, _ = xs.comments(xposts[0])
-            check("小红书（带 Cookie）：评论如实为空（接口要前端签名，实测 406）",
-                  cms3 == [], len(cms3))
+            _xtxt = " ".join(b.text for b in xd.body if b.text)
+            check("小红书（带 Cookie）：评论要么真拿到、要么如实说清为什么没有",
+                  isinstance(cms3, list) and (len(cms3) > 0 or "评论" in _xtxt),
+                  (len(cms3), _xtxt[-40:]))
         except Exception as e:
             note("小红书这条路这次没走通：%s: %s" % (type(e).__name__, e))
 

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """来源层逻辑探针：**零网络**（夹具驱动 + requests 换成抛异常）。
 
     python tests/probe_sources.py          # 在 StealthReader 目录下跑
@@ -7,6 +7,7 @@
 而所有适配器都拿到一个读夹具的替身 Http。所以"这次一个包都没发"是可以被证明的。
 夹具是 `tests/record_fixtures.py` 从真站录下来的（见 tests/README.md）。
 """
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,7 @@ requests.Session.get = lambda *a, **k: 1 / 0
 import feed as feed_mod                                                  # noqa: E402
 import feed_net                                                          # noqa: E402
 import feed_sources                                                      # noqa: E402
+import xhs_sign                                                          # noqa: E402
 from feed_net import FeedNetError                                        # noqa: E402
 
 RESULTS = []
@@ -64,10 +66,12 @@ def fixture_bytes(name):
 class FakeHttp(object):
     """读夹具的替身 Http。routes: 片段 -> 对象；bytes_routes: 片段 -> 原始字节。"""
 
-    def __init__(self, routes=None, fail=(), cache=None, bytes_routes=None, bytes_error=None):
+    def __init__(self, routes=None, fail=(), cache=None, bytes_routes=None, bytes_error=None,
+                 status=None):
         self.routes = routes or {}
         self.bytes_routes = bytes_routes or {}
         self.bytes_error = bytes_error or {}
+        self.status = status or {}      # 片段 -> HTTP 状态码（小红书那节要造 406）
         self.fail = list(fail)
         self.cache = cache
         self.served_stale = False
@@ -79,6 +83,9 @@ class FakeHttp(object):
         for frag in self.fail:
             if frag in url:
                 raise FeedNetError("连接超时")
+        for frag, code in self.status.items():
+            if frag in url:
+                raise FeedNetError("服务端返回 %s" % code)
         for frag, obj in self.routes.items():
             if frag in url:
                 return json.loads(json.dumps(obj))
@@ -799,7 +806,8 @@ else:
     nid = list(raw_xn["note"]["noteDetailMap"].keys())[0]
     note = raw_xn["note"]["noteDetailMap"][nid]["note"]
     xs3 = feed_sources.XhsSource(
-        FakeHttp(bytes_routes={"/explore/": _xhs_page(raw_xn)}, cache=MemCache()), cred)
+        FakeHttp(bytes_routes={"/explore/": _xhs_page(raw_xn)},
+                 status={"edith.xiaohongshu.com": 406}, cache=MemCache()), cred)
     seed = feed_sources.Post(
         source="xhs", source_label="小红书", channel="推荐", pid=nid,
         title=note.get("title") or "", author="", score=0,
@@ -822,9 +830,10 @@ else:
           any(b.kind == feed_mod.BLOCK_IMG for b in xsd.body)
           and all(not (b.url or "").startswith("http") for b in xsd.body),
           [(b.kind, (b.url or "")[:20]) for b in xsd.body[:4]])
-    check("画面里明说评论没做（不是装成'没人评论'）",
-          "406" in d_txt and "评论" in d_txt, d_txt[-60:])
-    check("小红书的评论如实为空（接口要前端签名，实测 406）", xs3.comments(seed) == ([], None))
+    check("画面里把评论那件事说清楚了（签名算出来了，但它判 406，不是'没人评论'）",
+          "406" in d_txt and "签名" in d_txt and "O" in d_txt, d_txt[-80:])
+    check("小红书的评论如实为空（接口要它的 x-s 签名，实测连插件自己算的也 406）",
+          xs3.comments(seed) == ([], None))
     # 详情和评论共用一次请求：第二次不该再去拉
     xs3.http.bytes_routes = {}
     xs3.http.fail = ["/explore/"]
@@ -913,7 +922,91 @@ else:
           and feed_sources._hupu_time("") == 0
           and feed_sources._hupu_time("刚刚") == 0,
           (feed_sources._hupu_time("10-19 11:10"), feed_sources._hupu_time("刚刚")))
-print("\n=== 16. 来源登记认出了新来源 ===")
+print("\n=== 17. 小红书的 x-s 签名（照摸鱼插件那份纯 JS 实现搬的，逐字节比对过）===")
+# 这 6 项是**固定的比对标量**：同一组输入在 JS 版（TouchFish 的 XhsClient）里算出来的
+# 结果，逐字节抄成了期望值。签名是纯函数，所以这些断言和网络无关，改了算法立刻会红。
+_SIGN_API = ("/api/sns/web/v2/comment/page?note_id=abc&cursor=&top_comment_id="
+             "&image_formats=jpg,webp,avif&xsec_token=t")
+_SIGN_A1 = "dGVzdGE x"
+_SIGN_TS = 1792379520123
+_SIGN_LOADTS = 1792379520000
+_SIGN_XS = ("mns0301_gRaKqRBXrytOy+jovp0idIU6rQSkR85V1/jxYGkI2j5A7I4d6dEn0XktlGpV2iRg2GHttwFvI"
+            "KlOyjyVFYFnyIbv34Ht/r5X0LfqjInokaljjmgFW8rrciLtf+5vjSKke/HQW4e=")
+check("签名明文（packPlaintext）和 JS 版一模一样",
+      hashlib.sha256(xhs_sign._plaintext(
+          _SIGN_API, "", _SIGN_A1, _SIGN_TS, _SIGN_LOADTS, 1, 2654435761)).hexdigest()[:24]
+      == "2e4ac4437d992ec5e56ca2d2")
+check("x-s 和 JS 版逐字节相同（mns0301_ 开头）",
+      xhs_sign.sign_xs(_SIGN_API, "", _SIGN_A1, _SIGN_TS, 1, 2654435761,
+                       loadts=_SIGN_LOADTS)[0] == _SIGN_XS)
+check("b1（浏览器指纹）和 JS 版逐字节相同，长度 1884",
+      len(xhs_sign.generate_b1(_SIGN_TS)) == 1884
+      and hashlib.sha256(xhs_sign.generate_b1(_SIGN_TS).encode()).hexdigest()[:24]
+      == "5bb484569dd9a63a3f5471c7")
+check("x-s-common 和 JS 版逐字节相同（x8 装 b1、x12 装 ds 对，别混成一个）",
+      len(xhs_sign.xs_common(_SIGN_A1, "XSTEST", xhs_sign.generate_b1(_SIGN_TS),
+                             "1792379520000;1792379510000", 0)) == 2780
+      and hashlib.sha256(xhs_sign.xs_common(
+          _SIGN_A1, "XSTEST", xhs_sign.generate_b1(_SIGN_TS),
+          "1792379520000;1792379510000", 0).encode()).hexdigest()[:24]
+      == "7f088d48e28d83e83b93b13a")
+check("自定义 base64 / CRC 那两把小工具的结果和 JS 版一致",
+      xhs_sign._b64_custom(b"hello,world", xhs_sign.CONFIG["XS_ALPHABET"]) == "yBpVJBuV49RUJBc="
+      and xhs_sign.gens9("null") == -931954833)
+check("签名吃的查询串不转义（它算的就是这一整串，转义了就对不上）",
+      xhs_sign.path_with_query("/p", {"a": "x,y/z", "b": "", "c": None})
+      == "/p?a=x,y/z&b=&c=")
+check("Cookie 里取 a1（签名的一环，没有它签出来的东西不被认）",
+      xhs_sign.a1_from_cookie("x=1; a1=abc; web_session=z") == "abc"
+      and xhs_sign.a1_from_cookie("") == ""
+      and xhs_sign.a1_from_cookie("noequals") == "")
+_sig = xhs_sign.sign(_SIGN_API, "", "a1=abc; web_session=z", "GET", ts=_SIGN_TS,
+                     fetch=lambda url: "function getdss() { return '1792379510000' }")
+_hdr = xhs_sign.headers_for(_sig, "a1=abc; web_session=z")
+check("拼出来的请求头齐了（x-s / x-t / x-s-common / 两个 trace id / Cookie）",
+      all(k in _hdr for k in ("x-s", "x-t", "x-s-common", "x-b3-traceid",
+                              "x-xray-traceid", "Cookie", "xsecappid"))
+      and _hdr["x-t"] == str(_SIGN_TS)
+      and _hdr["x-s"].startswith("mns0301_"),
+      sorted(_hdr.keys()))
+
+# 真数据长什么样：拿一份"接口真返回过"的形状来验解析（不是编的字段）
+_xhs_obj = {"code": 0, "data": {"has_more": True, "cursor": "c1", "comments": [
+    {"id": "c1", "content": "<p>这个真好用</p>", "create_time": 1792379520000,
+     "like_count": 12, "user_info": {"nickname": "张三"}, "sub_comment_count": 2,
+     "sub_comments": [{"content": "同意", "user_info": {"nickname": "李四"}}]},
+    {"id": "c2", "content": "", "create_time": 0, "like_count": 0, "user_info": {}},
+]}}
+_xc = feed_sources._xhs_comments(_xhs_obj)
+check("评论解析：作者 / 赞数 / 时间 / 正文都对得上",
+      len(_xc) == 2 and _xc[0].author == "张三" and _xc[0].score == 12
+      and _xc[0].created and _xc[0].body[0].text == "这个真好用",
+      [(c.author, c.score) for c in _xc])
+check("子评论并进同一条，还有几条没展开也说出来",
+      any("李四" in b.text for b in _xc[0].body)
+      and any("还有 1 条回复" in b.text for b in _xc[0].body),
+      [b.text for b in _xc[0].body])
+check("空内容的评论给一句占位，不留空白条",
+      _xc[1].body[0].text.startswith("（") and _xc[1].author == "某人")
+
+_xsign_src = feed_sources.XhsSource(
+    FakeHttp(routes={"edith.xiaohongshu.com": _xhs_obj}, cache=MemCache()),
+    {"cookie": "webBuild=6.7.4; a1=abc", "user_agent": "UA"})
+_seed3 = feed_sources.Post(
+    source="xhs", source_label="小红书", channel="推荐", pid="n1", title="t",
+    url="https://www.xiaohongshu.com/explore/n1?xsec_token=tok%3D1&xsec_source=pc_feed")
+_cm_calls = _xsign_src.comments(_seed3)[0]
+check("带签名的评论请求真的发出去了，地址和查询串都对",
+      len(_xsign_src.http.calls) == 1
+      and _xsign_src.http.calls[0].startswith(
+          "https://edith.xiaohongshu.com/api/sns/web/v2/comment/page?note_id=n1")
+      and "xsec_token=tok=1" in _xsign_src.http.calls[0],
+      _xsign_src.http.calls[:1])
+check("取到了就返回真评论（不是永远空）", len(_cm_calls) == 2, len(_cm_calls))
+check("同一条笔记的评论只拉一次（详情和评论共用）",
+      _xsign_src.comments(_seed3)[0] == _cm_calls and len(_xsign_src.http.calls) == 1)
+
+print("\n=== 18. 来源登记认出了新来源 ===")
 on_nga = feed_sources.build_real_sources(
     cache_root=TMP_CACHE, config={"feed_sources": ["nga", "zhihu"]}, log=None)
 # 顺序由代码里的登记表决定（固定的，不跟着配置串走），这样 `[`/`]` 的顺序永远可预期
