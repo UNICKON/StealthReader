@@ -1355,8 +1355,8 @@ check("评论树按层缩进：父 0px、子 16px、孙 32px（像 reddit 那样
       "margin:14px 0 0 0px" in _cth and "margin:8px 0 0 16px" in _cth
       and "margin:8px 0 0 32px" in _cth, _cth[:260])
 check("每条评论都有自己的作者行（子回复不是折进父正文的「某某：…」）",
-      ">▾ 父</p>" in _cth and ">▾ 子 · 3 赞</p>" in _cth
-      and ">孙</p>" in _cth and "「" not in _cth, _cth.count("margin:"))
+      ">▾ 父</p>" in _cth and ">▾ 子 · 回复 父 · 3 赞</p>" in _cth
+      and ">孙 · 回复 子</p>" in _cth and "「" not in _cth, _cth.count("margin:"))
 _nv.collapsed.add("c1")
 _cth2 = feed_mod.render_comment_tree(_nv, _th)
 check("折叠父节点：整棵子树一起收，表头写「▸ 2」",
@@ -1402,13 +1402,13 @@ check("回来一层：退格回上一层详情，内容原样（不重新取数�
 check("再退一次才回列表，栈清空", _nv3.back() is True and _nv3.view == "list"
       and _nv3.stack == [])
 
-# 3) 能跳的时候标题带下划线（不能跳就别画线，免得点上去没反应）
+# 3) 能跳的时候标题也**不加下划线**（真人 2026-10-19："知乎标题不用下划线来表示可点击"）
 _th_link = dict(_th)
 _th_link["title_link"] = True
 _h1 = feed_mod.render_detail(_ans, feed_mod.FeedNav(), _th_link)
 _h2 = feed_mod.render_detail(_ans, feed_mod.FeedNav(), _th)
-check("回答页标题带下划线（提示能点进去看全部回答）",
-      "text-decoration:underline" in _h1 and "text-decoration:underline" not in _h2)
+check("回答页标题不加下划线（可点击但不用下划线表示）",
+      "text-decoration" not in _h1 and "text-decoration" not in _h2)
 
 # 知乎那三层：问题帖的评论栏其实是「回答」，回答帖/其它来源才是「评论」
 def _label_of(post):

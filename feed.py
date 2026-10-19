@@ -69,25 +69,31 @@ class Comment(object):
     深度不写死在数据里，由 comment_forest 按树算出来——来源给的层级结构各不相同，
     统一在渲染前算好，就不会每个来源一套缩进。"""
 
-    __slots__ = ("id", "author", "created", "score", "body", "replies")
+    __slots__ = ("id", "author", "created", "score", "body", "replies", "reply_to")
 
-    def __init__(self, cid, author="", created="", score=0, body=None, replies=None):
+    def __init__(self, cid, author="", created="", score=0, body=None, replies=None,
+                 reply_to=""):
         self.id = str(cid)
         self.author = author or ""
         self.created = created or ""
         self.score = int(score or 0)
         self.body = [Block.from_dict(b) for b in (body or [])]
         self.replies = list(replies or [])
+        # 来源**明确知道**这条回复的是谁时（虎扑的 quote、Discourse 的 reply_to_post_number 之类）
+        # 直接填这里；不知道就留空，由 FeedNav.reply_to_of 从层级或正文开头的 `@某某` 推。
+        self.reply_to = reply_to or ""
 
     @classmethod
     def from_dict(cls, d):
         if isinstance(d, Comment):      # 同上：适配器直接给 Comment 也收
-            return cls(d.id, d.author, d.created, d.score, d.body, d.replies)
+            return cls(d.id, d.author, d.created, d.score, d.body, d.replies,
+                       getattr(d, "reply_to", ""))
         d = d or {}
         return cls(
             d.get("id", ""), d.get("author", ""), d.get("created", ""), d.get("score", 0),
             d.get("body", []),
             [cls.from_dict(r) for r in (d.get("replies") or [])],
+            d.get("reply_to", ""),
         )
 
     def to_dict(self):
@@ -95,6 +101,7 @@ class Comment(object):
             "id": self.id, "author": self.author, "created": self.created, "score": self.score,
             "body": [b.to_dict() for b in self.body],
             "replies": [r.to_dict() for r in self.replies],
+            "reply_to": self.reply_to,
         }
 
     def total(self):
@@ -167,10 +174,10 @@ def comment_forest(tree):
     上下移动（J/K）、折叠、页脚统计都在这条序列上做，所以它必须是**唯一的顺序来源**。"""
     out = []
 
-    def walk(nodes, depth):
+    def walk(nodes, depth, parent=None):
         for c in nodes:
-            out.append((c, depth, None))
-            walk(c.replies, depth + 1)
+            out.append((c, depth, parent))      # 父节点留着：表头要写"回复 X"
+            walk(c.replies, depth + 1, c)
 
     walk(tree or [], 0)
     return out
@@ -731,14 +738,49 @@ class FeedNav(object):
         所以直接递归：遇到折叠节点就不再往里走。"""
         out = []
 
-        def walk(nodes, depth):
+        def walk(nodes, depth, parent=None):
             for c in nodes:
-                out.append((c, depth, None))
+                out.append((c, depth, parent))     # 父节点留着：表头要写"回复 X"
                 if c.id not in self.collapsed:
-                    walk(c.replies, depth + 1)
+                    walk(c.replies, depth + 1, c)
 
         walk(self.roots, 0)
         return out
+
+    def parent_of(self, c):
+        """这条评论挂在哪条下面（顶层返回 None）。"""
+        for node, _d, p in (self.flat or []):
+            if node is c:
+                return p
+        return None
+
+    def reply_to_of(self, c):
+        """这条评论在回谁 —— 表头里那个"回复 X"。
+
+        **所有来源统一在这里算**，渲染层只管显示：
+        1. 树里有父节点（IT之家/知乎/Discourse 这些真层级）：父节点的作者；
+        2. 平铺来源（虎扑/NGA/V2EX）把引用写进正文开头（`@张三：…` 或 `回复 @张三：…`）：
+           把那个名字提出来，正文里那截前缀同时省掉（不然"回复 张三"和"@张三："重复）。
+        自己回自己、父作者为空、正文开头已经写了同一个人，都不写。
+        """
+        if c is None:
+            return ""
+        me = (c.author or "").strip()
+        # 来源自己给了收件人（虎扑 quote 里有作者名）：最可信，直接用
+        who = (getattr(c, "reply_to", "") or "").strip()
+        if who and who != me:
+            return who
+        # 其次看正文开头点名的人：楼层是平铺的（虎扑/NGA/V2EX）或者回复的不是直系父节点
+        # （Discourse 可以回到很上面那一层），@ 出来的名字才是真的收件人。
+        who = _mention_target(c)
+        if who and who != me:
+            return who
+        parent = self.parent_of(c)
+        if parent is not None and parent is not c:
+            who = (parent.author or "").strip()
+            if who and who != me and not _opens_with_mention(c, who):
+                return who
+        return ""
 
     def comment_roots(self):
         return self.roots
@@ -1008,8 +1050,9 @@ def render_detail(post, nav, theme):
                    f' font-weight:bold; line-height:140%;')
     if theme.get("title_link"):
         # 这一页是从某个回答进来的：标题就是那个问题，点它能看这个问题的全部回答。
-        # 只加一道下划线（不加任何说明文字）——真人反复说过前端不要解释性文字。
-        title_style += " text-decoration:underline;"
+        # **不下划线**（真人 2026-10-19："知乎标题不用下划线来表示可点击"）：它本来就是
+        # 强调色、也比正文粗，够明显了；加下划线反而像链接标记，读起来脏。
+        pass
     parts = [
         f'<p style="{title_style}">{esc(post.title)}</p>',
         f'<p style="margin:6px 0 0 0; color:{theme["faint"]};'
@@ -1035,12 +1078,17 @@ def render_detail(post, nav, theme):
     return _wrap(theme, "".join(parts))
 
 
-def _comment_header(c):
-    """评论表头那一行的正文：作者 · 时间 · 赞。
+def _comment_header(c, reply_to=""):
+    """评论表头那一行的正文：作者 · 回复 X · 时间 · 赞。
 
     渲染和"定位选中项"用的是同一份拼装——两处各拼一遍必然漂移（探针就抓到过一次：
-    渲染用全角空格、定位用半角，结果高亮永远落不上）。折叠角是状态，由调用方追加。"""
+    渲染用全角空格、定位用半角，结果高亮永远落不上）。折叠角是状态，由调用方追加。
+
+    `reply_to` 由 `FeedNav.reply_to_of()` 算（各来源统一），这里只负责摆位置：
+    紧跟在作者后面——"张三 回复 李四 · 3 赞 · 2 小时前"，一眼看出来在回谁。"""
     bits = [c.author or "匿名"]
+    if reply_to:
+        bits.append("回复 " + reply_to)
     if c.created:
         bits.append(c.created)
     if c.score:
@@ -1078,7 +1126,8 @@ def render_comment_tree(nav, theme):
         depth = max(0, int(depth))
         ind = COMMENT_INDENT * min(depth, COMMENT_MAX_DEPTH)
         gap = 14 if depth == 0 else 8
-        head = _comment_header(c)
+        reply_to = nav.reply_to_of(c) if nav is not None else ""
+        head = _comment_header(c, reply_to)
         folded = c.id in nav.collapsed
         if folded:
             n_hidden = len(descendant_ids(c))
@@ -1092,14 +1141,14 @@ def render_comment_tree(nav, theme):
             f' font-size:{f["meta"]}px;">{esc(head)}</p>'
         )
         if folded:
-            preview = _clip(_comment_text(c), COMMENT_PREVIEW)
+            preview = _clip(_comment_text(c, reply_to), COMMENT_PREVIEW)
             if preview:
                 parts.append(
                     f'<p style="margin:2px 0 0 {ind}px; color:{theme["dim"]};'
                     f' font-size:{f["sub"]}px; line-height:150%;">{esc(preview)}</p>'
                 )
             continue
-        for b in (c.body or []):
+        for b in _without_mention(c.body or [], reply_to):
             parts.append(
                 f'<p style="margin:2px 0 0 {ind}px; color:{theme["text"]};'
                 f' font-size:{f["sub"]}px; line-height:160%;">'
@@ -1108,10 +1157,61 @@ def render_comment_tree(nav, theme):
     return "".join(parts)
 
 
-def _comment_text(c):
+def _comment_text(c, reply_to=""):
     """一条评论的纯文本（折叠摘要用）：去掉图块，段落之间留一个空格。"""
-    return " ".join(str(b.text or "").strip() for b in (c.body or [])
+    return " ".join(str(b.text or "").strip()
+                    for b in _without_mention(c.body or [], reply_to)
                     if b.text and b.text.strip())
+
+
+_MENTION_RE = re.compile(r"^\s*(?:回复\s*)?@\s*([^\s@：:，,、]{1,24})\s*[：:，,、\s]")
+
+
+def _mention_target(c):
+    """正文开头 `@某人：` / `回复 @某人：` 里的那个名字（平铺来源的"回复谁"）。"""
+    for b in (c.body or []):
+        text = str(b.text or "")
+        if not text.strip():
+            continue
+        hit = _MENTION_RE.match(text)
+        return hit.group(1) if hit else ""
+    return ""
+
+
+def _opens_with_mention(c, who):
+    """正文开头已经点名了同一个人（知乎的子评论就是这样），表头就别再说一遍。"""
+    for b in (c.body or []):
+        text = str(b.text or "").lstrip()
+        if not text:
+            continue
+        for form in ("@" + who, "回复 @" + who, "回复@" + who):
+            if text.startswith(form):
+                return True
+        return False
+    return False
+
+
+def _strip_mention(text, who):
+    """把开头那截 `@某人：` / `回复 @某人：` 削掉（表头已经写了"回复 某人"）。"""
+    if not (who and text):
+        return text
+    pat = r"^\s*(?:回复\s*)?@\s*" + re.escape(who) + r"\s*[：:，,、]?\s*"
+    new = re.sub(pat, "", text, count=1)
+    return new if new.strip() else text
+
+
+def _without_mention(blocks, who):
+    """正文第一块开头那句 `@某人：` 去掉；别的块原样。"""
+    if not who or not blocks:
+        return blocks
+    first = blocks[0]
+    text = str(first.text or "")
+    stripped = _strip_mention(text, who)
+    if stripped == text:
+        return blocks
+    out = [Block(first.kind, stripped, first.url, first.lang)]
+    out.extend(blocks[1:])
+    return out
 
 
 def _block_inline(b, theme):
@@ -1209,9 +1309,12 @@ def post_needle(post):
     return _clip(post.title, TITLE_CLIP) if post is not None else ""
 
 
-def comment_needle(comment):
+def comment_needle(comment, nav=None):
     """详情里定位一条评论用的文本（表头那一行）。"""
-    return _comment_header(comment) if comment is not None else ""
+    if comment is None:
+        return ""
+    reply_to = nav.reply_to_of(comment) if nav is not None else ""
+    return _comment_header(comment, reply_to)
 
 
 def item_needles(nav):
@@ -1223,7 +1326,8 @@ def item_needles(nav):
     if nav is None:
         return []
     if nav.view == "detail":
-        return [(c, "comment", _comment_header(c)) for c, _d, _p in nav.visible_comments()]
+        return [(c, "comment", _comment_header(c, nav.reply_to_of(c)))
+                for c, _d, _p in nav.visible_comments()]
     return [(p, "post", post_needle(p)) for p in nav.posts]
 
 
@@ -1241,5 +1345,5 @@ def selection_needle(nav):
         拼出来的定位文本在文档里根本找不到。
     """
     if nav.view == "detail":
-        return comment_needle(nav.current_comment())
+        return comment_needle(nav.current_comment(), nav)
     return post_needle(nav.selected())

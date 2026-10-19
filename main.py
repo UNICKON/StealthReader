@@ -2429,6 +2429,7 @@ class StealthReader(QWidget):
         self.feed_sources = []          # 已登记的来源适配器（批次 B 起每加一个站就在这里多一个）
         self.feed_source_i = 0
         self.feed_busy = False          # 后台取数中（同一次取数不重复发）
+        self.feed_more_armed = True     # 到底自动续页：一次到底只触发一次
         self.feed_pending = None        # 忙着的时候来的取数请求，等回来补上（见 feed_load）
         self.feed_board_pending = False  # 正在拉板块表（回来要弹选择器，见 feed_load_boards）
         self.feed_boards_tried = set()   # 拉过全量板块表的来源（拉不到也别反复去拉）
@@ -3523,6 +3524,8 @@ class StealthReader(QWidget):
         self.text_edit.installEventFilter(self)
         # 视口滚一下就记一次阅读进度（页内滚轮/偷瞄滚轮只动视口，local_start_index 不动）
         self.text_edit.verticalScrollBar().valueChanged.connect(self.record_view_position)
+        # 列表页滚到底就续下一页（"页面下滑到底了继续加载"）：不用按 ↓ 把光标挪下去才会加载
+        self.text_edit.verticalScrollBar().valueChanged.connect(self.feed_autoload_more)
         # 鼠标事件其实都发给 viewport（上次滚轮那个坑），所以划选/单击必须装在 viewport 上
         self.text_edit.viewport().installEventFilter(self)
         self.text_edit.viewport().setMouseTracking(True)
@@ -4610,6 +4613,8 @@ class StealthReader(QWidget):
                         self.feed_warm_top(nav.posts)    # 顺手把前三条的正文取回来放着
                 else:
                     nav.add_page(posts, nxt)
+                # 新一页到了：重新武装"到底自动续页"（每次到底只发一次）
+                self.feed_more_armed = True
             elif kind == "detail":
                 nav.set_detail(post, cmts)
             if self._feed_sig_now() != self._feed_sig:
@@ -4879,6 +4884,23 @@ class StealthReader(QWidget):
             self.text_edit.verticalScrollBar().setValue(0)
         except Exception:
             pass
+
+    def feed_autoload_more(self, *_args):
+        """列表页滚到底（离底 60px 以内）就自动续下一页。
+
+        以前只有"选中项快到底"（`nav.near_end()`，得按 ↓ 挪光标）才续页，用滚轮往下读的话
+        永远读不到第二页——真人原话"页面下滑到底了继续加载"。取数在后台线程，
+        界面不等；`feed_more_armed` 保证一次到底只发一次，翻页回来后重新武装。"""
+        nav = self.feed_nav
+        if nav is None or not self.feed_mode or nav.view != "list":
+            return
+        if not nav.more or not self.feed_more_armed or self.feed_busy:
+            return
+        sb = self.text_edit.verticalScrollBar()
+        if sb.maximum() <= 0 or sb.value() < sb.maximum() - 60:
+            return
+        self.feed_more_armed = False
+        self.feed_load("more")
 
     def feed_move(self, step):
         nav = self.feed_nav

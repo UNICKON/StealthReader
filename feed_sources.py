@@ -1577,8 +1577,28 @@ class NgaSource(RealSource):
                 created=feed_mod.human_time(ts),
                 score=0,                       # score 这个字段的含义没验证过，不往"赞"上摆
                 body=body,
+                reply_to=_nga_reply_to(it.get("content") or ""),
             ))
         return out, None
+
+
+_NGA_QUOTE_HEAD = (r"^\s*\[pid=[^\]]*\]\s*(?:Reply)?\s*\[/pid\]\s*\[b\]\s*Post by\s*"
+                   r"\[uid=[^\]]*\]([^\[]+)\[/uid\][^\[]*\[/b\]\s*")
+_NGA_QUOTE_HEAD_RE = re.compile(_NGA_QUOTE_HEAD, re.I)
+
+
+def _nga_reply_to(html):
+    """NGA 的引用写在正文开头（平铺楼层里唯一准确的信息就是这个 `[uid=]` 后面的名字）：
+
+        [quote][pid=885058074,47745238,1]Reply[/pid] [b]Post by [uid=2202186]某某某[/uid]
+        (2026-10-19 11:47):[/b]<br/><br/>被引用的那段[/quote]<br/>这条回复自己的话
+    """
+    raw = str(html or "").strip()
+    m = _NGA_QUOTE_HEAD_RE.match(raw)
+    if not m:
+        m = re.search(r"\[quote\]\s*\[pid=[^\]]*\]\s*(?:Reply)?\s*\[/pid\]\s*\[b\]\s*"
+                      r"Post by\s*\[uid=[^\]]*\]([^\[]+)\[/uid\]", raw, re.I)
+    return m.group(1).strip() if m else ""
 
 
 def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
@@ -1604,7 +1624,14 @@ def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
         return '<img src="%s"/>' % src
 
     text = re.sub(r"\[img\](.*?)\[/img\]", _img, text, flags=re.I | re.S)
-    text = re.sub(r"\[quote\](.*?)\[/quote\]", r"\1\n", text, flags=re.I | re.S)
+    def _quote(m):
+        # 引用块的表头（`[pid=..]Reply[/pid] [b]Post by [uid=..]某人 (时间):[/b]`）不再是正文的一部分：
+        # 收件人已经在表头写成"回复 某人"，留在这里就是一行"Reply Post by ..."的机器话。
+        # 剩下被引用的那段包成 <blockquote>，排成引用样式（一眼看出这段是别人说的）。
+        inner = _NGA_QUOTE_HEAD_RE.sub("", m.group(1), count=1)
+        return "<blockquote>%s</blockquote>" % inner
+
+    text = re.sub(r"\[quote\](.*?)\[/quote\]", _quote, text, flags=re.I | re.S)
     text = re.sub(r"\[/?[a-z=*\u4e00-\u9fff][^\]]{0,40}\]", "", text)   # [b] [/b] [pid=..] [uid=..]
     return feed_mod.blocks_from_html(text, max_blocks=limit)
 
@@ -2239,6 +2266,9 @@ class HupuSource(RealSource):
                 created=feed_mod.human_time(int(it.get("createdAt") or 0) / 1000.0),
                 score=int(it.get("allLightCount") or 0),
                 body=blocks,
+                # 虎扑的引用在 `quote` 里（`{"author": {"puname": "..."}, "content": ...}`）：
+                # 这就是"这条回复在回谁"，比正文里猜准得多（它们的正文不带 @ 前缀）
+                reply_to=_hupu_name((it.get("quote") or {}).get("author")),
             ))
         return out, None
 
