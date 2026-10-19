@@ -2473,7 +2473,7 @@ class StealthReader(QWidget):
         # 松键回调负责清。没有它，按住老板键不放会被系统自动重复连点成"显示-隐藏-显示"。
         self._hotkey_gate = {}
         self._hotkey_gate_at = {}
-        self.hotkey_signal.connect(self.toggle_window)
+        self.hotkey_signal.connect(lambda: self.toggle_window("hotkey"))
         self.peek_hotkey_signal.connect(self.toggle_peek)
         self.safe_hotkey_signal.connect(self.toggle_safe_mode)
         self.review_hotkey_signal.connect(self.toggle_review_mode)
@@ -3121,7 +3121,7 @@ class StealthReader(QWidget):
             if not g_boss:
                 self.local_shortcut = QShortcut(QKeySequence(hotkey_str), self)
                 self.local_shortcut.setAutoRepeat(False)   # 按住不放时 Qt 也会重复触发同一个快捷键
-                self.local_shortcut.activated.connect(self.toggle_window)
+                self.local_shortcut.activated.connect(lambda: self.toggle_window("shortcut"))
         except:
             pass
         try:
@@ -3602,24 +3602,58 @@ class StealthReader(QWidget):
         except Exception:
             pass
 
+    def _rect_usable(self, rect):
+        """这块矩形，人**看得见、够得着**吗？
+
+        判据取"和某块屏幕的工作区有足够的重叠"：宽高各至少露出一半、或至少露出
+        `MIN_VISIBLE` 那么多。以前这里问的是 Win32 的 `MonitorFromWindow`——
+        窗口刚 show 的那一瞬它经常还答"不在任何屏幕上"，于是每唤出一次就白挪一次，
+        用户看到的是"窗口跳了一下/闪一下就跑到别处"。
+        """
+        if rect is None or rect.width() <= 0 or rect.height() <= 0:
+            return False
+        need_w = max(1, min(rect.width() // 2, self.MIN_VISIBLE))
+        need_h = max(1, min(rect.height() // 2, self.MIN_VISIBLE))
+        try:
+            screens = QApplication.instance().screens() or []
+        except Exception:
+            screens = []
+        for scr in screens:
+            avail = scr.availableGeometry()
+            inter = avail.intersected(rect)
+            if inter.width() >= need_w and inter.height() >= need_h:
+                return True
+        return False
+
+    MIN_VISIBLE = 120        # 至少露出这么多像素才算"在屏幕上"
+
     def ensure_on_screen(self):
-        """召唤/浮现后确保窗口真的在屏幕上，**并且回到它该在的位置**。
+        """召唤/浮现后确保窗口在**用户看得见的地方**，看不见才动它。
 
         锁屏解锁、显示器断电、拔过显示器之后，Windows 会把窗口丢到桌面之外（实测见过
-        x = 上次位置 − 一整屏宽），Qt 的缓存屏幕布局也可能是旧的。这里依次尝试：
-          1. 配置里记住的位置（`win_x/win_y`，也就是用户自己摆的地方）；
-          2. 主屏工作区左上角。
-        两步都用 **Qt 的 `move`**：它是逻辑像素，多屏 DPI 由 Qt 自己换算。以前只用
-        Win32 `SetWindowPos` 挪（物理像素），Qt 不知道位置变了，下次 show 又拉回屏幕外，
-        于是"窗口不在任何真实屏幕上，已强制挪回主屏"每次显示都要重来一遍。
-        两步都不行才退回 Win32 物理兜底，并同步 Qt 坐标。
+        x = 上次位置 − 一整屏宽）。这里用 Qt 自己的几何判断"看不看得见"，顺序是：
+          1. 已经看得见 → 一个像素都不动（这是绝大多数情况，**以前却是每次都挪**）；
+          2. 配置里记住的位置（用户自己摆的地方）；
+          3. 主屏工作区左上角 +60；
+          4. 都不行才退回 Win32 物理兜底，并把 Qt 坐标同步过来。
+        前两步都用 Qt 的 `move()`：逻辑像素，多屏 DPI 由 Qt 自己换算。
         """
         try:
             if not self.isVisible():
                 return              # 窗口藏着的时候别动它，免得和下一次 show 打架
-            hwnd = int(self.winId())
-            if window_on_real_screen(hwnd):
+            geo = self.frameGeometry()
+            if geo.width() <= 0 or geo.height() <= 0:
+                # 刚 show 的那一瞬几何还没算完。这时候判断一定是"看不见"，挪一次就白挪一次
+                # ——日志里"窗口被挪到屏幕外"每次显示都刷一遍，就是这么来的。
+                # 等这一轮事件走完再判，最多等两次，免得卡进循环。
+                if getattr(self, "_ensure_retries", 0) < 2:
+                    self._ensure_retries = getattr(self, "_ensure_retries", 0) + 1
+                    QTimer.singleShot(0, self.ensure_on_screen)
                 return
+            self._ensure_retries = 0
+            if self._rect_usable(geo):
+                return
+            old = (self.x(), self.y())
             candidates = []
             sx, sy = self.config.get("win_x"), self.config.get("win_y")
             if isinstance(sx, int) and isinstance(sy, int) and self._point_on_desktop(sx, sy):
@@ -3630,10 +3664,13 @@ class StealthReader(QWidget):
             except Exception:
                 pass
             for x, y, label in candidates:
-                self.move(x, y)     # Qt 坐标：DPI/多屏换算交给 Qt，Win32 只能吃物理像素
-                if window_on_real_screen(hwnd):
-                    log_event(f"窗口被挪到屏幕外，已挪回{label} ({x},{y})")
+                # 用算出来的矩形判断，不回头读 frameGeometry：move() 之后它要下一帧才更新
+                if self._rect_usable(QRect(x, y, geo.width(), geo.height())):
+                    self.move(x, y)
+                    log_event("窗口不在可见范围内，已挪回%s (%d,%d)，原来在 (%d,%d)"
+                              % (label, x, y, old[0], old[1]))
                     return
+            hwnd = int(self.winId())
             if force_window_to_primary(hwnd):
                 self.sync_qt_pos_from_win32(hwnd)
                 log_event("窗口不在任何真实屏幕上，已用 Win32 挪回主屏并同步 Qt 坐标")
@@ -3663,7 +3700,8 @@ class StealthReader(QWidget):
         self.tray_icon.setIcon(QIcon(pixmap))
         self.tray_icon.setToolTip("StealthReader 阅读器（进程运行中）")
         tray_menu = QMenu()
-        tray_menu.addAction("显示/隐藏（老板键）").triggered.connect(self.toggle_window)
+        tray_menu.addAction("显示/隐藏（老板键）").triggered.connect(
+            lambda _checked=False: self.toggle_window("tray"))
         tray_menu.addAction("隐形背诵（Anki 卡片）").triggered.connect(self.toggle_review_mode)
         tray_menu.addAction("社区统一流（知乎/V2EX…）").triggered.connect(self.toggle_feed_mode)
         tray_menu.addAction("叫回 Anki 窗口").triggered.connect(self.rescue_anki_window)
@@ -3681,16 +3719,35 @@ class StealthReader(QWidget):
     def on_tray_activated(self, reason):
         # 单击就切换显隐，双击太绕
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
-            self.toggle_window()
+            self.toggle_window("tray")
 
-    def toggle_window(self):
+    # 刚唤出的这一小段里，任何"收起"都当成重复触发忽略掉。
+    # 真人再快也不会 0.45 秒内按两下；而"唤出后没抢到前台"时，系统/别的软件可能立刻替它
+    # 把窗口收走，用户看到的就是"闪一下就没了"。忽略的代价只是"再按一次"，
+    # 反过来（窗口自己吞掉唤出）就没法用了。
+    WAKE_GRACE = 0.45
+
+    def toggle_window(self, source="boss"):
         current_time = time.time()
         if current_time - self.last_toggle_time < 0.3:
             return
+        if self.isVisible():
+            shown_for = current_time - getattr(self, "_shown_at", 0.0)
+            if shown_for < self.WAKE_GRACE:
+                # 2026-10-19 实测日志：解锁后一口气出现"触发→隐藏、触发→显示、触发→隐藏"，
+                # 每次显示都紧跟一次收起，界面上的观感就是"按唤醒、闪一下、没了"。
+                # 这一下不认，让它留在屏幕上。
+                log_event("忽略一次收起（%.0fms 前刚唤出，来源 %s）"
+                          % (shown_for * 1000, source))
+                return
         self.last_toggle_time = current_time
 
         if self.isVisible():
-            log_event("老板键 -> 隐藏窗口")
+            log_event("老板键 -> 隐藏窗口（来源 %s）" % source)
+            if self.peek_mode:
+                # 偷瞄状态里被收起来：钩子先卸掉，否则下次唤出后"随便点一下"就被判成
+                # 退出偷瞄，窗口刚露脸又被收走（日志里 14:14:12 就是这么一闪的）。
+                self._drop_peek_state()
             self.dismiss_action_panel(cancelled=True)   # 连同待确认的划选一起作废
             self.sync_progress_async()
             if self.is_local_mode and not self._book_veiled():
@@ -3699,8 +3756,12 @@ class StealthReader(QWidget):
             self.save_window_pos()
             self.hide()
         else:
-            log_event("老板键 -> 显示窗口")
+            log_event("老板键 -> 显示窗口（来源 %s）" % source)
+            if self.peek_mode:
+                # 老板键接管可见层：把偷瞄那套收干净再说，免得它把接下来的点击当退出指令
+                self._drop_peek_state()
             self.showNormal()
+            self._shown_at = time.time()
             self.apply_style()
             self.activateWindow()
             self.ensure_on_screen()
@@ -3754,6 +3815,26 @@ class StealthReader(QWidget):
         if self.config.get("antishot_mode", False):
             set_window_protection(int(self.winId()), True)
 
+    def _drop_peek_state(self):
+        """从偷瞄状态里退出，但**不动可见层**（收起来还是留着，由调用方决定）。
+
+        偷瞄的输入钩子是这样一条规矩：屏幕上出现"别的输入"就当用户要走，立刻收窗口。
+        所以一旦有人在偷瞄状态里用老板键/托盘接管了可见层，钩子必须一起卸掉——
+        否则窗口刚露脸，紧跟着来的一下点击就被判成"退出偷瞄"，窗口当场没了。
+        """
+        if not self.peek_mode:
+            return
+        self.peek_mode = False
+        self.peek_last_exit = time.time()
+        try:
+            self.peek_input_hook.uninstall()
+        except Exception:
+            pass
+        try:
+            self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
+        except Exception:
+            pass
+
     def exit_peek(self, reason=""):
         """退出偷瞄 = **把窗口收起来**（等价于老板键的隐藏），内容层一个字都不动。
 
@@ -3762,10 +3843,7 @@ class StealthReader(QWidget):
         （窗口藏起来时不可能是前台窗口，所以老板键那会儿按不了）。"""
         if not self.peek_mode:
             return
-        self.peek_mode = False
-        self.peek_last_exit = time.time()
-        self.text_edit.set_pinned_cursor(Qt.ArrowCursor)
-        self.peek_input_hook.uninstall()  # 先卸钩，后面任何一步出错都不能泄漏钩子
+        self._drop_peek_state()
         self.apply_style()                # 先恢复正常样式，免得偷瞄那套样式留到下次露脸
         self.sync_progress_async()
         self.hide()

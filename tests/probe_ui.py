@@ -603,7 +603,11 @@ check("菜单里列出了当前来源的板块（%s）" % w.feed_source().label,
       [t for t in _menu_txt if t][:12])
 
 # 换板块：换完要立刻生效，并按来源记进 config
+# 起点要**显式钉住**：这条以前依赖"进来时恰好停在甲板"，而真 config 里可能记着乙板
+# （上一轮探针跑完留下的），于是 `feed_goto_channel` 走"和目标一样就直接 False"那条，
+# 断言就假红了。探针不许依赖上一轮人/上一次运行留下的状态。
 w.config.pop("feed_board_boardsrc", None)
+w.feed_nav.channel = "甲板"
 check("换板块当场生效", w.feed_goto_channel("乙板") and w.feed_nav.channel == "乙板",
       w.feed_nav.channel)
 pump(lambda: not w.feed_busy)
@@ -673,7 +677,83 @@ check("日志里的失败都是'这个站连不上'，没有代码异常",
           for m in LOGS if "社区取数失败" in m),
       [m for m in LOGS if "社区取数失败" in m][:3])
 
-print("\n=== 10. 离线示例仍是兜底 ===")
+print("\n=== 10. 老板键唤出：不能被自己吞掉，也不能每唤出就挪一次 ===")
+# 2026-10-19 的真日志：解锁之后出现"触发→隐藏、触发→显示、触发→隐藏"一串，
+# 用户看到的就是"按唤醒、闪一下、没了"。两条病根各钉一条：
+#   1) 唤出后紧跟着的一次"收起"（重复触发/没抢到前台）不该生效；
+#   2) 窗口明明看得见，`ensure_on_screen` 却每次显示都把它挪一次（Win32 那个判断在刚
+#      show 的一瞬间常答"不在任何屏幕"，日志里"窗口被挪到屏幕外"于是每次刷屏）。
+w.show()
+pump(lambda: w.isVisible(), 2)
+w.toggle_window("probe")                      # 收起
+pump(lambda: not w.isVisible(), 2)
+check("收起照常（这一下是正常功能）", not w.isVisible())
+w.last_toggle_time = 0                         # 别让 0.3 秒防连击把这中间的唤出吞掉
+w.toggle_window("probe")                      # 唤出
+pump(lambda: w.isVisible(), 2)
+check("唤出后窗口在屏幕上", w.isVisible())
+LOGS.clear()
+w.last_toggle_time = 0                         # 绕过 0.3 秒防连击，直接考"唤出临界期"那条
+w.toggle_window("probe")                      # 立刻又"收起"——这就是"闪一下"的成因
+check("刚唤出时的一次收起被忽略（窗口留在屏幕上）", w.isVisible())
+check("忽略要留痕（下回排查有据）", any("忽略一次收起" in m for m in LOGS), LOGS[-2:])
+w._shown_at = time.time() - 1.0                # 过了临界时间
+w.last_toggle_time = 0
+w.toggle_window("probe")
+pump(lambda: not w.isVisible(), 2)
+check("过了临界时间，收起照常生效（没把功能吞掉）", not w.isVisible())
+
+# 看得见就别动它
+w.show()
+pump(lambda: w.isVisible(), 2)
+w.move(120, 120)
+qapp.processEvents()
+before = (w.x(), w.y())
+LOGS.clear()
+w.ensure_on_screen()
+qapp.processEvents()
+check("窗口看得见时一个像素都不挪", (w.x(), w.y()) == before, (before, (w.x(), w.y())))
+check("看得见就不该写'挪回'日志", not any("挪回" in m for m in LOGS), LOGS[-2:])
+# 真飞到桌面之外了才挪
+w.move(-9000, -9000)
+qapp.processEvents()
+LOGS.clear()
+w.ensure_on_screen()
+qapp.processEvents()
+check("窗口在屏幕外时才挪回来",
+      any("挪回" in m for m in LOGS) and w._rect_usable(w.frameGeometry()),
+      (LOGS[-1] if LOGS else "", (w.x(), w.y())))
+
+# 偷瞄的输入钩子："出现别的输入"就收窗口。老板键接管可见层时必须先把它卸掉，
+# 否则窗口刚露脸，紧跟着的一下点击就被判成"退出偷瞄"——14:14:12 那一下就是这么没的。
+class _FakePeekHook(object):
+    def __init__(self):
+        self.uninstalled = 0
+
+    def install(self, key):
+        return True
+
+    def uninstall(self):
+        self.uninstalled += 1
+
+
+_real_peek_hook = w.peek_input_hook
+w.hide()
+qapp.processEvents()
+fake_hook = _FakePeekHook()
+w.peek_input_hook = fake_hook
+w.peek_mode = True                             # 模拟"上次偷瞄没收干净就藏起来了"
+w.last_toggle_time = 0
+w.toggle_window("probe")
+pump(lambda: w.isVisible(), 2)
+check("偷瞄没收干净时被唤出，先把偷瞄的钩子卸掉",
+      fake_hook.uninstalled >= 1 and not w.peek_mode, (fake_hook.uninstalled, w.peek_mode))
+check("卸掉钩子之后窗口才留得住（不会被'随便点一下'收走）", w.isVisible())
+w.peek_input_hook = _real_peek_hook
+w.hide()
+qapp.processEvents()
+
+print("\n=== 11. 离线示例仍是兜底 ===")
 w.feed_sources = list(ORIG_SOURCES)          # 把第 6 节换掉的替身来源还原回来
 w.feed_source_i = [i for i, s in enumerate(w.feed_sources) if s.key == "demo"][0] \
     if any(s.key == "demo" for s in w.feed_sources) else 0
