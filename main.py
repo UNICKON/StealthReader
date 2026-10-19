@@ -25,7 +25,8 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QColorDialog, QCheckBox, QHBoxLayout,
                              QFrame, QTextEdit, QShortcut, QListWidget,
                              QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog,
-                             QInputDialog, QMessageBox, QToolTip, QTabWidget)
+                             QInputDialog, QMessageBox, QToolTip, QTabWidget, QScrollArea,
+                             QStackedWidget)
 from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject,
                           QThread, QTimer, QEvent, QUrl)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
@@ -201,6 +202,63 @@ DARK_STYLESHEET = """
     QComboBox { background-color: #3c3c3c; color: white; border: 1px solid #555; padding: 5px; }
     QComboBox QAbstractItemView { background-color: #3c3c3c; color: white; selection-background-color: #505050; }
     QLabel { color: #aaa; }
+"""
+
+
+# 设置页专用样式：左边一列分区、右边一组一张卡片。只按 objectName 命中，
+# 不动别处的控件（登录框、目录、牌组列表都是同一套 DARK_STYLESHEET）。
+SETTINGS_QSS = """
+    QWidget#settingsBody { background: #242424; }
+    QListWidget#navList {
+        background: #1f1f1f; border: none; border-right: 1px solid #333;
+        padding: 10px 8px; outline: none;
+    }
+    QListWidget#navList::item {
+        padding: 9px 12px; margin: 2px 0; border-radius: 6px; color: #b6b6b6;
+    }
+    QListWidget#navList::item:selected { background: #3a3a3a; color: #ffffff; }
+    QListWidget#navList::item:hover { background: #2e2e2e; }
+    QWidget#pageBody { background: #242424; }
+    QScrollArea, QScrollArea > QWidget > QWidget { background: #242424; }
+    QScrollBar:vertical {
+        background: #242424; width: 10px; margin: 0; border: none;
+    }
+    QScrollBar::handle:vertical { background: #4a4a4a; border-radius: 5px; min-height: 30px; }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+    QFrame#card { background: #2d2d2d; border: 1px solid #383838; border-radius: 10px; }
+    QLabel#cardTitle { color: #8ab4f8; font-weight: 600; }
+    QLabel#rowLabel { color: #d2d2d2; }
+    QFrame#footBar { background: #262626; border-top: 1px solid #333; }
+    QPushButton#primaryButton {
+        background: #3d6df0; border: 1px solid #3d6df0; color: #ffffff; padding: 6px 18px;
+    }
+    QPushButton#primaryButton:hover { background: #4a7bf8; border-color: #4a7bf8; }
+    QPushButton { padding: 6px 14px; border-radius: 6px; }
+    QSpinBox, QDoubleSpinBox {
+        background: #3c3c3c; color: #ffffff; border: 1px solid #4a4a4a;
+        border-radius: 5px; padding: 4px 6px;
+    }
+    QCheckBox { color: #d6d6d6; spacing: 8px; }
+    QCheckBox::indicator {
+        width: 15px; height: 15px; border-radius: 4px;
+        border: 1px solid #5a5a5a; background: #333333;
+    }
+    QCheckBox::indicator:hover { border-color: #7a7a7a; }
+    QCheckBox::indicator:checked { background: #3d6df0; border-color: #3d6df0; }
+    QCheckBox::indicator:disabled { border-color: #3a3a3a; background: #2b2b2b; }
+    QCheckBox { color: #d6d6d6; spacing: 8px; }
+    QCheckBox::indicator {
+        width: 15px; height: 15px; border-radius: 4px;
+        border: 1px solid #5a5a5a; background: #333333;
+    }
+    QCheckBox::indicator:hover { border-color: #7a7a7a; }
+    QCheckBox::indicator:checked { background: #3d6df0; border-color: #3d6df0; }
+    QCheckBox::indicator:disabled { border-color: #3a3a3a; background: #2b2b2b; }
+    QSlider::groove:horizontal { height: 4px; background: #444444; border-radius: 2px; }
+    QSlider::handle:horizontal {
+        width: 14px; margin: -6px 0; border-radius: 7px; background: #8ab4f8;
+    }
 """
 
 
@@ -1284,6 +1342,7 @@ class CornerFrame(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.is_auto_mode = False
+        self.draw_corners = True          # 设置里的「显示角标」：关掉就是彻底干净的一页
         self.corner_color = QColor(128, 128, 128, 200)
         self.auto_bg_fill = QColor(0, 0, 0, 2)
 
@@ -1298,6 +1357,7 @@ class CornerFrame(QFrame):
             self.update()
 
     def set_draw_corners(self, enable):
+        self.draw_corners = bool(enable)
         self.update()
 
     def paintEvent(self, event):
@@ -1309,7 +1369,7 @@ class CornerFrame(QFrame):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), self.auto_bg_fill)
 
-        if self.height() > 20:
+        if self.height() > 20 and self.draw_corners:
             painter.setPen(QPen(self.corner_color, 3))
             w, h = self.width(), self.height()
             length = 15
@@ -1377,7 +1437,7 @@ class BookSelector(QDialog):
         self.selected_book = None
         self.setWindowTitle("📚 书架")
         self.resize(400, 500)
-        self.setStyleSheet(DARK_STYLESHEET)
+        self.setStyleSheet(DARK_STYLESHEET + SETTINGS_QSS)
         self.initUI()
         self.populate_list(self.main_window.books)
 
@@ -1949,49 +2009,145 @@ class SettingsDialog(QDialog):
         self.initUI()
 
     def initUI(self):
-        layout = QFormLayout()
-        self.ip_input = QLineEdit(self.config.get("ip"))
-        layout.addRow("Legado地址:", self.ip_input)
+        """设置页：左边一列分区，右边一组一张卡片。
 
-        self.check_auto_mode = QCheckBox("🦎 自动挡 (变色龙)")
-        self.check_auto_mode.setToolTip("开启后，背景变为背景色+极低透明度。\n字体颜色自动反转。")
-        self.check_auto_mode.setChecked(self.config.get("auto_mode", False))
-        self.check_auto_mode.toggled.connect(self.on_auto_mode_toggled)
-        layout.addRow(self.check_auto_mode)
+        界面上只出现标签本身，解释一律进 tooltip（真人："不要把注释性语言当成前端展示语言"）。
+        每组之间用一条细边卡片分开，一眼能看出哪几项是一回事；底部只留「取消 / 保存」。
+        """
+        self.setWindowTitle("设置")
+        self.resize(790, 640)
+        self.setMinimumSize(640, 500)
 
-        self.check_antishot = QCheckBox("🛡️ 系统级防截屏")
-        self.check_antishot.setToolTip("开启后，肉眼可见，但截图/录屏时窗口会完全消失（透明）。\n使用 Windows 系统底层保护。")
-        self.check_antishot.setChecked(self.config.get("antishot_mode", False))
-        self.check_antishot.toggled.connect(self.on_antishot_toggled)
-        layout.addRow(self.check_antishot)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(10, 100)
-        self.opacity_slider.setValue(int(self.config.get("opacity") * 100))
-        self.opacity_slider.valueChanged.connect(self.on_opacity_change)
-        layout.addRow("不透明度:", self.opacity_slider)
+        body = QWidget()
+        body.setObjectName("settingsBody")
+        body_row = QHBoxLayout(body)
+        body_row.setContentsMargins(0, 0, 0, 0)
+        body_row.setSpacing(0)
 
+        self.nav_list = QListWidget()
+        self.nav_list.setObjectName("navList")
+        self.nav_list.setFixedWidth(150)
+        self.nav_list.setFocusPolicy(Qt.NoFocus)
+        self.nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("pageStack")
+        body_row.addWidget(self.nav_list)
+        body_row.addWidget(self.page_stack, 1)
+        root.addWidget(body, 1)
+
+        bar = QFrame()
+        bar.setObjectName("footBar")
+        bar_row = QHBoxLayout(bar)
+        bar_row.setContentsMargins(16, 10, 16, 10)
+        bar_row.setSpacing(10)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+        btn_save = QPushButton("保存")
+        btn_save.setObjectName("primaryButton")
+        btn_save.setDefault(True)
+        btn_save.clicked.connect(self.accept)
+        bar_row.addStretch(1)
+        bar_row.addWidget(btn_cancel)
+        bar_row.addWidget(btn_save)
+        root.addWidget(bar)
+
+        self.build_pages()
+        self.nav_list.currentRowChanged.connect(self.page_stack.setCurrentIndex)
+        self.nav_list.setCurrentRow(0)
+        self.on_auto_mode_toggled(self.check_auto_mode.isChecked())
+        self.on_antishot_toggled(self.check_antishot.isChecked())
+
+    # --- 版面构件（只在本对话框里用，所以不往上提） ---
+    def new_page(self, title):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        holder = QWidget()
+        holder.setObjectName("pageBody")
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(18, 16, 18, 16)
+        col.setSpacing(14)
+        scroll.setWidget(holder)
+        self.nav_list.addItem(QListWidgetItem(title))
+        self.page_stack.addWidget(scroll)
+        return col
+
+    def new_card(self, col, title=""):
+        card = QFrame()
+        card.setObjectName("card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(16, 13, 16, 13)
+        lay.setSpacing(9)
+        if title:
+            head = QLabel(title)
+            head.setObjectName("cardTitle")
+            lay.addWidget(head)
+        col.addWidget(card)
+        return lay
+
+    def add_row(self, lay, label, widget, hint=""):
+        row = QWidget()
+        row.setObjectName("formRow")
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(12)
+        name = QLabel(label)
+        name.setObjectName("rowLabel")
+        name.setFixedWidth(108)
+        h.addWidget(name)
+        h.addWidget(widget, 1)
+        lay.addWidget(row)
+        if hint:
+            row.setToolTip(hint)
+            name.setToolTip(hint)
+            widget.setToolTip(hint)
+        return row
+
+    def add_wide(self, lay, widget, hint=""):
+        lay.addWidget(widget)
+        if hint:
+            widget.setToolTip(hint)
+        return widget
+
+    def build_pages(self):
+        self.build_page_read()
+        self.build_page_window()
+        self.build_page_keys()
+        self.build_page_card()
+        self.build_page_feed()
+        self.build_page_ui()
+        self.build_page_privacy()
+        self.build_page_source()
+
+    def build_page_read(self):
+        col = self.new_page("阅读")
+
+        lay = self.new_card(col, "文字")
         self.font_spin = QSpinBox()
         self.font_spin.setRange(8, 60)
         self.font_spin.setValue(self.config.get("font_size"))
         self.font_spin.valueChanged.connect(self.on_font_change)
-        layout.addRow("字体大小:", self.font_spin)
+        self.add_row(lay, "字号", self.font_spin)
 
         self.font_combo = QFontComboBox()
-        current_font_family = self.config.get("font_family", "Microsoft YaHei")
-        self.font_combo.setCurrentFont(QFont(current_font_family))
+        self.font_combo.setCurrentFont(QFont(self.config.get("font_family", "Microsoft YaHei")))
         self.font_combo.currentFontChanged.connect(self.on_font_change)
-        layout.addRow("字体样式:", self.font_combo)
+        self.add_row(lay, "字体", self.font_combo)
 
+        lay = self.new_card(col, "排版")
         self.spacing_spin = QSpinBox()
         self.spacing_spin.setRange(LINE_SPACING_MIN, LINE_SPACING_MAX)
         self.spacing_spin.setSingleStep(5)
         self.spacing_spin.setSuffix(" %")
         self.spacing_spin.setValue(clamp_config_int(self.config, "line_spacing", LINE_SPACING_DEFAULT,
                                                     LINE_SPACING_MIN, LINE_SPACING_MAX))
-        self.spacing_spin.setToolTip("行距 = 行高的百分比。100% 为原始行距，150% 约等于一行字配半行空白。")
         self.spacing_spin.valueChanged.connect(self.on_typography_change)
-        layout.addRow("行距:", self.spacing_spin)
+        self.add_row(lay, "行距", self.spacing_spin,
+                     "行高相对字号的百分比。100% 是原始行距，150% 约等于一行字配半行空白。")
 
         self.para_spin = QSpinBox()
         self.para_spin.setRange(PARA_SPACING_MIN, PARA_SPACING_MAX)
@@ -1999,10 +2155,10 @@ class SettingsDialog(QDialog):
         self.para_spin.setSuffix(" %")
         self.para_spin.setValue(clamp_config_int(self.config, "paragraph_spacing", 0,
                                                  PARA_SPACING_MIN, PARA_SPACING_MAX))
-        self.para_spin.setToolTip("段与段之间的额外空白，同样以行高为基准，0% 为原始效果。\n"
-                                  "注意：若 txt 里每行都是硬换行，段间距会看起来像额外的行距。")
         self.para_spin.valueChanged.connect(self.on_typography_change)
-        layout.addRow("段间距:", self.para_spin)
+        self.add_row(lay, "段间距", self.para_spin,
+                     "段与段之间的额外空白，同样以行高为基准，0% 为原始效果。\n"
+                     "若 txt 里每行都是硬换行，段间距会看起来像额外的行距。")
 
         self.margin_spin = QDoubleSpinBox()
         self.margin_spin.setRange(PAGE_MARGIN_MIN, PAGE_MARGIN_MAX)
@@ -2014,18 +2170,17 @@ class SettingsDialog(QDialog):
                                                   PAGE_MARGIN_DEFAULT,
                                                   PAGE_MARGIN_MIN, PAGE_MARGIN_MAX))
         self.margin_spin.setValue(initial_margin)
-        self.margin_spin.setToolTip("文字四周的留白（上下左右相同），单位是「字」——1 字 = 一个全角空格宽，\n"
-                                    "随字号字体等比变化（字号调大，留白跟着变宽）。\n"
-                                    "窗口很窄时别设太大，会挤掉每行字数。")
         self.margin_spin.valueChanged.connect(self.on_typography_change)
-        layout.addRow("页边距:", self.margin_spin)
+        self.add_row(lay, "页边距", self.margin_spin,
+                     "文字四周的留白（上下左右相同），单位是「字」——1 字 = 一个全角空格宽，\n"
+                     "随字号字体等比变化。窗口很窄时别设太大，会挤掉每行字数。")
 
         self.para_indent_check = QCheckBox("段落缩进")
         self.para_indent_check.setChecked(bool(self.config.get("paragraph_indent", True)))
-        self.para_indent_check.setToolTip("给每个自然段的第一行加缩进；标题（章节名、序、前言这类行）自动不缩进。\n"
-                                          "不想要缩进也可以把下面的「首行缩进」调到 0。")
         self.para_indent_check.toggled.connect(self.on_typography_change)
-        layout.addRow(self.para_indent_check)
+        self.add_wide(lay, self.para_indent_check,
+                      "给每个自然段的第一行加缩进；标题（章节名、序、前言这类行）自动不缩进。\n"
+                      "不想要缩进也可以把下面的「首行缩进」调到 0。")
 
         self.indent_spin = QDoubleSpinBox()
         self.indent_spin.setRange(FIRST_LINE_INDENT_MIN, FIRST_LINE_INDENT_MAX)
@@ -2035,24 +2190,153 @@ class SettingsDialog(QDialog):
         self.indent_spin.setValue(clamp_config_number(self.config, "first_line_indent",
                                                       FIRST_LINE_INDENT_DEFAULT,
                                                       FIRST_LINE_INDENT_MIN, FIRST_LINE_INDENT_MAX))
-        self.indent_spin.setToolTip("缩进多少，1 字符 = 一个全角空格的宽度（随字号字体变化）。\n"
-                                    "0 就是不缩进。")
         self.indent_spin.valueChanged.connect(self.on_typography_change)
-        layout.addRow("首行缩进:", self.indent_spin)
+        self.add_row(lay, "首行缩进", self.indent_spin,
+                     "缩进多少，1 字符 = 一个全角空格的宽度（随字号字体变化）。0 就是不缩进。")
 
-        # 社区页（Ctrl+Alt+F）自己的字体：默认跟阅读字体一样，想让它更大/更小可以单独设
+        col.addStretch(1)
+
+    def build_page_window(self):
+        col = self.new_page("窗口")
+
+        lay = self.new_card(col, "外观")
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(10, 100)
+        self.opacity_slider.setValue(int(self.config.get("opacity") * 100))
+        self.opacity_slider.valueChanged.connect(self.on_opacity_change)
+        self.add_row(lay, "不透明度", self.opacity_slider)
+
+        self.check_auto_mode = QCheckBox("自动挡")
+        self.check_auto_mode.setChecked(self.config.get("auto_mode", False))
+        self.check_auto_mode.toggled.connect(self.on_auto_mode_toggled)
+        self.add_wide(lay, self.check_auto_mode,
+                      "背景取窗口后方的颜色，字体颜色自动反转，窗口几乎隐形。\n"
+                      "只在需要贴着别的窗口读的时候打开；关掉就是正常的深色底。")
+
+        self.check_ghost_mode = QCheckBox("幽灵模式")
+        self.check_ghost_mode.setChecked(self.config.get("ghost_mode", False))
+        self.add_wide(lay, self.check_ghost_mode,
+                      "鼠标移出窗口就淡到几乎透明，回来立刻恢复。")
+
+        lay = self.new_card(col, "颜色")
+        self.btn_text_color = QPushButton("选择文字颜色")
+        self.btn_text_color.setStyleSheet(f"background-color: {self.temp_text_color};")
+        self.btn_text_color.clicked.connect(self.pick_text_color)
+        self.btn_bg_color = QPushButton("选择背景颜色")
+        self.btn_bg_color.setStyleSheet(f"background-color: {self.temp_bg_color};")
+        self.btn_bg_color.clicked.connect(self.pick_bg_color)
+        color_row = QWidget()
+        color_row.setObjectName("formRow")
+        color_layout = QHBoxLayout(color_row)
+        color_layout.setContentsMargins(0, 0, 0, 0)
+        color_layout.setSpacing(10)
+        color_layout.addWidget(self.btn_text_color, 1)
+        color_layout.addWidget(self.btn_bg_color, 1)
+        self.add_row(lay, "配色", color_row)
+
+        col.addStretch(1)
+
+    def build_page_keys(self):
+        col = self.new_page("快捷键")
+
+        lay = self.new_card(col, "模式切换")
+        self.boss_key_input = QLineEdit(self.config.get("boss_key", "Esc"))
+        self.add_row(lay, "老板键", self.boss_key_input,
+                     "显示/隐藏窗口。写法例如 Esc、ctrl+s、ctrl+alt+s。")
+
+        self.peek_key_input = QLineEdit(self.config.get("peek_key", "ctrl+e"))
+        self.add_row(lay, "偷瞄", self.peek_key_input,
+                     "按这个键浮现书页，鼠标滚轮在任何位置都能翻页，\n"
+                     "敲键盘 / 右键 / 中键则退出并藏回去；左键点击不退出。\n"
+                     "热键本身不会被发给当前应用。")
+
+        self.anki_key_input = QLineEdit(self.config.get("anki_key", "ctrl+alt+a"))
+        self.add_row(lay, "卡片", self.anki_key_input,
+                     "按这个键：书页换成 Anki 卡片（还是这本书的字体/字号/行距/页边距）。\n"
+                     "再按一次退出，书回到原来那一页，阅读进度一个字节都不变。")
+
+        self.feed_key_input = QLineEdit(self.config.get("feed_key", "ctrl+alt+f"))
+        self.add_row(lay, "社区", self.feed_key_input,
+                     "按这个键：书页换成社区统一流（知乎/V2EX/微博…所有来源都是同一种帖子）。\n"
+                     "再按一次退出，书回到原来那一页，阅读进度一个字节都不变。")
+
+        self.safe_key_input = QLineEdit(self.config.get("safe_key", "ctrl+alt+d"))
+        self.add_row(lay, "安全文档", self.safe_key_input,
+                     "有人凑过来看屏幕时按这个键，书页立刻换成一份预置的工作文档，\n"
+                     "排版（字体/行距/页边距/窗口大小）和书页完全一致；\n"
+                     "再按一次换回书，回到原来那一页。划线会一起隐藏。")
+
+        col.addStretch(1)
+
+    def build_page_card(self):
+        col = self.new_page("卡片")
+
+        lay = self.new_card(col, "连接")
+        deck_row = QWidget()
+        deck_row.setObjectName("formRow")
+        deck_layout = QHBoxLayout(deck_row)
+        deck_layout.setContentsMargins(0, 0, 0, 0)
+        deck_layout.setSpacing(8)
+        self.anki_deck_input = QLineEdit(self.config.get("anki_deck", ""))
+        self.anki_deck_input.setPlaceholderText("牌组名，例如 背诵")
+        self.anki_deck_input.setToolTip("要背哪个牌组（子牌组会自动包含在内）。")
+        btn_pick_deck = QPushButton("列出牌组…")
+        btn_pick_deck.clicked.connect(self.pick_anki_deck)
+        deck_layout.addWidget(self.anki_deck_input, 1)
+        deck_layout.addWidget(btn_pick_deck)
+        self.add_row(lay, "牌组", deck_row,
+                     "从正在运行的 Anki 里读出牌组（带今日待复习张数）用右边这个按钮。")
+
+        key_row = QWidget()
+        key_row.setObjectName("formRow")
+        key_layout = QHBoxLayout(key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.setSpacing(8)
+        self.anki_api_key_input = QLineEdit(self.config.get("anki_api_key", ""))
+        self.anki_api_key_input.setPlaceholderText("留空 = AnkiConnect 没设 apiKey")
+        self.anki_api_key_input.setEchoMode(QLineEdit.Password)
+        btn_test_anki = QPushButton("测试连接")
+        btn_test_anki.clicked.connect(self.test_anki_connection)
+        key_layout.addWidget(self.anki_api_key_input, 1)
+        key_layout.addWidget(btn_test_anki)
+        self.add_row(lay, "AnkiConnect", key_row,
+                     "AnkiConnect 配置里若设了 apiKey，填在这里；没设就留空。")
+
+        lay = self.new_card(col, "行为")
+        self.anki_swallow_check = QCheckBox("偷瞄时也捕获空格/回车")
+        self.anki_swallow_check.setChecked(bool(self.config.get("anki_swallow_keys", True)))
+        self.add_wide(lay, self.anki_swallow_check,
+                      "偷瞄（Ctrl+E）那一层是全局的：勾上则空格/回车也归卡片（翻面/继续），\n"
+                      "关掉则它们留给你手头的软件打字。窗口内不受影响。\n"
+                      "评分键 1-4 一定捕获。")
+
+        self.anki_conceal_check = QCheckBox("背诵时隐藏 Anki 窗口")
+        self.anki_conceal_check.setChecked(bool(self.config.get("anki_conceal", True)))
+        self.add_wide(lay, self.anki_conceal_check,
+                      "Anki 自己的界面会从屏幕、Alt+Tab 和任务栏缩略图里消失，\n"
+                      "答题全在这个窗口里完成；退出背诵时它会回到原处（不激活）。\n"
+                      "藏起来≠隐身，别把两个窗口摆在同一块屏幕上。")
+
+        col.addStretch(1)
+
+    def build_page_feed(self):
+        col = self.new_page("社区")
+
+        lay = self.new_card(col, "版式")
         self.feed_font_check = QCheckBox("社区页用单独字体")
-        self.feed_font_check.setToolTip("社区统一流（Ctrl+Alt+F）的字体和字号默认和书页完全一样。\n"
-                                        "勾上就能单独调：社区流是长文档，一屏里信息多，\n"
-                                        "用比书页小一两号字更合适（书页的字号不受影响）。")
         self.feed_font_check.setChecked(bool(self.config.get("feed_font_family")
                                              or self.config.get("feed_font_size")))
         self.feed_font_check.toggled.connect(self.on_feed_font_change)
-        layout.addRow(self.feed_font_check)
+        self.add_wide(lay, self.feed_font_check,
+                      "社区统一流（Ctrl+Alt+F）的字体和字号默认和书页完全一样。\n"
+                      "勾上就能单独调：社区流是长文档，一屏里信息多，\n"
+                      "用比书页小一两号字更合适（书页的字号不受影响）。")
 
         feed_font_row = QWidget()
+        feed_font_row.setObjectName("formRow")
         feed_font_layout = QHBoxLayout(feed_font_row)
         feed_font_layout.setContentsMargins(0, 0, 0, 0)
+        feed_font_layout.setSpacing(8)
         self.feed_font_spin = QSpinBox()
         self.feed_font_spin.setRange(8, 60)
         self.feed_font_spin.setValue(int(self.config.get("feed_font_size")
@@ -2064,117 +2348,75 @@ class SettingsDialog(QDialog):
         self.feed_font_combo.currentFontChanged.connect(self.on_feed_font_change)
         feed_font_layout.addWidget(QLabel("字号"))
         feed_font_layout.addWidget(self.feed_font_spin)
-        feed_font_layout.addWidget(self.feed_font_combo)
+        feed_font_layout.addWidget(self.feed_font_combo, 1)
         self.feed_font_row = feed_font_row
         feed_font_row.setEnabled(self.feed_font_check.isChecked())
-        layout.addRow("社区页字体:", feed_font_row)
+        self.add_row(lay, "字号 / 字体", feed_font_row)
 
-        self.btn_text_color = QPushButton("文字颜色 (手动)")
-        self.btn_text_color.setStyleSheet(f"background-color: {self.temp_text_color};")
-        self.btn_text_color.clicked.connect(self.pick_text_color)
-        self.btn_bg_color = QPushButton("背景颜色 (手动)")
-        self.btn_bg_color.setStyleSheet(f"background-color: {self.temp_bg_color};")
-        self.btn_bg_color.clicked.connect(self.pick_bg_color)
-        layout.addRow(self.btn_text_color, self.btn_bg_color)
+        lay = self.new_card(col, "显示")
+        self.feed_lowkey_check = QCheckBox("低调显示")
+        self.feed_lowkey_check.setChecked(bool(self.config.get("feed_lowkey", False)))
+        self.add_wide(lay, self.feed_lowkey_check,
+                      "工位上比老板键更不显眼的一道保险：只剩文字，字号配色和书页一致。")
 
-        self.check_ghost_mode = QCheckBox("👻 幽灵模式 (移开变透明)")
-        self.check_ghost_mode.setChecked(self.config.get("ghost_mode", False))
-        layout.addRow(self.check_ghost_mode)
+        col.addStretch(1)
 
-        self.boss_key_input = QLineEdit(self.config.get("boss_key", "Esc"))
-        layout.addRow("全局老板键:", self.boss_key_input)
-        self.peek_key_input = QLineEdit(self.config.get("peek_key", "ctrl+e"))
-        self.peek_key_input.setToolTip("偷瞄模式：按这个键浮现书页，鼠标滚轮在任何位置都能翻页，\n"
-                                       "敲键盘 / 右键 / 中键则退出并藏回去；\n"
-                                       "左键点击不退出（偷瞄时能照常点工作窗口）。热键本身不会被发给当前应用。")
-        layout.addRow("偷瞄热键:", self.peek_key_input)
+    def build_page_ui(self):
+        col = self.new_page("界面")
 
-        self.safe_key_input = QLineEdit(self.config.get("safe_key", "ctrl+alt+d"))
-        self.safe_key_input.setToolTip("安全文档模式：有人凑过来看屏幕时按这个键，书页立刻换成一份预置的工作文档，\n"
-                                       "排版（字体/行距/页边距/窗口大小）和书页完全一致；\n"
-                                       "再按一次换回书，回到原来那一页。划线会一起隐藏。")
-        layout.addRow("安全文档热键:", self.safe_key_input)
+        lay = self.new_card(col, "元素")
+        self.check_corners = QCheckBox("显示角标")
+        self.check_corners.setChecked(bool(self.config.get("show_corners", True)))
+        self.add_wide(lay, self.check_corners,
+                      "自动挡时窗口左上、右下那两条短角线（用来和背景区分边界）。\n"
+                      "关掉就是彻底干净的一页。")
 
+        self.check_bar = QCheckBox("显示底部信息栏")
+        self.check_bar.setChecked(bool(self.config.get("show_bar", True)))
+        self.add_wide(lay, self.check_bar,
+                      "窗口底部那一条状态行：卡片页是剩余数量和评分后果，社区页是当前第几条。\n"
+                      "关掉之后页面只剩正文。")
+
+        col.addStretch(1)
+
+    def build_page_privacy(self):
+        col = self.new_page("隐私")
+
+        lay = self.new_card(col, "防护")
+        self.check_antishot = QCheckBox("系统级防截屏")
+        self.check_antishot.setChecked(self.config.get("antishot_mode", False))
+        self.check_antishot.toggled.connect(self.on_antishot_toggled)
+        self.add_wide(lay, self.check_antishot,
+                      "开启后，肉眼可见，但截图/录屏时窗口会完全消失（透明）。\n"
+                      "使用 Windows 系统底层保护。")
+
+        lay = self.new_card(col, "安全文档")
         safe_row = QWidget()
+        safe_row.setObjectName("formRow")
         safe_layout = QHBoxLayout(safe_row)
         safe_layout.setContentsMargins(0, 0, 0, 0)
+        safe_layout.setSpacing(8)
         self.safe_doc_input = QLineEdit(self.config.get("safe_doc_path", ""))
         self.safe_doc_input.setPlaceholderText("留空 = 用内置的工作周报体例")
-        self.safe_doc_input.setToolTip("可选：指定本机的一份文档当安全文档（TXT / MD / EPUB）。\n"
-                                       "读不出来会自动回落内置版——任何情况下都不会露出书页。")
         btn_pick_safe = QPushButton("选择…")
         btn_pick_safe.clicked.connect(self.pick_safe_doc)
-        safe_layout.addWidget(self.safe_doc_input)
+        safe_layout.addWidget(self.safe_doc_input, 1)
         safe_layout.addWidget(btn_pick_safe)
-        layout.addRow("安全文档文件:", safe_row)
+        self.add_row(lay, "文件", safe_row,
+                     "可选：指定本机的一份文档（TXT / MD / EPUB）。\n"
+                     "读不出来会自动回落内置版——任何情况下都不会露出书页。")
 
-        # --- 隐形背诵（Anki）：只是把 Anki 的卡片借这本书的排版显示出来 ---
-        section = QLabel("── 隐形背诵（Anki 卡片）──")
-        section.setStyleSheet("color: #8ab4f8;")
-        layout.addRow(section)
+        col.addStretch(1)
 
-        self.anki_key_input = QLineEdit(self.config.get("anki_key", "ctrl+alt+a"))
-        self.anki_key_input.setToolTip("按这个键：书页换成 Anki 卡片（还是这本书的字体/字号/行距/页边距）。\n"
-                                       "再按一次退出，书回到原来那一页，阅读进度一个字节都不变。")
-        layout.addRow("背诵热键:", self.anki_key_input)
+    def build_page_source(self):
+        col = self.new_page("数据源")
 
-        self.feed_key_input = QLineEdit(self.config.get("feed_key", "ctrl+alt+f"))
-        self.feed_key_input.setToolTip("按这个键：书页换成社区统一流（知乎/V2EX/微博…所有来源都是同一种帖子）。\n"
-                                       "再按一次退出，书回到原来那一页，阅读进度一个字节都不变。")
-        layout.addRow("社区热键:", self.feed_key_input)
+        lay = self.new_card(col, "Legado")
+        self.ip_input = QLineEdit(self.config.get("ip"))
+        self.add_row(lay, "地址", self.ip_input,
+                     "本机 Legado 的地址，例如 http://127.0.0.1:1122。")
 
-        self.feed_lowkey_check = QCheckBox("社区页低调显示（不出图，图片位置显示 [图]）")
-        self.feed_lowkey_check.setChecked(bool(self.config.get("feed_lowkey", False)))
-        self.feed_lowkey_check.setToolTip("工位上比老板键更不显眼的一道保险：只剩文字，字号配色和书页一致。")
-        layout.addRow(self.feed_lowkey_check)
-
-        deck_row = QWidget()
-        deck_layout = QHBoxLayout(deck_row)
-        deck_layout.setContentsMargins(0, 0, 0, 0)
-        self.anki_deck_input = QLineEdit(self.config.get("anki_deck", ""))
-        self.anki_deck_input.setPlaceholderText("牌组名，例如 背诵")
-        self.anki_deck_input.setToolTip("要背哪个牌组（子牌组会自动包含在内）。\n"
-                                        "点「列出牌组…」可以从正在运行的 Anki 里读出来（带今日待复习张数）。")
-        btn_pick_deck = QPushButton("列出牌组…")
-        btn_pick_deck.clicked.connect(self.pick_anki_deck)
-        deck_layout.addWidget(self.anki_deck_input)
-        deck_layout.addWidget(btn_pick_deck)
-        layout.addRow("牌组:", deck_row)
-
-        self.anki_swallow_check = QCheckBox("偷瞄时也全局捕获空格/回车（评分键 1-4 一定捕获）")
-        self.anki_swallow_check.setChecked(bool(self.config.get("anki_swallow_keys", True)))
-        self.anki_swallow_check.setToolTip("偷瞄（Ctrl+E）那一层是全局的：勾上则空格/回车也归卡片（翻面/继续），\n"
-                                           "关掉则它们留给你手头的软件打字。\n"
-                                           "窗口内不受影响：窗口是当前活动窗口时空格/回车一直是翻面键。")
-        layout.addRow(self.anki_swallow_check)
-
-        self.anki_conceal_check = QCheckBox("背诵时把 Anki 自己的窗口藏起来")
-        self.anki_conceal_check.setChecked(bool(self.config.get("anki_conceal", True)))
-        self.anki_conceal_check.setToolTip("Anki 自己的界面会从屏幕、Alt+Tab 和任务栏缩略图里消失，\n"
-                                           "答题全在这个窗口里完成；退出背诵时它会回到原处（不激活）。\n"
-                                           "注意：藏起来≠隐身，别把两个窗口摆在同一块屏幕上。")
-        layout.addRow(self.anki_conceal_check)
-
-        key_row = QWidget()
-        key_layout = QHBoxLayout(key_row)
-        key_layout.setContentsMargins(0, 0, 0, 0)
-        self.anki_api_key_input = QLineEdit(self.config.get("anki_api_key", ""))
-        self.anki_api_key_input.setPlaceholderText("留空 = AnkiConnect 没设 apiKey")
-        self.anki_api_key_input.setEchoMode(QLineEdit.Password)
-        self.anki_api_key_input.setToolTip("AnkiConnect 配置里若设了 apiKey，填在这里；没设就留空。")
-        btn_test_anki = QPushButton("测试连接")
-        btn_test_anki.clicked.connect(self.test_anki_connection)
-        key_layout.addWidget(self.anki_api_key_input)
-        key_layout.addWidget(btn_test_anki)
-        layout.addRow("AnkiConnect Key:", key_row)
-
-        btn_save = QPushButton("💾 保存并应用")
-        btn_save.clicked.connect(self.accept)
-        layout.addRow(btn_save)
-
-        self.on_auto_mode_toggled(self.check_auto_mode.isChecked())
-        self.on_antishot_toggled(self.check_antishot.isChecked())
-        self.setLayout(layout)
+        col.addStretch(1)
 
     def on_auto_mode_toggled(self, checked):
         self.btn_bg_color.setEnabled(not checked)
@@ -2343,6 +2585,8 @@ class SettingsDialog(QDialog):
         self.config["ghost_mode"] = self.check_ghost_mode.isChecked()
         self.config["auto_mode"] = self.check_auto_mode.isChecked()
         self.config["antishot_mode"] = self.check_antishot.isChecked()
+        self.config["show_corners"] = self.check_corners.isChecked()
+        self.config["show_bar"] = self.check_bar.isChecked()
         if self.main_window:
             # 「保存并应用」= 真的生效、真的落盘（字体这类只在保存时才改的项也在里面）
             self.main_window.apply_style()
@@ -5896,6 +6140,8 @@ class StealthReader(QWidget):
             visible = True
         else:
             visible = bool(self.review_mode and not self.safe_mode)
+        if not self.config.get("show_bar", True):
+            visible = False          # 设置里关掉了底部信息栏：页面只剩正文
         self.review_bar.setVisible(visible)
         if not visible:
             return
@@ -6016,6 +6262,9 @@ class StealthReader(QWidget):
 
     def review_render_placeholder(self, text):
         """没卡/出错时的占位：也要像一份文档的正文，不能给一张空白页。"""
+        s = self.review_session
+        if s is not None:
+            s["seq"] = int(s.get("seq", 0)) + 1
         self.text_edit.document().setDefaultStyleSheet("")
         self.text_edit.setHtml(f'<div style="color:#999999;">{text}</div>')
         self.apply_card_style()
@@ -6032,6 +6281,9 @@ class StealthReader(QWidget):
         card = s.get("card")
         if not card:
             return
+        # 屏幕版本号：每真正换一次内容就 +1。后台调用（对账/翻面/撤销）拿它当校验——
+        # 发出去之后屏幕若已经换过卡，那趟结果就是**旧快照**，照它渲染会把新卡盖回去。
+        s["seq"] = int(s.get("seq", 0)) + 1
         show = bool(s.get("shown", False)) if show_answer is None else bool(show_answer)
         raw = card.get("answer") if show else card.get("question")
         html, sounds = simplify_anki_html(raw)
@@ -6162,6 +6414,7 @@ class StealthReader(QWidget):
             return
         client = self.anki_client()
         prev_id = s.get("card_id")
+        at_seq = int(s.get("seq", 0))
 
         def job():
             client.show_answer()
@@ -6170,7 +6423,7 @@ class StealthReader(QWidget):
 
         def done(card):
             s2 = self.review_session
-            if not s2 or s2.get("card_id") != prev_id:
+            if not s2 or s2.get("card_id") != prev_id or int(s2.get("seq", 0)) != at_seq:
                 return                   # 这中间已经翻页/退出了：结果作废，别盖回来
             s2["shown"] = True
             if card:
@@ -6292,6 +6545,7 @@ class StealthReader(QWidget):
         client = self.anki_client()
         self.review_poll_tick += 1
         want_counts = bool(with_counts or force or self.review_poll_tick % 4 == 0)
+        at_seq = int(s.get("seq", 0))     # 发车时屏幕是第几版
 
         def job():
             out = {"card": client.current_card()}
@@ -6300,12 +6554,16 @@ class StealthReader(QWidget):
                 out["reviewed"] = client.reviewed_today()
             return out
 
-        self.anki_call(job, on_ok=lambda r, f=force: self.finish_poll(r, f),
+        self.anki_call(job, on_ok=lambda r, f=force, q=at_seq: self.finish_poll(r, f, q),
                        on_err=self.fail_poll, key="poll")
 
-    def finish_poll(self, r, force=False):
+    def finish_poll(self, r, force=False, at_seq=None):
         s = self.review_session
         if not s:
+            return
+        if at_seq is not None and int(s.get("seq", 0)) != at_seq:
+            # 这趟发出去之后屏幕已经换过卡（评分/翻面/撤销回来了）。它读到的是换卡**之前**
+            # 的快照：照着它加载会把刚评完的新卡又盖回上一张——看着就是"翻页了但内容没变"。
             return
         if "stats" in r:
             self.apply_counts(r.get("stats"), r.get("reviewed"))
@@ -6335,6 +6593,7 @@ class StealthReader(QWidget):
             return
         client = self.anki_client()
         deck = (self.review_session or {}).get("deck")
+        at_seq = int((self.review_session or {}).get("seq", 0))
 
         def job():
             client.undo()
@@ -6343,6 +6602,8 @@ class StealthReader(QWidget):
         def done(res):
             card, stats = res
             s = self.review_session
+            if s is not None and int(s.get("seq", 0)) != at_seq:
+                return              # 期间已经换卡：撤销的结果不许盖回去
             if s and s.get("counted"):
                 s["counted"] = int(s["counted"]) - 1
             self.apply_counts(stats, None)
@@ -6425,7 +6686,7 @@ class StealthReader(QWidget):
             self.setWindowOpacity(1.0)
             self.content_frame.set_mode(True)
             self.content_frame.setStyleSheet("background: transparent; border: none;")
-            self.content_frame.set_draw_corners(True)
+            self.content_frame.set_draw_corners(bool(self.config.get("show_corners", True)))
             self.chameleon_timer.start()
             self.adjust_color_to_background()
         else:

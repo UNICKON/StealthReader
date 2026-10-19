@@ -125,7 +125,7 @@ def fake_build(cache_root=None, config=None, log=None):
 feed_sources.build_real_sources = fake_build
 
 import main as app_mod                                                   # noqa: E402
-from PyQt5.QtWidgets import QApplication                                 # noqa: E402
+from PyQt5.QtWidgets import QApplication, QFrame, QLabel                 # noqa: E402
 from PyQt5.QtCore import Qt                                              # noqa: E402
 
 LOGS = []
@@ -1326,6 +1326,84 @@ check("偷瞄只对社区页生效（书页照旧“任意键退出”）",
       (setattr(w, "feed_mode", False) or w.peek_captures_feed_keys() is False))
 w.feed_mode = True
 w.peek_mode = False
+
+# ===== 设置页重做 + 角标/信息栏开关 + 卡片"翻了页但内容没刷新" =====
+_set3 = app_mod.SettingsDialog(w.config, w)
+qapp.processEvents()
+_nav_names = [_set3.nav_list.item(i).text() for i in range(_set3.nav_list.count())]
+check("设置页按功能分了区（阅读/窗口/快捷键/卡片/社区/界面/隐私/数据源）",
+      _nav_names == ["阅读", "窗口", "快捷键", "卡片", "社区", "界面", "隐私", "数据源"],
+      _nav_names)
+_card_counts = []
+for _i in range(_set3.page_stack.count()):
+    _body = _set3.page_stack.widget(_i).widget()
+    _card_counts.append(len([c for c in _body.findChildren(QFrame)
+                             if c.objectName() == "card"]))
+check("每一页都至少有一张分组卡片（不是一屏平铺的表单）",
+      len(_card_counts) == 8 and all(n >= 1 for n in _card_counts), _card_counts)
+_long_labels = []
+for _lab in _set3.findChildren(QLabel):
+    _txt = _lab.text()
+    if _txt and (len(_txt) > 24 or "\n" in _txt):
+        _long_labels.append(_txt[:30])
+check("可见标签里没有段落式说明（注释腔一律进 tooltip）", not _long_labels, _long_labels)
+
+_set3.check_corners.setChecked(False)
+_set3.check_bar.setChecked(False)
+_set3.accept()
+qapp.processEvents()
+check("设置里能关角标、能关底部信息栏，并且真的落盘",
+      w.config.get("show_corners") is False and w.config.get("show_bar") is False,
+      (w.config.get("show_corners"), w.config.get("show_bar")))
+
+_auto_before = w.config.get("auto_mode")
+w.config["auto_mode"] = True
+w.config["show_corners"] = True
+w.apply_style()
+_corners_on = w.content_frame.draw_corners
+w.config["show_corners"] = False
+w.apply_style()
+_corners_off = w.content_frame.draw_corners
+w.config["auto_mode"] = _auto_before
+w.config["show_corners"] = True
+w.apply_style()
+check("关掉角标之后自动挡不再画左上/右下那两条线",
+      _corners_on is True and _corners_off is False, (_corners_on, _corners_off))
+
+_rm_before = w.review_mode
+w.review_mode = True
+w.config["show_bar"] = False
+w.update_review_bar()
+_bar_hidden = w.review_bar.isHidden()
+w.config["show_bar"] = True
+w.update_review_bar()
+_bar_shown = w.review_bar.isHidden()
+w.review_mode = _rm_before
+w.update_review_bar()
+check("关掉底部信息栏之后那一行真的不显示，打开又回来",
+      _bar_hidden is True and _bar_shown is False, (_bar_hidden, _bar_shown))
+
+# 卡片模式：对账拿着"换卡之前"的快照回来，不许把屏幕上已经换好的新卡盖回去
+_rm2, _rs2, _call2 = w.review_mode, w.review_session, w.anki_call
+w.review_mode = True
+w.anki_call = lambda *a, **k: True        # 探针里没有真的 Anki：别让它起后台线程
+w.review_session = {"deck": "probe", "card": {"cardId": 1, "question": "Q1"},
+                    "card_id": 1, "shown": False, "counted": 0}
+w.render_card()
+_seq_old = w.review_session["seq"]
+w.review_session["card"] = {"cardId": 2, "question": "Q2"}
+w.review_session["card_id"] = 2
+w.render_card()
+w.finish_poll({"card": {"cardId": 1, "question": "Q1"}}, False, _seq_old)
+check("对账带回来的是换卡前的旧快照：不覆盖屏幕上刚换好的新卡",
+      w.review_session["card_id"] == 2 and "Q2" in w.text_edit.toPlainText(),
+      (w.review_session["card_id"], w.text_edit.toPlainText()[:20]))
+_seq_now = w.review_session["seq"]
+w.finish_poll({"card": {"cardId": 3, "question": "Q3"}}, False, _seq_now)
+check("版本号对得上时对账照旧换成 Anki 当前的卡（守卫没把功能关掉）",
+      w.review_session["card_id"] == 3, w.review_session["card_id"])
+w.review_mode, w.review_session, w.anki_call = _rm2, _rs2, _call2
+
 
 w.exit_feed_mode(reason="probe")
 try:
