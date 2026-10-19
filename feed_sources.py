@@ -20,6 +20,7 @@ Cookie 从应用目录下的 feed_auth.json 读（已 gitignore），格式：
 批次 C 会把它换成 DPAPI 加密 + 设置界面，这里先按最小可用做。
 """
 
+import concurrent.futures
 import json
 import os
 import re
@@ -115,17 +116,43 @@ class RealSource(SourceAdapter):
         """正文里的图也要落到本地：Qt 的 QTextDocument 读不了 http。
 
         **落不下来的图直接丢掉**（而不是留个 http 地址）：渲染层只会写出 <img src="...">，
-        留 http 只会让正文里出现一排裂图标。宁可少几张图，不要一片坏图。"""
+        留 http 只会让正文里出现一排裂图标。宁可少几张图，不要一片坏图。
+
+        2026-10-19：改成**并发**下。以前是一张一张排队下，一篇 12 张图的帖子光图就要
+        十几秒（每张失败还得等超时），人看到的就是"点进帖子转半天"。现在最多 8 张同时
+        下，顺序仍按正文原来的次序摆；单张的超时也压短了（图是锦上添花，不值得为它等）。
+        """
+        blocks = list(blocks or [])
+        slots = [(i, b) for i, b in enumerate(blocks) if b.kind == BLOCK_IMG][:limit]
+        got = {}
+        if slots:
+            def one(item):
+                idx, b = item
+                raw = str(b.url or b.text or "")
+                if raw and not raw.lower().startswith(("http", "//")):
+                    return idx, raw          # 已经是本地文件名了，别再当地址去下
+                return idx, self._cover(b.url or b.text)
+
+            workers = min(8, len(slots))
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                    for idx, name in ex.map(one, slots):
+                        if name:
+                            got[idx] = name
+            except Exception:
+                # 并发本身出问题就退回串行：慢一点也要把能落的图落下
+                for idx, b in slots:
+                    name = self._cover(b.url or b.text)
+                    if name:
+                        got[idx] = name
         out = []
-        n = 0
-        for b in (blocks or []):
+        for i, b in enumerate(blocks):
             if b.kind != BLOCK_IMG:
                 out.append(b)
                 continue
-            name = self._cover(b.url or b.text) if n < limit else ""
+            name = got.get(i)
             if name:
                 b.url = name
-                n += 1
                 out.append(b)
         return out
 
@@ -137,6 +164,10 @@ class IthomeSource(RealSource):
     label = "IT之家"
     base_url = "https://www.ithome.com"
     CHANNELS = ("热榜", "最新")
+    COMMENT_API = "https://cmt.ithome.com/api/webcomment/getnewscomment"
+    # 正文页里评论容器上的那个短 id，16 位十六进制
+    COMMENT_SN_RE = re.compile(r'data-id="([0-9a-f]{16})"')
+    COMMENT_LIMIT = 30
 
     def channels(self):
         return list(self.CHANNELS)
@@ -239,10 +270,74 @@ class IthomeSource(RealSource):
             out.url = u if u.lower().startswith("http") else self.base_url + u
         return out, None
 
+    def _comment_sn(self, post):
+        """评论接口要的那个短 id：从正文页里捞 `data-id="<16 位十六进制>"`。
+
+        每篇 IT之家文章都要多拉一次网页（约 30 KB）才拿得到它，所以走正文的长缓存；
+        捞不到就当成"这篇没有评论"，绝不去猜一个 id 乱问。
+        """
+        if not post.url:
+            return ""
+        try:
+            raw = self.http.get_bytes(post.url, ttl=TTL_DETAIL, max_bytes=2000000, timeout=12)
+        except Exception:
+            return ""
+        m = self.COMMENT_SN_RE.search(raw.decode("utf-8", "replace"))
+        return m.group(1) if m else ""
+
+    def _to_comment(self, c, i=0):
+        """一条 IT之家评论：`elements[]` 是正文片段，`children[]` 是回复，`support` 是赞。"""
+        ui = c.get("userInfo") or {}
+        text = "".join(str(e.get("content") or "") for e in (c.get("elements") or [])
+                       if isinstance(e, dict)).strip()
+        blocks = [Block(kind=BLOCK_P, text=text)] if text else \
+                 [Block(kind=BLOCK_P, text="（这条评论只有图片或表情）")]
+        quotes = []
+        for k in [x for x in (c.get("children") or []) if isinstance(x, dict)][:6]:
+            kui = k.get("userInfo") or {}
+            kt = "".join(str(e.get("content") or "") for e in (k.get("elements") or [])
+                         if isinstance(e, dict)).strip()
+            if kt:
+                quotes.append("「%s：%s」" % (kui.get("userNick") or "某人", kt))
+        if quotes:
+            blocks.append(Block(kind=BLOCK_QUOTE, text="\n".join(quotes)))
+        more = int(c.get("expandCount") or 0) - len(quotes)
+        if more > 0:
+            blocks.append(Block(kind=BLOCK_QUOTE, text="还有 %d 条回复没展开。" % more))
+        ts = feed_mod.parse_time(c.get("postTime"))
+        return Comment(
+            cid=str(c.get("id") or ("c%d" % i)),
+            author=(ui.get("userNick") or "").strip() or "某人",
+            created=feed_mod.human_time(ts) if ts else "",
+            score=int(c.get("support") or 0),
+            body=blocks,
+        )
+
     def comments(self, post, cursor=None):
-        # IT之家没有可用的评论接口（2026-10-16 把 dyn/api/m/www 四条路都试过，全 404），
-        # 正文页就只有正文。宁可明说没有，也不编评论。
-        return [], None
+        """IT之家的评论：`cmt.ithome.com/api/webcomment/getnewscomment?sn=<短 id>`。
+        2026-10-19 才摸对：这个接口的 `sn` **不是新闻号**，是正文页里那个 16 位十六进制的
+        `data-id`（`sn` 拿新闻号去问，它一律回 `{"success":false,"message":"新闻不存在"}`）。
+        以前把它当成"IT之家没有评论接口"，其实是问错了 id。评论分 `topComments` /
+        `hotComments` / `comments` 三组，每条有 `support`（赞）/ `elements[]`（正文片段）/
+        `children[]`（回复）/ `expandCount`（一共几条回复），回复并进正文更好读。
+        """
+        sn = self._comment_sn(post)
+        if not sn:
+            return [], None
+        data = self._get("%s?sn=%s&cid=0&isInit=true&appver=900" % (self.COMMENT_API, sn),
+                         TTL_LIST, "IT之家评论", timeout=LIST_TIMEOUT)
+        if not isinstance(data, dict) or data.get("success") is False:
+            return [], None
+        content = data.get("content") or {}
+        if not isinstance(content, dict):
+            return [], None
+        rows, seen = [], set()
+        for key in ("topComments", "hotComments", "comments"):
+            for c in (content.get(key) or []):
+                if isinstance(c, dict) and c.get("id") not in seen:
+                    seen.add(c.get("id"))
+                    rows.append(c)
+        return [self._to_comment(c, i) for i, c in enumerate(rows[:self.COMMENT_LIMIT])], None
 
 
 class V2exSource(RealSource):
@@ -1429,13 +1524,16 @@ class XhsSource(RealSource):
         `interactInfo`；`time` 是**毫秒**时间戳（不除 1000 会显示成 5 万年后）；
       - 视频笔记跳过（`noteCard.type == "video"`）：这个窗口不放视频，收下来也只是个壳。
 
-    **评论为什么难**：`/api/sns/web/v2/comment/page` 不接受裸 Cookie，每个请求都要
-    `x-s` / `x-t` / `x-s-common` 三个头，而 `x-s` 是它自己那套算法算出来的。
-    那套算法在 `xhs_sign.py` 里（照 VS Code 摸鱼插件 TouchFish 的纯 JS 实现搬的，
-    逐字节对得上：明文、`mns0301_` 串、`b1`、`x-s-common` 全部一致）。
-    2026-10-19 实测：**签名算对了也一样 406 `{"code":-1,"success":false}`，
-    连插件自己那份实现、乃至不带 Cookie 的请求，返回的都是同一个 406**——所以卡的不是
-    我们的写法，是它对签名版本/风控的口径。能取到就照实解析，取不到就明说。
+    **评论怎么拿到的**：`/api/sns/web/v2/comment/page` 不接受裸 Cookie，每个请求都要
+    `x-s` / `x-t` / `x-s-common`。那套算法在 `xhs_sign.py` 里（照 VS Code 摸鱼插件
+    TouchFish 的纯 JS 实现搬的，逐字节对得上）。
+
+    2026-10-19 记一笔踩过的坑：一开始 `x-s` 发的是 `mns0301_…` 那一段，服务端一律
+    **406 `{"code":-1,"success":false}`**。真相是那一段只是**内层**——真正的 `x-s`
+    还要把它包一层：`"XYS_" + b64(JSON{x0:版本,x1:应用,x5:md5})`，`x3` 才是那段
+    `mns0301_`。包上之后同一条请求直接 **200 且 `comments` 有内容**。当年还误判成
+    "插件自己也被 406"，其实是自己把内层当成了外层——`probe_sources.py` §17 现在钉着
+    这层信封的向量，别再退回内层。
     """
 
     key = "xhs"
@@ -1641,9 +1739,7 @@ class XhsSource(RealSource):
                 why = "这条笔记还没有评论。"
         except FeedNetError as e:
             if "406" in str(e):
-                why = ("小红书的评论接口要它自己的 `x-s` 签名。签名算法已经搬过来了"
-                       "（`xhs_sign.py`，和摸鱼插件那份逐字节一致），但它现在连插件自己"
-                       "算的签名也照样判 406——不是写法的问题，是它换了口径。"
+                why = ("小红书这次判了 406（签名没过），可能是它又换了口径。"
                        "真要看评论按 O 去原页。")
             else:
                 why = "小红书的评论没取到（%s）。真要看评论按 O 去原页。" % e

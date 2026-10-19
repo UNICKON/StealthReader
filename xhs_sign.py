@@ -170,14 +170,48 @@ def _plaintext(api, data, a1, ts, loadts, seq, version, full_len=None):
 
 
 def sign_xs(api, data, a1, ts, seq, version, loadts=None):
-    """→ `(xs, md5_full_hex)`。`xs` 就是 `x-s` 那个头的值（`mns0301_` 开头）。"""
+    """→ `(tier, md5_full_hex)`。
+
+    `tier` 是 `mns0301_…` 那一段——注意它**不是** `x-s` 头的值：真正的 `x-s` 还要把它
+    再包一层 `XYS_`（见 `sign()`）。这一段当初当成 `x-s` 直接发出去，服务端一律 406。
+    """
     if loadts is None:
         loadts = LOADTS
     plain = _plaintext(api, data, a1, ts, loadts, seq, version)
-    xs = "mns0301_" + _b64_custom(_xor_key(plain, KEYSTREAM), CONFIG["MNS_ALPHABET"])
+    tier = "mns0301_" + _b64_custom(_xor_key(plain, KEYSTREAM), CONFIG["MNS_ALPHABET"])
     data_s = "" if data is None else (data if isinstance(data, str) else json.dumps(
         data, separators=(",", ":"), ensure_ascii=False))
-    return xs, _md5(_utf8(str(api) + data_s)).hex()
+    return tier, _md5(_utf8(str(api) + data_s)).hex()
+
+
+def sign_envelope(tier, md5_full, data=""):
+    """把 `tier` 包成真正的 `x-s`：`"XYS_" + b64(JSON{x0..x5})`。
+
+    和 bundle 里 `signXs` 的收尾一字不差：
+
+        p = {x0: SIGN_VERSION, x1: APP_ID, x2: PLATFORM, x3: <tier>, x4: <body 类型>, x5: <md5>}
+        xs = "XYS_" + b64Custom(utf8(JSON.stringify(p)), XS_ALPHABET)
+
+    `x4` 是"这次请求带没带 body"的标记：没 body（GET 评论这种）就是空串，对象是
+    `"object"`，其余是 `"string"`。
+    """
+    if data is None or data == "":
+        x4 = ""
+    elif isinstance(data, str):
+        x4 = "string"
+    else:
+        x4 = "object"
+    payload = {
+        "x0": CONFIG["SIGN_VERSION"],
+        "x1": CONFIG["APP_ID"],
+        "x2": CONFIG["PLATFORM"],
+        "x3": tier,
+        "x4": x4,
+        "x5": md5_full,
+    }
+    return "XYS_" + _b64_custom(
+        _utf8(json.dumps(payload, separators=(",", ":"), ensure_ascii=False)),
+        CONFIG["XS_ALPHABET"])
 
 
 # ---------------------------------------------------------------- 其他几个头
@@ -341,6 +375,16 @@ def a1_from_cookie(cookie):
     return ""
 
 
+def cookie_value(cookie, name):
+    """从 Cookie 串里取某个键（`x-s-common` 的 `x4` 要用 Cookie 自己的 `webBuild`）。"""
+    for part in str(cookie or "").split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k.strip() == name:
+                return v.strip()
+    return ""
+
+
 _seq = {"n": 1, "count": 0}
 
 
@@ -348,7 +392,7 @@ def sign(path, data="", cookie="", method="GET", fetch=None, ts=None, web_build=
     """对一次请求签名 → 一串请求头（`x-s` / `x-t` / `x-s-common` / 两个 trace id）。
 
     `path` 要**带上查询串**（签名算的就是这一整串，顺序也不能变）。
-    `web_build` 传 Cookie 里那个 `webBuild` 更贴近浏览器（它自己前端就是这么取）。
+    `web_build` 不传就取 Cookie 里那个 `webBuild`（它自己前端就是这么取），再退回常量。
     """
     a1 = a1_from_cookie(cookie)
     now = int(time.time() * 1000) if ts is None else int(ts)
@@ -357,16 +401,20 @@ def sign(path, data="", cookie="", method="GET", fetch=None, ts=None, web_build=
     count = _seq["count"]
     _seq["count"] += 1
     version = (hashlib.md5(_utf8(now)).digest()[0] << 24) ^ (seq * 2654435761 & M32)
-    xs, _md5_full = sign_xs(path, data, a1, now, seq, version & M32)
+    tier, md5_full = sign_xs(path, data, a1, now, seq, version & M32)
+    xs = sign_envelope(tier, md5_full, data)
     pair = ds_pair(now, fetch=fetch)
     b1 = generate_b1(now)
+    if web_build is None:
+        web_build = cookie_value(cookie, "webBuild") or None
     return {
         "xs": xs,
         "xt": str(now),
+        "tier": tier,
         "xs_common": xs_common(a1, xs, b1, pair, count, web_build=web_build),
         "x_b3_traceid": generate_xb3_traceid(16),
         "x_xray_traceid": generate_xray_traceid(),
-        "md5_full": _md5_full,
+        "md5_full": md5_full,
     }
 
 

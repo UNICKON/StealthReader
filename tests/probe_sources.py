@@ -7,6 +7,7 @@
 而所有适配器都拿到一个读夹具的替身 Http。所以"这次一个包都没发"是可以被证明的。
 夹具是 `tests/record_fixtures.py` 从真站录下来的（见 tests/README.md）。
 """
+import base64
 import hashlib
 import json
 import os
@@ -20,6 +21,31 @@ SR = os.path.dirname(HERE)
 FIX = os.path.join(HERE, "fixtures")
 sys.path.insert(0, SR)
 os.chdir(SR)
+# 探针一律不落盘：真人的 config.json 不能被探针改（收尾时按开跑前那份原样写回）。
+_CFG_PATH = os.path.join(SR, "config.json")
+try:
+    with open(_CFG_PATH, "rb") as _f:
+        _CFG_BAK = _f.read()
+except Exception:
+    _CFG_BAK = None
+
+
+def _restore_cfg():
+    if _CFG_BAK is None:
+        return
+    try:
+        with open(_CFG_PATH, "rb") as _f:
+            if _f.read() == _CFG_BAK:
+                return
+        with open(_CFG_PATH, "wb") as _f:
+            _f.write(_CFG_BAK)
+        print("\n（探针动过 config.json，已按开跑前那份原样写回）")
+    except Exception:
+        pass
+
+
+import atexit                                                            # noqa: E402
+atexit.register(_restore_cfg)
 
 import requests                                                          # noqa: E402
 requests.get = requests.post = requests.Session.request = lambda *a, **k: 1 / 0
@@ -930,15 +956,38 @@ _SIGN_API = ("/api/sns/web/v2/comment/page?note_id=abc&cursor=&top_comment_id="
 _SIGN_A1 = "dGVzdGE x"
 _SIGN_TS = 1792379520123
 _SIGN_LOADTS = 1792379520000
-_SIGN_XS = ("mns0301_gRaKqRBXrytOy+jovp0idIU6rQSkR85V1/jxYGkI2j5A7I4d6dEn0XktlGpV2iRg2GHttwFvI"
-            "KlOyjyVFYFnyIbv34Ht/r5X0LfqjInokaljjmgFW8rrciLtf+5vjSKke/HQW4e=")
+_SIGN_TIER = ("mns0301_gRaKqRBXrytOy+jovp0idIU6rQSkR85V1/jxYGkI2j5A7I4d6dEn0XktlGpV2iRg2GHttwFvI"
+              "KlOyjyVFYFnyIbv34Ht/r5X0LfqjInokaljjmgFW8rrciLtf+5vjSKke/HQW4e=")
+# 真正的 x-s：把上面那段再包一层信封。这一层当初漏了，服务端一律 406——同一条请求
+# 包上之后立刻 200 且有评论，所以这条断言是"评论还能不能拿到"的总闸。
+_SIGN_ENV = ("XYS_2UQhPsHCH0c1+shAHjIj2erjwjQhyoPTqBPT49pjHjIj2eHjwjQgynEDJ74AHjIj2ePjwjQ"
+             "TJdPIPAZlg94aGLTlLDQGqdSF/7D3yfR9qemk8rSp+dQzL9TawepnPaRx2bSoyFDUy0pm+FDF8e8"
+             "DznhInBTFJr4Ip0QkLfqUzFYF4o4B4DSNJrREydSnzSSBJdSQGdGA+rYFN7HMnemP8dbxanE6y9bVy"
+             "fkT8F8gwoQUG9SP4BG3+g8xLFT38aRHLpqF8/FjNsQh+sHCHjHVHdWMH0ij80bfG/cMwBcl80pYGAc"
+             "F+fzYG9ch8BLE8eZM+/Ll8/cjKc==")
+_SIGN_MD5 = "f1fa458d1f5ac446dacd8de9d05551e4"
 check("签名明文（packPlaintext）和 JS 版一模一样",
       hashlib.sha256(xhs_sign._plaintext(
           _SIGN_API, "", _SIGN_A1, _SIGN_TS, _SIGN_LOADTS, 1, 2654435761)).hexdigest()[:24]
       == "2e4ac4437d992ec5e56ca2d2")
-check("x-s 和 JS 版逐字节相同（mns0301_ 开头）",
+check("内层 tier 和 JS 版逐字节相同（mns0301_ 开头，长度 144）",
       xhs_sign.sign_xs(_SIGN_API, "", _SIGN_A1, _SIGN_TS, 1, 2654435761,
-                       loadts=_SIGN_LOADTS)[0] == _SIGN_XS)
+                       loadts=_SIGN_LOADTS)[0] == _SIGN_TIER)
+check("md5(签名串 + body) 和 JS 版相同（x-s 信封里的 x5）",
+      xhs_sign.sign_xs(_SIGN_API, "", _SIGN_A1, _SIGN_TS, 1, 2654435761,
+                       loadts=_SIGN_LOADTS)[1] == _SIGN_MD5)
+check("x-s 是「XYS_ + b64(JSON{x0..x5})」这层信封，和 JS 版逐字节相同",
+      xhs_sign.sign_envelope(_SIGN_TIER, _SIGN_MD5, "") == _SIGN_ENV)
+_STD_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_payload = json.loads(base64.b64decode(
+    _SIGN_ENV[4:].translate(
+        str.maketrans(xhs_sign.CONFIG["XS_ALPHABET"], _STD_B64))).decode("utf-8"))
+check("x-s 里那层 JSON 的字段和 JS 版一样（x3 是 tier、x5 是 md5、x4 为空）",
+      _payload == {"x0": xhs_sign.CONFIG["SIGN_VERSION"],
+                   "x1": xhs_sign.CONFIG["APP_ID"],
+                   "x2": xhs_sign.CONFIG["PLATFORM"],
+                   "x3": _SIGN_TIER, "x4": "", "x5": _SIGN_MD5},
+      _payload)
 check("b1（浏览器指纹）和 JS 版逐字节相同，长度 1884",
       len(xhs_sign.generate_b1(_SIGN_TS)) == 1884
       and hashlib.sha256(xhs_sign.generate_b1(_SIGN_TS).encode()).hexdigest()[:24]
@@ -950,6 +999,11 @@ check("x-s-common 和 JS 版逐字节相同（x8 装 b1、x12 装 ds 对，别�
           _SIGN_A1, "XSTEST", xhs_sign.generate_b1(_SIGN_TS),
           "1792379520000;1792379510000", 0).encode()).hexdigest()[:24]
       == "7f088d48e28d83e83b93b13a")
+check("x-s-common 的 x4(webBuild) 跟着 Cookie 走，和 JS 版逐字节相同",
+      hashlib.sha256(xhs_sign.xs_common(
+          _SIGN_A1, "XSTEST", xhs_sign.generate_b1(_SIGN_TS),
+          "1792379520000;1792379510000", 0, web_build="6.7.4").encode()).hexdigest()[:24]
+      == "47331b1c880492568a161be1")
 check("自定义 base64 / CRC 那两把小工具的结果和 JS 版一致",
       xhs_sign._b64_custom(b"hello,world", xhs_sign.CONFIG["XS_ALPHABET"]) == "yBpVJBuV49RUJBc="
       and xhs_sign.gens9("null") == -931954833)
@@ -967,8 +1021,23 @@ check("拼出来的请求头齐了（x-s / x-t / x-s-common / 两个 trace id / 
       all(k in _hdr for k in ("x-s", "x-t", "x-s-common", "x-b3-traceid",
                               "x-xray-traceid", "Cookie", "xsecappid"))
       and _hdr["x-t"] == str(_SIGN_TS)
-      and _hdr["x-s"].startswith("mns0301_"),
+      and _hdr["x-s"].startswith("XYS_")
+      and not _hdr["x-s"].startswith("mns0301_"),
       sorted(_hdr.keys()))
+# Cookie 里带着 webBuild 时，x-s-common 的 x4 必须用它（它自己前端就是这么取的）
+_sig_wb = xhs_sign.sign(_SIGN_API, "", "a1=abc; webBuild=6.7.4", "GET", ts=_SIGN_TS,
+                        fetch=lambda url: "function getdss() { return '1792379510000' }")
+_std = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+def _xs_json(b64_text):
+    return json.loads(base64.b64decode(
+        b64_text.translate(str.maketrans(xhs_sign.CONFIG["XS_ALPHABET"], _std))).decode("utf-8"))
+
+
+check("Cookie 里的 webBuild 会被 x-s-common 的 x4 用上（不是死写 6.47.2）",
+      _xs_json(_sig_wb["xs_common"])["x4"] == "6.7.4",
+      _xs_json(_sig_wb["xs_common"])["x4"])
 
 # 真数据长什么样：拿一份"接口真返回过"的形状来验解析（不是编的字段）
 _xhs_obj = {"code": 0, "data": {"has_more": True, "cursor": "c1", "comments": [
@@ -1020,6 +1089,87 @@ on_hp = feed_sources.build_real_sources(
 check("写进 feed_sources 就能带出虎扑，而且它免登录",
       [s.key for s in on_hp] == ["mix", "hupu"] and on_hp[1].needs_auth is False,
       [s.key for s in on_hp])
+
+# ---------------------------------------------------------------- 19
+print("\n=== 19. IT之家的评论（sn 不是新闻号，是正文页里那个短 id）===")
+# 真返回过的一份形状（2026-10-19 抓的）：content 下面分 top/hot/comments 三组，
+# 每条有 support（赞）、elements[].content（正文片段）、children[]（回复）、expandCount。
+_ITH_HTML = ('<div class="post_comment" data-id="6c1fc09d88768e96">'
+             '<div id="commentcount"></div></div>')
+_ITH_OBJ = {"success": True, "message": None, "content": {
+    "newsId": 1014610,
+    "hotComments": [
+        {"id": 77110764, "postTime": "2026-10-18T23:09:14.417", "support": 125,
+         "city": "IT之家河北邢台网友", "expandCount": 4, "userInfo": {"userNick": "owe"},
+         "elements": [{"type": 0, "content": "不知道为啥，现在感觉苹果的性价比越来越高了"}],
+         "children": [{"id": 1, "userInfo": {"userNick": "李四"},
+                       "elements": [{"content": "同感"}]}]},
+        {"id": 77110765, "postTime": "2026-10-18T23:18:19.95", "support": 0,
+         "userInfo": {"userNick": ""}, "elements": [], "children": []},
+    ],
+    "comments": [{"id": 77110766, "postTime": "2026-10-18T23:20:00", "support": 3,
+                  "userInfo": {"userNick": "王五"},
+                  "elements": [{"content": "这价格可以"}], "children": []}],
+}}
+_ith_http = FakeHttp(routes={"cmt.ithome.com": _ITH_OBJ}, bytes_routes={
+    "www.ithome.com/1/014/610.htm": _ITH_HTML.encode("utf-8")}, cache=MemCache())
+_ith = feed_sources.IthomeSource(_ith_http, {})
+_seed4 = feed_sources.Post(source="ithome", source_label="IT之家", channel="热榜", pid="1014610",
+                           title="t", url="https://www.ithome.com/1/014/610.htm")
+check("正文页里那个 16 位短 id 被捞出来了（不是新闻号）",
+      _ith._comment_sn(_seed4) == "6c1fc09d88768e96", _ith._comment_sn(_seed4))
+_ic = _ith.comments(_seed4)[0]
+check("IT之家评论解析：作者 / 赞 / 正文都对得上，三组合并去重",
+      len(_ic) == 3 and _ic[0].author == "owe" and _ic[0].score == 125
+      and _ic[0].body[0].text.startswith("不知道为啥")
+      and [c.id for c in _ic] == ["77110764", "77110765", "77110766"],
+      [(c.id, c.author, c.score) for c in _ic])
+check("回复并进同一条，还有几条没展开也说出来",
+      any("李四" in b.text for b in _ic[0].body)
+      and any("还有 3 条回复没展开" in b.text for b in _ic[0].body),
+      [b.text for b in _ic[0].body])
+check("空内容的评论给一句占位，作者空着就叫某人",
+      _ic[1].body[0].text.startswith("（") and _ic[1].author == "某人")
+check("拿不到短 id 就明说没有，绝不去猜一个 id 乱问",
+      _ith.comments(feed_sources.Post(source="ithome", pid="1", title="x", url=""))[0] == [])
+# 它自己的"新闻不存在"也要当成没有，而不是崩
+_no_sn_http = FakeHttp(routes={"cmt.ithome.com": {"success": False, "message": "新闻不存在"}},
+                       bytes_routes={"www.ithome.com/a.htm": _ITH_HTML.encode("utf-8")},
+                       cache=MemCache())
+check("接口回 success=false 时返回空（不抛、不编）",
+      feed_sources.IthomeSource(_no_sn_http, {}).comments(feed_sources.Post(
+          source="ithome", pid="1", title="x", url="https://www.ithome.com/a.htm"))[0] == [])
+
+# ---------------------------------------------------------------- 20
+print("\n=== 20. 正文落图：并发下、按原次序摆、失败就丢掉 ===")
+_imgs = [feed_sources.Post(source="x", pid="p", title="t").to_dict()]  # 占位，下面直接用块
+_xb = [feed_sources.Block(kind=feed_sources.BLOCK_P, text="正文"),
+       feed_sources.Block(kind=feed_sources.BLOCK_IMG, url="https://img/a.jpg"),
+       feed_sources.Block(kind=feed_sources.BLOCK_IMG, url="https://img/bad.jpg"),
+       feed_sources.Block(kind=feed_sources.BLOCK_IMG, url="https://img/c.jpg")]
+
+
+class _ImgSrc(feed_sources.RealSource):
+    key, label, base_url = "imgt", "图", "https://x"
+
+    def _cover(self, url):
+        return {"https://img/a.jpg": "a.jpg", "https://img/c.jpg": "c.jpg"}.get(url, "")
+
+
+_isz = _ImgSrc(FakeHttp(routes={}, cache=MemCache()), {})
+_out = _isz._localize_images(_xb, limit=12)
+check("落下来的图按正文原次序摆，落不下来的那几张直接没有（不留裂图）",
+      [b.kind for b in _out] == [feed_sources.BLOCK_P, feed_sources.BLOCK_IMG,
+                                 feed_sources.BLOCK_IMG]
+      and [b.url for b in _out[1:]] == ["a.jpg", "c.jpg"], [b.url for b in _out])
+check("limit 之外的一张都不下（少几张好过让正文等半天）",
+      [b.url for b in _isz._localize_images(
+          [feed_sources.Block(kind=feed_sources.BLOCK_IMG, url="https://img/a.jpg"),
+           feed_sources.Block(kind=feed_sources.BLOCK_IMG, url="https://img/c.jpg")],
+          limit=1)] == ["a.jpg"])
+check("已经落过地的块再经过一次不会被当成坏地址丢掉（幂等）",
+      [b.url for b in _isz._localize_images(list(_out))] == ["", "a.jpg", "c.jpg"],
+      [b.url for b in _isz._localize_images(list(_out))])
 
 # ---------------------------------------------------------------- 收尾
 shutil.rmtree(TMP_CACHE, ignore_errors=True)

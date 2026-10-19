@@ -2651,6 +2651,39 @@ class StealthReader(QWidget):
         return clamp_config_number(self.config, "page_margin_chars", PAGE_MARGIN_DEFAULT,
                                    PAGE_MARGIN_MIN, PAGE_MARGIN_MAX)
 
+    def _book_font(self):
+        """阅读页该用的字体：**只看配置**，不看控件此刻是什么（那可能刚被别的页换过）。"""
+        return QFont(self.config.get("font_family", "Microsoft YaHei"),
+                     int(self.config.get("font_size", 14)))
+
+    def _pin_book_font(self, tag=""):
+        """把书页字体按阅读设置钉死：控件字体、文档默认字体、**每个字符的 charFormat**。
+
+        三层里最狠的是第三层：字符自己带的字体优先级最高，只钉前两层的话屏幕上照样是
+        上一页那套字。真人报过"进社区页点个帖子、退出之后阅读字体变成帖子那个"，
+        而 `document().defaultFont()` 这时读出来是对的——所以以前那些只查默认字体的
+        断言全绿，人也确实看见了不一样的字体。
+        只在**真的钉回来过**（原本某一层和配置不符）时才记一行日志，平时不刷屏。
+        """
+        font = self._book_font()
+        doc = self.text_edit.document()
+        want = (font.family(), float(font.pointSizeF()))
+        had_ctrl = (self.text_edit.font().family(), float(self.text_edit.font().pointSizeF()))
+        had_doc = (doc.defaultFont().family(), float(doc.defaultFont().pointSizeF()))
+        self.text_edit.setFont(font)
+        doc.setDefaultFont(QFont(font))
+        cur = QTextCursor(doc)
+        cur.select(QTextCursor.Document)
+        fmt = QTextCharFormat()
+        fmt.setFontFamily(font.family())
+        fmt.setFontPointSize(float(font.pointSizeF()))
+        cur.mergeCharFormat(fmt)          # 合并：只改字体，别的字符属性（划线颜色之类）不动
+        self.text_edit.moveCursor(QTextCursor.Start)
+        if tag and (had_ctrl != want or had_doc != want):
+            log_event("书页字体被带跑过，已按阅读设置钉回来（%s：控件 %s/%.0f、文档 %s/%.0f → %s/%.0f）"
+                      % (tag, had_ctrl[0], had_ctrl[1], had_doc[0], had_doc[1],
+                         want[0], want[1]))
+
     def page_margin_px(self):
         return int(round(self.char_width() * self.page_margin_chars()))
 
@@ -2814,8 +2847,16 @@ class StealthReader(QWidget):
             te.setViewportMargins(margin, margin, margin, bottom)
 
     def set_display_text(self, text):
-        """换文本的唯一入口：换完立刻套同一套排版，否则翻页会按旧排版测量。"""
+        """换文本的唯一入口：换完立刻套同一套排版，否则翻页会按旧排版测量。
+
+        铺字前后都把书页字体钉一遍（`_pin_book_font`）：社区页/卡片页会把控件字体、
+        文档默认字体、甚至字符自带的 charFormat 里的某几层换掉。**字符上的 charFormat
+        优先级最高**——只钉前两层的话，屏幕上照样是上一页那套字（真人报的"退出社区页后
+        正文变成帖子那个字体"就是这么来的，而且光看 `document().defaultFont()` 还查不出来）。
+        """
+        self._pin_book_font("铺字前")
         self.text_edit.setPlainText(text)
+        self._pin_book_font("铺字后")
         self.apply_text_format()
 
     # --- 本地分页渲染算法 (锚点核心) ---
@@ -3988,9 +4029,13 @@ class StealthReader(QWidget):
 
     def _settle_page_layout(self):
         """等一轮事件循环再钉一次页底。滚动条出现/消失会改变视口宽度，页底裁切量要按新几何重算；
-        社区页/卡片页显示时不动——那两页不用书页那套"退到最后一个完整行"的裁切。"""
+        社区页/卡片页显示时不动——那两页不用书页那套"退到最后一个完整行"的裁切。
+
+        顺带再钉一次字体：这条计时器跑在"退出社区页/安全文档/背诵"之后的那一轮事件循环里，
+        是**最后一双会重排书页的手**。谁在这之前把字体换了，这里都会按配置纠正回来。"""
         if self.feed_mode or (self.review_mode and not self.safe_mode):
             return
+        self._pin_book_font("页底定稿")
         self.apply_page_margins()
 
     def restore_book_state(self, snap, write_progress=True):
@@ -4675,6 +4720,9 @@ class StealthReader(QWidget):
         self.feed_error = ""
         self.feed_gen += 1
         nav.reset()
+        # 立刻按新栏目重画一遍（标题+空壳），再去后台取数：以前是先取数、回来了才重画，
+        # 中间那几秒屏幕上还是**上一个板块**的内容，人看到的就是"换了板块没刷新"。
+        self.render_feed()
         self.update_review_bar()
         self.feed_load("list")
         self.feed_scroll_top()
@@ -4882,19 +4930,8 @@ class StealthReader(QWidget):
         # apply_style 不够稳：退出之后还有几条会重渲染书页的路（本地书重排、变色龙定时器、
         # 设置窗口刷样式、鼠标进出幽灵态）——它们要是拿社区页的字体去铺书页，就是真人反馈的
         # "退出 CAF 之后正文的字体变了"。配置是权威值，这里照它钉，不看上一刻控件里是什么。
-        try:
-            book_font = QFont(self.config.get("font_family", "Microsoft YaHei"),
-                              int(self.config.get("font_size", 14)))
-            self.text_edit.setFont(book_font)
-            self.text_edit.document().setDefaultFont(QFont(book_font))
-        except (TypeError, ValueError):
-            pass
-            book_font = QFont(self.config.get("font_family", "Microsoft YaHei"),
-                              int(self.config.get("font_size", 14)))
-            self.text_edit.setFont(book_font)
-            self.text_edit.document().setDefaultFont(QFont(book_font))
-        except (TypeError, ValueError):
-            pass
+        # 2026-10-19：钉的范围扩到**每个字符的 charFormat**（见 `_pin_book_font` 的说明）。
+        self._pin_book_font("退出社区页")
         self.update_review_bar()
         self.update_tray_tooltip()
         log_event(f"社区统一流：已退出（{reason or '未说明'}）")

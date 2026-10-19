@@ -357,6 +357,7 @@ class Http(object):
         """把图片落到 cache/img，返回文件名（失败返回空串，绝不抛）。
 
         图片永远只是"锦上添花"：网络烂的时候主流程该照常出文字，不能因为一张图挂掉。
+        超时压到 6 秒（默认那条是给正文用的）：一张图不值得让整篇正文等它。
         """
         if not url or self.cache is None:
             return ""
@@ -368,7 +369,7 @@ class Http(object):
         if not url.lower().startswith("http"):
             return ""
         try:
-            data = self.get_bytes(url)
+            data = self.get_bytes(url, timeout=6)
         except FeedNetError:
             return ""
         except Exception:

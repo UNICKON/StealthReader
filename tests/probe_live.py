@@ -20,6 +20,31 @@ SR = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(SR, "libs"))
 sys.path.insert(0, SR)
 os.chdir(SR)
+# 探针一律不落盘：真人的 config.json 不能被探针改（收尾时按开跑前那份原样写回）。
+_CFG_PATH = os.path.join(SR, "config.json")
+try:
+    with open(_CFG_PATH, "rb") as _f:
+        _CFG_BAK = _f.read()
+except Exception:
+    _CFG_BAK = None
+
+
+def _restore_cfg():
+    if _CFG_BAK is None:
+        return
+    try:
+        with open(_CFG_PATH, "rb") as _f:
+            if _f.read() == _CFG_BAK:
+                return
+        with open(_CFG_PATH, "wb") as _f:
+            _f.write(_CFG_BAK)
+        print("\n（探针动过 config.json，已按开跑前那份原样写回）")
+    except Exception:
+        pass
+
+
+import atexit                                                            # noqa: E402
+atexit.register(_restore_cfg)
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 import feed as feed_mod                                                  # noqa: E402

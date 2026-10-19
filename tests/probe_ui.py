@@ -18,6 +18,34 @@ sys.path.insert(0, SR)
 os.chdir(SR)
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
+# 探针一律不落盘：真人的 config.json 不能被探针改。这一轮真被改过（社区字体被写成 Helvetica、
+# 多了个 feed_board_boardsrc、阅读进度被清成 0），查了半天才发现是某条路绕过了替身直接存盘。
+# 不管是谁写的，收尾时按开跑前那份原样写回——探针的结果只该出现在屏幕上。
+_CFG_PATH = os.path.join(SR, "config.json")
+try:
+    with open(_CFG_PATH, "rb") as _f:
+        _CFG_BAK = _f.read()
+except Exception:
+    _CFG_BAK = None
+
+
+def _restore_cfg():
+    if _CFG_BAK is None:
+        return
+    try:
+        with open(_CFG_PATH, "rb") as _f:
+            if _f.read() == _CFG_BAK:
+                return
+        with open(_CFG_PATH, "wb") as _f:
+            _f.write(_CFG_BAK)
+        print("\n（探针动过 config.json，已按开跑前那份原样写回）")
+    except Exception:
+        pass
+
+
+import atexit                                                            # noqa: E402
+atexit.register(_restore_cfg)
+
 import requests                                                          # noqa: E402
 requests.get = requests.post = requests.Session.request = lambda *a, **k: 1 / 0
 requests.Session.get = lambda *a, **k: 1 / 0
@@ -119,6 +147,10 @@ app_mod.os.startfile = lambda url: OPENED.append(url)
 qapp = QApplication.instance() or QApplication(sys.argv)
 w = app_mod.StealthReader()
 w.save_config = lambda *a, **k: None
+# 模块级的那个也要堵：设置窗口是 `self.main_window.save_config()`，万一哪条路直接摸到
+# 模块函数，探针就会把真人的 config.json 改掉（这一轮真发生过：社区字体被写成 Helvetica、
+# 还多了一个 feed_board_boardsrc）。探针一律不落盘。
+app_mod.save_config = lambda *a, **k: None
 w.review_hint = lambda *a, **k: None
 w.progress_save_timer.stop()
 # 跟"人上一轮看到哪"解耦：config.json 里会记住 feed_source（这是真功能，第 1 节末尾单独验一条），
@@ -482,11 +514,26 @@ w.render_local_page()
 qapp.processEvents()
 
 
+def _glyph_font(te):
+    """正文**字符自己**带的那套字体（不是控件字体、也不是文档默认字体）。
+
+    真人报"退出社区页后阅读字体变成帖子那套"时，控件字体和文档默认字体都可能是对的，
+    错的是每个字符上显式写着的那份 charFormat——只看前两者永远看不见这个 bug。"""
+    blk = te.document().firstBlock()
+    it = blk.begin()
+    if it.atEnd():
+        return ""
+    cf = it.fragment().charFormat()
+    return cf.fontFamily() or (cf.font().family() if cf.font().family() else "")
+
+
 def snap_layout():
     te = w.text_edit
     blk = te.document().firstBlock()
     return {
         "font": (te.font().family(), round(te.font().pointSizeF(), 1)),
+        "doc_font": te.document().defaultFont().family(),
+        "glyph_font": _glyph_font(te),
         "line_height": round(blk.blockFormat().lineHeight(), 1),
         "indent": round(blk.blockFormat().textIndent(), 1),
         "margins": (te.viewportMargins().left(), te.viewportMargins().top(),
@@ -538,6 +585,63 @@ check("退出之后书页排版仍然逐项一致（字体/行距/缩进/页边�
       snap_layout() == _layout_before, (_layout_before, snap_layout()))
 w.config.pop("feed_font_size", None)
 w.config.pop("feed_font_family", None)
+
+# 8.5 真人报的那一步：**点进一条帖子**再退出，书页字体被帖子带跑
+# 8.4 只走了"进社区 → 退出"，而真实用法里中间一定有一次"点进帖子看详情"。
+# 详情那条路会把正文区换成帖子那套排版（字号/字体/行距），退出时能不能原样回来要单独验。
+w.config["feed_font_family"] = "Courier New"
+w.config["feed_font_size"] = 21
+w.apply_style()
+w.render_local_page()
+qapp.processEvents()
+w.enter_feed_mode()
+pump(lambda: w.feed_nav.posts and not w.feed_busy)
+check("进社区页时正文区换成了社区页那套字体",
+      w.text_edit.font().family() == "Courier New", w.text_edit.font().family())
+_opened = w.feed_open()
+pump(lambda: w.feed_nav.view == "detail" and not w.feed_busy, 8.0)
+check("点得进帖子（详情打开了）", _opened and w.feed_nav.view == "detail",
+      (w.feed_nav.view, len(w.feed_nav.posts)))
+check("帖子详情里正文区仍是社区页那套字体（这一步是前提）",
+      w.text_edit.font().family() == "Courier New", w.text_edit.font().family())
+w.exit_feed_mode(reason="probe_detail")
+pump(lambda: w.text_edit.toPlainText()[:12] == LAYOUT_TEXT[:12], 5.0)
+for _ in range(25):
+    qapp.processEvents()
+    time.sleep(0.02)
+_book_fam2 = w.config.get("font_family")
+check("点过帖子再退出：书页控件字体回到书页那套",
+      w.text_edit.font().family() == _book_fam2, w.text_edit.font().family())
+check("点过帖子再退出：书页文档默认字体也回到书页那套",
+      w.text_edit.document().defaultFont().family() == _book_fam2,
+      w.text_edit.document().defaultFont().family())
+check("点过帖子再退出：书页排版逐项一致（字体/行距/缩进/页边距/页底）",
+      snap_layout() == _layout_before, (_layout_before, snap_layout()))
+check("点过帖子再退出：每个字符自己带的字体也回到书页那套（最狠的那一层）",
+      _glyph_font(w.text_edit) == _book_fam2, _glyph_font(w.text_edit))
+# 故意把三层全弄脏（控件字体 / 文档默认字体 / 字符级 charFormat），再重铺一次。
+# 真人报的就是"某条路把字符级字体也改了"——只钉前两层的话屏幕上看不出来、断言也全绿。
+_dirty = app_mod.QFont("Courier New", 21)
+_doc = w.text_edit.document()
+w.text_edit.setFont(_dirty)
+_doc.setDefaultFont(app_mod.QFont(_dirty))
+_dc = app_mod.QTextCursor(_doc)
+_dc.select(app_mod.QTextCursor.Document)
+_df = app_mod.QTextCharFormat()
+_df.setFontFamily("Courier New")
+_df.setFontPointSize(21.0)
+_dc.mergeCharFormat(_df)
+w._pin_book_font("probe")
+check("字符级字体被改脏之后，一次重铺就把三层一起按配置钉回来",
+      w.text_edit.font().family() == _book_fam2
+      and _doc.defaultFont().family() == _book_fam2
+      and _glyph_font(w.text_edit) == _book_fam2,
+      (_glyph_font(w.text_edit), _doc.defaultFont().family(), w.text_edit.font().family()))
+w.config.pop("feed_font_size", None)
+w.config.pop("feed_font_family", None)
+w.apply_style()
+w.render_local_page()
+qapp.processEvents()
 
 # 8.5 设置窗口里真的有这个开关，而且取消勾选是"删掉键"而不是留个 0
 _set_dlg = app_mod.SettingsDialog(w.config, w)
@@ -610,6 +714,11 @@ w.config.pop("feed_board_boardsrc", None)
 w.feed_nav.channel = "甲板"
 check("换板块当场生效", w.feed_goto_channel("乙板") and w.feed_nav.channel == "乙板",
       w.feed_nav.channel)
+# 真人报"切了板块不刷新"：以前是先取数、回来了才重画，中间那几秒屏幕上还是上一栏的内容。
+# 现在要求**当场就把列表清空并开取**，而不是等数据回来才动。
+check("换板块当场就把列表清空并开取（不是等数据回来才动）",
+      w.feed_nav.view == "list" and w.feed_nav.posts == [] and w.feed_busy is True,
+      (w.feed_nav.view, len(w.feed_nav.posts), w.feed_busy))
 pump(lambda: not w.feed_busy)
 check("换过的板块按来源记进 config", w.config.get("feed_board_boardsrc") == "乙板",
       w.config.get("feed_board_boardsrc"))
