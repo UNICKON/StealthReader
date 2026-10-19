@@ -564,6 +564,33 @@ for _ in range(25):                 # 让 singleShot(0) 的页底重算跑掉
 check("进出社区页之后，书页排版一模一样（字体/行距/缩进/页边距/页底）",
       snap_layout() == _layout_before, (_layout_before, snap_layout()))
 
+
+def _bold_glyphs(te):
+    """正文里"加粗"的片段数。
+
+    社区页第一段就是**加粗的帖子标题**：`setHtml` 之后光标正停在那个字符上，
+    它的 charFormat 会跟着 `setPlainText` 铺满整页正文——真人看到的就是
+    "进 CAF 再退出，正文全变成黑体加粗，像帖子的标题一样"。字体那三层都是对的，
+    所以以前那些只查字体的断言全绿，这个 bug 照样在。
+    """
+    n = 0
+    blk = te.document().begin()
+    while blk.isValid():
+        it = blk.begin()
+        while not it.atEnd():
+            fr = it.fragment()
+            if fr.isValid():
+                cf = fr.charFormat()
+                if cf.fontWeight() >= 75 or cf.font().bold():
+                    n += 1
+            it += 1
+        blk = blk.next()
+    return n
+
+
+check("退出社区页之后正文不许变成加粗（社区页标题是粗体，不能带过来）",
+      _bold_glyphs(w.text_edit) == 0, _bold_glyphs(w.text_edit))
+
 w.config["feed_font_size"] = 22
 # 字体故意换一个**跟书页不一样**的：以前这里写的是 `= 书页字体`，于是"社区页字体漏到书页上"
 # 这一类 bug 探针根本看不见（两边同名，比也白比）。真人报的就是"退出后正文变成社区页那个字体"。
@@ -669,6 +696,33 @@ check("取消勾选 = 回到界面默认那套（键删掉，不是留个 0）",
       (w.config.get("feed_font_size"), w.config.get("feed_font_family")))
 _set_dlg.reject()
 qapp.processEvents()
+
+# 8.5.2 「确定」必须真的存下来。真人报过"现在保存设置好像不能用了"：
+# 低调模式那几行被写进了 SettingsDialog.accept 却按主窗口的写法引了 self.feed_sources，
+# 于是点确定当场 AttributeError，config 一个键都没落盘。
+_low_before = bool(w.config.get("feed_lowkey", False))
+_set_dlg2 = app_mod.SettingsDialog(w.config, w)
+_set_dlg2.feed_lowkey_check.setChecked(not _low_before)
+_saved_ok = True
+try:
+    _set_dlg2.accept()
+except Exception as _e:                     # 真机上就是这里抛的
+    _saved_ok = False
+    print("        accept() 抛了：%s: %s" % (type(_e).__name__, _e))
+qapp.processEvents()
+check("设置窗口点「确定」不抛异常，值真的存进 config",
+      _saved_ok and bool(w.config.get("feed_lowkey")) == (not _low_before),
+      (w.config.get("feed_lowkey"), _low_before))
+check("改完低调开关：每个来源当场跟着换（不用重启）",
+      all(getattr(s, "images_off", None) == bool(w.config.get("feed_lowkey"))
+          for s in w.feed_sources if getattr(s, "images_off", None) is not None),
+      [(getattr(s, "key", "?"), getattr(s, "images_off", None)) for s in w.feed_sources])
+check("改完低调开关：手里那份内存缓存被清掉（否则还是旧图）", w._feed_memo == {},
+      len(w._feed_memo))
+w.config["feed_lowkey"] = _low_before         # 还原
+for _s in w.feed_sources:
+    if getattr(_s, "images_off", None) is not None:
+        _s.images_off = _low_before
 
 # 8.5.1 按 R 刷新：必须**明确要求不吃缓存**（列表缓 5 分钟、正文缓一天，吃缓存等于没刷新）
 _calls = []

@@ -1326,6 +1326,14 @@ class ReaderTextEdit(QTextEdit):
 
     # 换文本、换交互标志、改只读也会让 Qt 重设光标，一并压回去
     def setPlainText(self, text):
+        # 铺新文本前先把「当前字符格式」清空：上一次铺进正文区的可能是社区页（第一段就是
+        # **加粗的帖子标题**）或背诵卡片，光标正停在那种字符上，它的 charFormat 会被 Qt
+        # 带给整页新文本——真人看到的就是"进 CAF 再退出，正文全变成黑体加粗，像帖子标题"。
+        # 字体那三层（控件/文档默认/字符）都可能是对的，所以只在字体上做文章的修法都治不住它。
+        try:
+            self.setCurrentCharFormat(QTextCharFormat())
+        except Exception:
+            pass
         super().setPlainText(text)
         self._pin_cursor()
 
@@ -2294,14 +2302,17 @@ class SettingsDialog(QDialog):
         self.config["anki_key"] = self.anki_key_input.text().strip() or "ctrl+alt+a"
         self.config["feed_key"] = self.feed_key_input.text().strip() or "ctrl+alt+f"
         lowkey_now = self.feed_lowkey_check.isChecked()
-        if lowkey_now != bool(self.config.get("feed_lowkey", False)):
-            self._feed_memo.clear()          # 图要不要落地变了，手里那份得重取
+        _win = self.main_window
+        if _win is not None:
+            if lowkey_now != bool(self.config.get("feed_lowkey", False)):
+                # 图要不要落地变了，手里那份得重取（缓存里存的是"要不要图"的答案）
+                _win._feed_memo.clear()
+            for _src in (getattr(_win, "feed_sources", None) or []):
+                try:
+                    _src.images_off = lowkey_now   # 当场生效，不用重启
+                except Exception:
+                    pass
         self.config["feed_lowkey"] = lowkey_now
-        for _src in (self.feed_sources or []):
-            try:
-                _src.images_off = lowkey_now
-            except Exception:
-                pass
         self.config["anki_deck"] = self.anki_deck_input.text().strip()
         self.config["anki_swallow_keys"] = self.anki_swallow_check.isChecked()
         self.config["anki_conceal"] = self.anki_conceal_check.isChecked()
@@ -2877,6 +2888,7 @@ class StealthReader(QWidget):
         正文变成帖子那个字体"就是这么来的，而且光看 `document().defaultFont()` 还查不出来）。
         """
         self._pin_book_font("铺字前")
+        # 字符格式已在控件自己的 setPlainText 里清掉（见那里的说明），这里只管钉字体。
         self.text_edit.setPlainText(text)
         self._pin_book_font("铺字后")
         self.apply_text_format()
