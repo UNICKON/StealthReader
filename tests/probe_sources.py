@@ -90,6 +90,12 @@ def fixture_bytes(name):
         return f.read()
 
 
+def _ncalls(http):
+    """替身 Http 记的请求次数（有的记成 list，有的记成 int）。"""
+    c = getattr(http, "calls", 0)
+    return len(c) if isinstance(c, list) else int(c)
+
+
 class FakeHttp(object):
     """读夹具的替身 Http。routes: 片段 -> 对象；bytes_routes: 片段 -> 原始字节。"""
 
@@ -389,9 +395,13 @@ check("新鲜缓存直接命中", http.get_json("https://example.com/list", ttl=
 check("命中时 served_stale 是 False", http.served_stale is False)
 old = os.path.join(cache.json_dir, cache.key("https://example.com/list") + ".json")
 os.utime(old, (time.time() - 3600, time.time() - 3600))
-check("过期 + 请求失败 -> 退回旧缓存",
-      http.get_json("https://example.com/list", ttl=1, what="t") == {"v": 1})
-check("并且标记 served_stale", http.served_stale is True)
+check("过期但盘里有旧的 -> 旧内容先给出去（stale-while-revalidate），不当「断网兜底」标记",
+      http.get_json("https://example.com/list", ttl=1, what="t") == {"v": 1}
+      and http.served_stale is False)
+http.stale_ok = False                     # 关掉快路径，验老的"请求失败退回旧缓存"那条
+check("关掉快路径之后：请求失败 -> 退回旧缓存，并且标记 served_stale",
+      http.get_json("https://example.com/list", ttl=1, what="t") == {"v": 1}
+      and http.served_stale is True)
 check("ttl=0 的约定是永不过期（图片用）",
       feed_net.Cache(TMP_CACHE).read_json("https://example.com/list", 0) == {"v": 1})
 empty = feed_net.Http(cache=feed_net.Cache(os.path.join(TMP_CACHE, "none")))
@@ -773,6 +783,15 @@ else:
     zok.comments(zp0[0])
     check("（真夹具）评论区再取一次不会再发请求（回答和它下面的评论都走缓存）",
           zok.http.calls == _calls_before, (zok.http.calls, _calls_before))
+    _c1 = _ncalls(zok.http)
+    feed_net.set_fresh(True)
+    try:
+        zok.comments(zp0[0])
+        _fresh_calls = _ncalls(zok.http) - _c1
+    finally:
+        feed_net.set_fresh(False)
+    check("按 R 时知乎那份回答缓存也让路（刷新不是又读一遍内存）", _fresh_calls > 0,
+          _fresh_calls)
     check("作者的两种形状都认（回答是 author.name，评论才是嵌一层的 member.name）",
           feed_sources._zhihu_name({"name": "甲"}) == "甲"
           and feed_sources._zhihu_name({"role": "normal", "member": {"name": "乙"}}) == "乙")
@@ -876,6 +895,23 @@ else:
     xs3.http.fail = ["/explore/"]
     d2, _ = xs3.detail(seed)
     check("详情只拉一次（评论那层不再重复请求）", d2.title == xsd.title)
+    # 按 R 刷新时，来源自己那份内存缓存必须让路——不然"刷新"只是又读了一遍内存
+    xs3.http.bytes_routes = {"/explore/": _xhs_page(raw_xn)}
+    xs3.http.fail = []
+    _c0 = _ncalls(xs3.http)
+    xs3.detail(seed)
+    xs3.detail(seed)                      # 不带 fresh：全走内存
+    _cached_calls = _ncalls(xs3.http) - _c0
+    _c1 = _ncalls(xs3.http)
+    feed_net.set_fresh(True)
+    try:
+        xs3.detail(seed)
+        xs3.detail(seed)                  # 带 fresh：两次都得真去取
+        _fresh_calls = _ncalls(xs3.http) - _c1
+    finally:
+        feed_net.set_fresh(False)
+    check("按 R 时小红书的内存缓存让路（平时 0 次请求，刷新时每次都真取）",
+          _cached_calls == 0 and _fresh_calls >= 2, (_cached_calls, _fresh_calls))
     # token 丢了就打不开——如实说，不去瞎猜
     xs4 = feed_sources.XhsSource(FakeHttp(cache=MemCache()), cred)
     seed2 = feed_sources.Post(source="xhs", pid="deadbeef", title="t", url="https://www.xiaohongshu.com/explore/deadbeef")

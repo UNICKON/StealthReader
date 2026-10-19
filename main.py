@@ -2414,6 +2414,13 @@ class StealthReader(QWidget):
         self.feed_board_pending = False  # 正在拉板块表（回来要弹选择器，见 feed_load_boards）
         self.feed_boards_tried = set()   # 拉过全量板块表的来源（拉不到也别反复去拉）
         self.feed_gen = 0               # "视图代次"：换代后回来的旧结果一律丢掉（见 on_feed_data）
+        # 内存里留一份刚取到的内容：切栏目/退回列表/再进同一个帖子时**先把它画上去**，
+        # 后台照旧去取（磁盘缓存 TTL 一到就得重新请求，小红书那一页要 1.7 秒），
+        # 取回来的内容如果一模一样就不再重排——这条同时治好了"刷新一下整页抖一下、滚动条归位"。
+        self._feed_memo = {}
+        self._feed_sig = None           # 上次真正画出来的内容签名（见 _feed_sig_now）
+        self._feed_inflight = {}        # 正在取的 key -> Event：后来的等前面那个，不重复发请求
+        self.FEED_MEMO_TTL = 90         # 内存里这份多久算"还热"（秒）：热就不发请求，"刷新"照样真取
         if FEED_OK:
             try:
                 self.feed_sources = feed_mod.build_sources(
@@ -4250,22 +4257,58 @@ class StealthReader(QWidget):
             # 记下来，等这次回来立刻补上。
             self.feed_pending = (what, target)
             return
-        self.feed_busy = True
         channel = nav.channel if what in ("list", "more") else None
         cursor = nav.cursor if what == "more" else None
         tag = getattr(src, "key", "")     # 这次取的是哪一家：回来时要核对
         gen = self.feed_gen               # 这次取的是哪一"代"视图：回来时也要核对
+        memo_key = (("list", tag, channel or "", cursor or "") if what in ("list", "more")
+                    else ("detail", tag, target.id if target is not None else ""))
+
+        # 快路径：内存里有这一份就先画（0 毫秒），再照旧去取。
+        # 这不是"不刷新"——取回来的内容一般一样（缓存命中），一样就不重排；
+        # 真变了（新帖子/新评论）才重排。人按 R 时 fresh=True，这条路直接跳过。
+        if not fresh:
+            hit = self._feed_memo.get(memo_key)
+            if hit is not None:
+                payload0, when0 = hit
+                if what in ("list", "more"):
+                    posts0, nxt0, append0 = payload0
+                    self.on_feed_data("list", (posts0, nxt0, append0, gen, tag))
+                else:
+                    p0, c0 = payload0
+                    self.on_feed_data("detail", (p0, c0, gen, tag))
+                if time.time() - when0 < self.FEED_MEMO_TTL:
+                    # 刚取过：这一趟连请求都不用发（磁盘 TTL 到没到都不管，按 R 才强制重取）。
+                    # 切栏目、退回列表、反复进同一个帖子，全在这一步就是 0 请求。
+                    return
+
+        self.feed_busy = True
 
         def work():
             feed_net.set_fresh(fresh)
             try:
                 if what in ("list", "more"):
                     posts, nxt = src.list(channel, cursor)
+                    if not fresh:
+                        self._feed_memo_put(memo_key, (posts, nxt, what == "more"))
                     self.feed_data_signal.emit("list", (posts, nxt, what == "more", gen, tag))
+                    # 提前渲染：列表刚回来就把第一条的正文/评论预取回来放着。
+                    # 人一般就是往下按回车，等他把光标挪到第二条时第一屏早就热了。
+                    if what == "list" and posts:
+                        _prefetch(src, posts[0])
                 else:
-                    p, _ = src.detail(target)
-                    cmts, _ = src.comments(target)
-                    self.feed_data_signal.emit("detail", (p, cmts, gen, tag))
+                    ev, mine = self._feed_lock(memo_key)
+                    if not mine and not fresh:
+                        ev.wait(20)      # 预取正在取这一条：等它，别重复发请求
+                    try:
+                        p, _ = src.detail(target)
+                        cmts, _ = src.comments(target)
+                        if not fresh:
+                            self._feed_memo_put(memo_key, (p, cmts))
+                        self.feed_data_signal.emit("detail", (p, cmts, gen, tag))
+                    finally:
+                        if mine:
+                            self._feed_unlock(memo_key, ev)
             except Exception as e:
                 try:
                     self.feed_data_signal.emit("error", (str(e), gen, tag))
@@ -4274,7 +4317,73 @@ class StealthReader(QWidget):
             finally:
                 feed_net.set_fresh(False)
 
+        def _prefetch(src_, p_):
+            """把一条帖子的详情+评论先取回来存进内存。失败一声不响（进帖时还会再取一次）。"""
+            key = ("detail", tag, p_.id)
+            if key in self._feed_memo:
+                return
+            ev, mine = self._feed_lock(key)
+            if not mine:
+                return                   # 这一条已经有人在取了（人按下的那次），不重复
+            try:
+                dp, _e = src_.detail(p_)
+                cm, _c = src_.comments(p_)
+                self._feed_memo_put(key, (dp, cm))
+            except Exception:
+                return
+            finally:
+                self._feed_unlock(key, ev)
+            try:
+                self.feed_data_signal.emit("prefetch", (dp, cm, gen, tag))
+            except Exception:
+                pass
+
         threading.Thread(target=work, daemon=True).start()
+
+    def _feed_lock(self, key):
+        """同一条内容只让一个线程去取。返回 (Event, 我是不是第一个)。"""
+        try:
+            ev = self._feed_inflight.get(key)
+            if ev is None:
+                ev = threading.Event()
+                self._feed_inflight[key] = ev
+                return ev, True
+            return ev, False
+        except Exception:
+            return threading.Event(), True
+
+    def _feed_unlock(self, key, ev):
+        try:
+            self._feed_inflight.pop(key, None)
+            ev.set()
+        except Exception:
+            pass
+
+    def _feed_memo_put(self, key, value):
+        """存一份到内存（带取到的时间）。只留最近 80 份，再多就丢最旧的。"""
+        try:
+            self._feed_memo[key] = (value, time.time())
+            if len(self._feed_memo) > 80:
+                for k in list(self._feed_memo)[:len(self._feed_memo) - 80]:
+                    self._feed_memo.pop(k, None)
+        except Exception:
+            pass
+
+    def _feed_sig_now(self):
+        """当前视图的内容签名：一样就不再 setHtml（省掉一次重排，也不让滚动条归位）。"""
+        nav = self.feed_nav
+        if nav is None:
+            return None
+        if nav.view == "detail":
+            p = nav.post
+            roots = nav.roots or []
+            return ("detail", getattr(p, "id", ""),
+                    len(getattr(p, "body", None) or []),
+                    sum(len(b.text or "") for b in (getattr(p, "body", None) or [])),
+                    len(roots), sum(c.total() for c in roots))
+        posts = nav.posts or []
+        return ("list", getattr(nav, "channel", ""), nav.view, len(posts),
+                tuple(p.id for p in posts))
 
     def on_feed_data(self, kind, payload):
         """取数回来了（QueuedConnection 保证这里是主线程）。"""
@@ -4283,6 +4392,17 @@ class StealthReader(QWidget):
             posts, nxt, append, gen, tag = payload
         elif kind == "detail":
             post, cmts, gen, tag = payload
+        elif kind == "prefetch":
+            # 预取只是"提前放在手边"：只有当人此刻正好站在这条帖子的详情页上才算数，
+            # 否则安静丢掉（他已经翻到别处了，拿旧数据去改导航会把人家正在看的内容换掉）。
+            dp, cm, pgen, ptag = payload
+            nav0 = self.feed_nav
+            if (pgen == self.feed_gen and self.feed_mode and nav0 is not None
+                    and nav0.view == "detail" and nav0.post is not None
+                    and str(nav0.post.id) == str(dp.id)
+                    and ptag == getattr(self.feed_source(), "key", "")):
+                self.on_feed_data("detail", (dp, cm, pgen, ptag))
+            return
         elif kind == "boards":
             boards, gen, tag = payload
         else:
@@ -4330,7 +4450,8 @@ class StealthReader(QWidget):
                 nav.add_page(posts, nxt)
             elif kind == "detail":
                 nav.set_detail(post, cmts)
-            self.render_feed()
+            if self._feed_sig_now() != self._feed_sig:
+                self.render_feed()
         # 排队的那次现在补上（切来源、快速按键都靠它才不丢内容）
         pend = self.feed_pending
         self.feed_pending = None
@@ -4359,6 +4480,7 @@ class StealthReader(QWidget):
         self.apply_feed_style()
         self.feed_highlight()
         self.update_review_bar()
+        self._feed_sig = self._feed_sig_now()
 
     def apply_feed_style(self):
         """社区页排版：左对齐、不首行缩进、行距沿用阅读设置；卡片间距和评论缩进由 HTML 自带。

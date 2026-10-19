@@ -826,7 +826,7 @@ class ZhihuSource(RealSource):
         """
         aid = str(aid).lstrip("a")
         key = "a:" + aid
-        hit = self._ans.get(key)
+        hit = None if feed_net.is_fresh() else self._ans.get(key)
         if hit is not None:
             item, why, when = hit
             if item or (time.time() - when) < self.RETRY_AFTER:
@@ -867,7 +867,7 @@ class ZhihuSource(RealSource):
         """
         aid = str(aid).lstrip("a")
         key = "c:" + aid
-        hit = self._ans.get(key)
+        hit = None if feed_net.is_fresh() else self._ans.get(key)
         if hit is not None:
             items, _why, when = hit
             if items or (time.time() - when) < self.RETRY_AFTER:
@@ -906,7 +906,7 @@ class ZhihuSource(RealSource):
         以前失败也缓存一辈子，第一次撞上风控之后这个问题就永远打不开了。
         """
         qid = str(qid)
-        hit = self._ans.get(qid)
+        hit = None if feed_net.is_fresh() else self._ans.get(qid)
         if hit is not None:
             items, why, when = hit
             if items or (time.time() - when) < self.RETRY_AFTER:
@@ -1723,7 +1723,7 @@ class XhsSource(RealSource):
     def _note(self, post):
         """取一条笔记的 `note` 和页面自带的评论（同一份状态，详情和评论共用一次请求）。"""
         nid = str(post.id or "")
-        if nid in self._notes:
+        if nid in self._notes and not feed_net.is_fresh():
             return self._notes[nid]
         url = post.url or self._note_url(nid, "")
         if "xsec_token" not in url:
@@ -1823,7 +1823,7 @@ class XhsSource(RealSource):
     def _comments_of(self, post):
         """评论 + 拿不到时的原因（详情和评论共用一次请求，失败也算结果，不抛）。"""
         nid = str(post.id or "")
-        hit = self._cmts.get(nid)
+        hit = None if feed_net.is_fresh() else self._cmts.get(nid)
         if hit is not None:
             return hit
         params = {"note_id": nid, "cursor": "", "top_comment_id": "",

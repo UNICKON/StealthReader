@@ -898,11 +898,116 @@ w.hide()
 qapp.processEvents()
 
 print("\n=== 11. 离线示例仍是兜底 ===")
+print("\n=== 12. 顺手快：内存先画 / 预取选中那条 / 内容没变不重排 ===")
+
+
+class CountSource(feed_sources.IthomeSource):
+    """数一数到底发了几次请求：预取和"人按下的那次"不该各发一遍。"""
+
+    def __init__(self, http, slow=0.0):
+        feed_sources.IthomeSource.__init__(self, http)
+        self.n_list = self.n_detail = self.n_comments = 0
+
+    def list(self, channel=None, cursor=None):
+        self.n_list += 1
+        return feed_sources.IthomeSource.list(self, channel, cursor)
+
+    def detail(self, post, cursor=None):
+        self.n_detail += 1
+        return feed_sources.IthomeSource.detail(self, post, cursor)
+
+    def comments(self, post, cursor=None):
+        self.n_comments += 1
+        return feed_sources.IthomeSource.comments(self, post, cursor)
+
+
+cs = CountSource(FakeHttp({"newslistpageget": F["ithome_hot.json"],
+                           "newscontent": F["ithome_detail.json"]},
+                          cache=MemCache()))
+pump(lambda: not w.feed_busy, 10.0)          # 上一节可能还有一次取数在飞
+if not w.feed_mode:                          # 上一节末尾可能已经退出社区页
+    w.enter_feed_mode()
+    pump(lambda: not w.feed_busy, 10.0)
+# 这一节从干净的内存缓存开始（不然"预取"会被上一节留下的同名帖子挡掉）；
+# 收尾时把栏目名和来源下标还原，后面的小节还要照旧跑。
+_chan0, _src_i0 = w.feed_nav.channel, w.feed_source_i
+w._feed_memo.clear()
+_pre0 = set(k for k in w._feed_memo if k[0] == "detail")
+use_sources([cs])
+w.feed_load("list")
+pump(lambda: len(w.feed_nav.posts) >= 5 and not w.feed_busy, 10.0)
+check("（前置）列表铺好了", len(w.feed_nav.posts) >= 5, len(w.feed_nav.posts))
+check("（前置）列表只取了一次", cs.n_list == 1, cs.n_list)
+
+# 预取：列表回来之后，同一条线程顺手把第一条的详情取回来放着
+pump(lambda: any(k[0] == "detail" and k not in _pre0 for k in w._feed_memo), 10.0)
+_new = [k for k in w._feed_memo if k[0] == "detail" and k not in _pre0]
+check("列表回来会顺手预取第一条的详情（人往下按回车时它已经热了）",
+      len(_new) == 1 and _new[0][2] == w.feed_nav.posts[0].id, _new[:2])
+check("预取只取一次详情 + 一次评论", (cs.n_detail, cs.n_comments) == (1, 1),
+      (cs.n_detail, cs.n_comments))
+
+# 进帖：命中预取，不许再发请求
+w.feed_nav.index = 0
+w.feed_open()
+pump(lambda: w.feed_nav.view == "detail" and w.feed_nav.detail_loaded and not w.feed_busy, 10.0)
+check("进帖用的是预取那份（没有再发一次详情/评论请求）",
+      (cs.n_detail, cs.n_comments) == (1, 1), (cs.n_detail, cs.n_comments))
+
+# 退回再进：全走内存
+w.on_feed_key(Qt.Key_Backspace)
+pump(lambda: w.feed_nav.view == "list")
+w.feed_nav.index = 0
+w.feed_open()
+pump(lambda: w.feed_nav.view == "detail" and w.feed_nav.detail_loaded and not w.feed_busy, 10.0)
+check("退回再进同一条：仍然一次请求都没多发", (cs.n_detail, cs.n_comments) == (1, 1),
+      (cs.n_detail, cs.n_comments))
+w.on_feed_key(Qt.Key_Backspace)
+pump(lambda: w.feed_nav.view == "list")
+
+# 内容没变就不重排（不然每次刷新都抖一下、滚动条归位）
+_renders = []
+_orig_render = w.render_feed
+
+
+def _counting_render():
+    _renders.append(1)
+    return _orig_render()
+
+
+w.render_feed = _counting_render
+w.feed_load("list")
+_after_memo = len(_renders)
+pump(lambda: not w.feed_busy, 10.0)
+w.render_feed = _orig_render
+check("同一份内容取回来不再重排（屏幕上不抖、滚动条不归位）",
+      len(_renders) == _after_memo, (len(_renders), _after_memo))
+
+# 慢来源 + 屏幕上有旧内容：新结果还没回来时，人已经能读到（内存那份先画上去）
+slow = CountSource(FakeHttp({"newslistpageget": F["ithome_hot.json"],
+                             "newscontent": F["ithome_detail.json"]},
+                            cache=MemCache(), slow=0.8))
+w.feed_sources = [slow]
+w.feed_source_i = 0
+# 把内存里那份"改老"：真实场景是隔了几分钟再切回来——这份仍然要**先画上去**，
+# 然后才去后台取新的（不是白屏等 0.8 秒）。
+for _k, _v in list(w._feed_memo.items()):
+    w._feed_memo[_k] = (_v[0], _v[1] - 3600)
+w.feed_load("list")
+_had = bool(w.feed_nav.posts)
+_still_busy = w.feed_busy
+check("内存那份过期了也是先画后取（不是白屏等网络）",
+      _had and _still_busy, (_had, _still_busy))
+pump(lambda: not w.feed_busy, 10.0)
+check("刚取过的内容连请求都不发（90 秒内）", slow.n_list >= 1, slow.n_list)
+w.feed_source_i = _src_i0
+
 w.feed_sources = list(ORIG_SOURCES)          # 把第 6 节换掉的替身来源还原回来
 w.feed_source_i = [i for i, s in enumerate(w.feed_sources) if s.key == "demo"][0] \
     if any(s.key == "demo" for s in w.feed_sources) else 0
 w.feed_gen += 1
 w.feed_nav.reset()
+w.feed_nav.channel = w.feed_first_channel()   # 换来源之后栏目要重新落到它真的有的那一栏
 w.enter_feed_mode()
 w.feed_load("list")
 pump(lambda: w.feed_nav.posts and not w.feed_busy)

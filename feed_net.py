@@ -232,6 +232,9 @@ class Http(object):
         self._sess = None
         self.last_error = ""
         self.served_stale = False       # 这一次返回的是不是"断网时顶上的旧缓存"
+        # 过期缓存先给、后台再取新的（见 _refresh_later）。探针/离线场景可以关掉。
+        self.stale_ok = True
+        self._refreshing = set()
 
     # -- 内部 -------------------------------------------------------------
     def _session(self):
@@ -297,6 +300,43 @@ class Http(object):
             raise FeedNetError("服务端返回 %d" % r.status_code)
         return r
 
+    def _refresh_later(self, url, key, payload=None, headers=None, timeout=None):
+        """后台把这条 URL 取新的写回缓存。同一条只起一条线程；失败就算了（旧内容已经给出去）。"""
+        try:
+            if url in self._refreshing:
+                return
+            self._refreshing.add(url)
+        except Exception:
+            return
+
+        def work():
+            try:
+                if payload is None:
+                    r = self._get(url, headers=headers, timeout=timeout)
+                    obj = r.json()
+                    if self.cache is not None:
+                        self.cache.write_json(key, obj)
+                else:
+                    r = self._post(url, payload, headers=headers, timeout=timeout)
+                    obj = r.json()
+                    if self.cache is not None:
+                        self.cache.write_json(key, obj)
+            except Exception:
+                pass
+            finally:
+                try:
+                    self._refreshing.discard(url)
+                except Exception:
+                    pass
+
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception:
+            try:
+                self._refreshing.discard(url)
+            except Exception:
+                pass
+
     # -- 对外 -------------------------------------------------------------
     def get_json(self, url, ttl=TTL_LIST, headers=None, what="", timeout=None):
         """先看新鲜缓存，没有再请求。
@@ -308,6 +348,14 @@ class Http(object):
             if hit is not None:
                 self.served_stale = False
                 return hit
+            # 有效期内没有、但**盘里有旧的**：旧的先给出去（屏幕立刻有内容），
+            # 顺手起一条线程去取新的。人按 R 的时候 is_fresh() 为真，会跳过这一段真去取。
+            if ttl and self.stale_ok and not is_fresh():
+                old = self.cache.read_json(url, 0)
+                if old is not None:
+                    self._refresh_later(url, url, None, headers, timeout)
+                    self.served_stale = False
+                    return old
         try:
             r = self._get(url, headers=headers, timeout=timeout)
             obj = r.json()
@@ -339,6 +387,12 @@ class Http(object):
             if hit is not None:
                 self.served_stale = False
                 return hit
+            if ttl and self.stale_ok and not is_fresh():
+                old = self.cache.read_json(key, 0)
+                if old is not None:
+                    self._refresh_later(url, key, payload, headers, timeout)
+                    self.served_stale = False
+                    return old
         try:
             r = self._post(url, payload, headers=headers, timeout=timeout)
             obj = r.json()
@@ -364,6 +418,11 @@ class Http(object):
             hit = self.cache.read_bytes(url, ttl)
             if hit is not None:
                 return hit
+            if ttl and self.stale_ok and not is_fresh():
+                old = self.cache.read_bytes(url, 0)
+                if old is not None:
+                    self._refresh_later_bytes(url, headers, timeout)
+                    return old
         r = self._get(url, headers=headers, timeout=timeout)
         data = r.content
         if len(data) > max_bytes:
@@ -371,6 +430,36 @@ class Http(object):
         if self.cache is not None:
             self.cache.write_bytes(url, data)
         return data
+
+    def _refresh_later_bytes(self, url, headers=None, timeout=None):
+        """二进制那份的后台刷新（页面 HTML 走这条）。"""
+        try:
+            if url in self._refreshing:
+                return
+            self._refreshing.add(url)
+        except Exception:
+            return
+
+        def work():
+            try:
+                r = self._get(url, headers=headers, timeout=timeout)
+                if self.cache is not None:
+                    self.cache.write_bytes(url, r.content)
+            except Exception:
+                pass
+            finally:
+                try:
+                    self._refreshing.discard(url)
+                except Exception:
+                    pass
+
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception:
+            try:
+                self._refreshing.discard(url)
+            except Exception:
+                pass
 
     def fetch_image(self, url):
         """把图片落到 cache/img，返回文件名（失败返回空串，绝不抛）。
