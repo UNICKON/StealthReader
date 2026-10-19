@@ -624,7 +624,9 @@ class ZhihuSource(RealSource):
     # 所以从 10 收到 6——再多一页就是几万字，翻起来像在读一本书。
     ANSWERS_LIMIT = 6
     # 只有前几条回答去拉"它自己的评论"：一条回答一次请求，全拉一遍要去十几次。
-    ANSWERS_WITH_COMMENTS = 3
+    # 一页 6 条回答，**每条都要带自己的评论**：以前只给前 3 条补，
+    # 后 3 条永远是空的——真人 2026-10-19 报的就是这个"有些回答的评论好像不会加载"。
+    ANSWERS_WITH_COMMENTS = 6
     CHILD_COMMENTS_LIMIT = 4     # 每条评论再带几条子评论（知乎只有两层）
     ANSWER_COMMENTS_LIMIT = 8
     # 一条回答最多摆多少块（一块 = 一个段落或一张图）。
