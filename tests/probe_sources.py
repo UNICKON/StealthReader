@@ -1535,6 +1535,21 @@ check("SST：正文只取 .sl-markdown-content 那个 div",
       "正文一段" in _sdt and "不该进来的" not in _sdt, _sdt[:60])
 check("SST 没有评论", _sst.comments(_sp[0])[0] == [])
 
+# config 里自己加的订阅（"博客一般都有的那种格式"）：一条一个来源，写坏的跳过
+_own = feed_sources.build_real_sources(cache_root=TMP_CACHE, log=None, config={
+    "feed_sources": ["ithome"],
+    "feed_rss": ["我的博客|https://example.com/feed.xml", "没竖线的坏条目",
+                 {"name": "另一个", "url": "https://example.org/atom.xml"},
+                 "缺地址|"]})
+check("自己加的订阅：按顺序各成一个来源，写坏的条目跳过",
+      [s.key for s in _own] == ["mix", "ithome", "rss1", "rss2"],
+      [s.key for s in _own])
+check("自己加的订阅：来源名字就是配置里写的名字",
+      [s.label for s in _own][2:] == ["我的博客", "另一个"], [s.label for s in _own])
+_off = feed_sources.build_real_sources(cache_root=TMP_CACHE, log=None, config={
+    "feed_sources": [], "feed_rss": ["我的博客|https://example.com/feed.xml"]})
+check("内置来源全关时不硬塞自己加的订阅（关就是关）", _off == [], [s.key for s in _off])
+
 # 知乎：评论底下再一层子评论（真三层树的第二层）
 _ZC_PARENT = {"data": [
     {"id": 11, "content": "<p>父评论</p>", "author": {"name": "甲"},

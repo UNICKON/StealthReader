@@ -812,7 +812,7 @@ TouchFish 那边是这么做的：**每个站一个"当前板块"配置项 + 一
   A 轮的夹具是手写的（`feed_demo/posts.json`），B 轮起换成真实响应存下来的夹具。
   **E 轮起探针与夹具都进仓库**（`tests/`），所以"零网络"是可复现、可回归的：
   `probe_sources.py` / `probe_ui.py` / `probe_weread.py` 开头就把 `requests` 换成抛异常。
-  现状：`probe_sources.py` 284 项、`probe_ui.py` 136 项、`probe_weread.py` 47 项，全过（数目随轮次增，见各轮验收）。
+  现状：`probe_sources.py` 287 项、`probe_ui.py` 136 项、`probe_weread.py` 47 项，全过（数目随轮次增，见各轮验收）。
 - 网络路径只做一次手动"真实拉取"冒烟；失败必须降级到缓存并给出可见提示。
 - 排版、老板键、偷瞄、防截屏沿用现有探针回归（一条都不能退）。
 
@@ -935,7 +935,20 @@ Astro 的 HTML 页面，`/blog/rss.xml` 这类是 403；页面里也没有 `<lin
 Medium 的流本身慢（实测首次 5.9 秒，`betterprogramming.pub` → `medium.com` 一跳），
 后面 5 分钟走缓存。
 
-验收：`probe_sources.py` **284 项**（+22：RSS 全文/摘要与实体、Atom 的 href 与 author、
+**⑦ 想订阅哪个博客，写一行配置就行。** 真人说的"博客一般都有的那种格式"就是 RSS/Atom，
+所以订阅这一层是通用的，只是**默认没有替你选**（选谁都不合适）：
+
+```json
+"feed_rss": ["阮一峰|https://www.ruanyifeng.com/blog/atom.xml",
+             {"name": "某博客", "url": "https://example.com/feed.xml"}]
+```
+
+每条变成一个独立来源（名字就是 label，键位排在最后），`|` 或 `{"name","url"}` 两种写法都认，
+写坏的条目直接跳过、不留空号；`feed_sources` 写成空列表时**不**硬塞回来（关就是关）。
+实测能带全文的流：`ruanyifeng.com/blog/atom.xml`、`betterprogramming.pub/feed`；
+只给摘要的流：`sspai.com/feed`、Medium 的标签流——只有摘要的那种会在正文末尾补原文地址。
+
+验收：`probe_sources.py` **287 项**（+25：RSS 全文/摘要与实体、Atom 的 href 与 author、
 SST 列表与正文 div、GitHub 行解析与 README 转块、订阅源诚实空评论、知乎两层子评论夹具）、
 `probe_ui.py` **136 项**（+3：点一下就折叠、再点一下就展开）、`probe_weread.py` 47 项，全过。
 

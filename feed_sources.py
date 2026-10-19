@@ -2324,6 +2324,31 @@ def build_real_sources(cache_root=None, config=None, log=None):
         src.needs_auth = bool(getattr(cls, "needs_auth", False))
         made.append(src)
 
+    # config 里可以自己加订阅（"博客一般都有的那种 RSS/Atom"）：
+    #   "feed_rss": ["阮一峰|https://www.ruanyifeng.com/blog/atom.xml",
+    #                {"name": "某博客", "url": "https://example.com/feed.xml"}]
+    # 每条变成一个独立来源（label 就是名字），键位顺序排在最后；写坏的条目直接跳过。
+    # `feed_sources` 写成空列表 = 用户把内置的都关了，这时候也不自作主张把它们加回来。
+    if extra and enabled:
+        n_rss = 0
+        for entry in list(config.get("feed_rss") or [])[:6]:
+            try:
+                if isinstance(entry, dict):
+                    name, url = entry.get("name") or "", entry.get("url") or ""
+                else:
+                    name, url = str(entry).split("|", 1)
+            except Exception:
+                continue
+            name, url = str(name).strip(), str(url).strip()
+            if not (name and url.startswith("http")):
+                continue
+            n_rss += 1                       # 编号只认"加成功的"，坏条目不留空号
+            http = Http(cache=cache, headers={"Referer": url})
+            src = feed_more.RssSource(http, {}, feeds=((name, url),),
+                                      key="rss%d" % n_rss, label=name)
+            src.needs_auth = False
+            made.append(src)
+
     if not made:
         return []
     off = bool(config.get("feed_lowkey", False))
