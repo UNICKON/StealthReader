@@ -2364,7 +2364,7 @@ def build_real_sources(cache_root=None, config=None, log=None):
         # NGA 和 小红书 也在默认里：它们确实要 Cookie，但没配的时候页脚会照实说
         # "这个来源要 Cookie"，不会假装成功——比"藏起来让人找不到"更好解释。
         enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu",
-                   "github", "medium", "sst"]
+                   "github", "medium"]
     elif not isinstance(enabled, list):
         enabled = [str(enabled)]
 
@@ -2373,8 +2373,7 @@ def build_real_sources(cache_root=None, config=None, log=None):
     try:
         import feed_more
         extra = (("github", feed_more.GithubTrendingSource),
-                 ("medium", feed_more.RssSource),
-                 ("sst", feed_more.SstSource))
+                 ("medium", feed_more.RssSource))
     except Exception:
         extra = ()
 

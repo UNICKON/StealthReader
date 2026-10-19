@@ -2432,6 +2432,7 @@ class StealthReader(QWidget):
         self.feed_pending = None        # 忙着的时候来的取数请求，等回来补上（见 feed_load）
         self.feed_board_pending = False  # 正在拉板块表（回来要弹选择器，见 feed_load_boards）
         self.feed_boards_tried = set()   # 拉过全量板块表的来源（拉不到也别反复去拉）
+        self.feed_detail_top = False     # 刚点进帖子：正文回来时把视图钉在顶部
         self.feed_gen = 0               # "视图代次"：换代后回来的旧结果一律丢掉（见 on_feed_data）
         # 内存里留一份刚取到的内容：切栏目/退回列表/再进同一个帖子时**先把它画上去**，
         # 后台照旧去取（磁盘缓存 TTL 一到就得重新请求，小红书那一页要 1.7 秒），
@@ -4587,6 +4588,10 @@ class StealthReader(QWidget):
                 nav.set_detail(post, cmts)
             if self._feed_sig_now() != self._feed_sig:
                 self.render_feed()
+            if kind == "detail" and self.feed_detail_top:
+                # 正文/评论到齐、版面变高了：从顶部读起（不是停在第一条评论上）
+                self.feed_detail_top = False
+                self.feed_scroll_top()
         # 排队的那次现在补上（切来源、快速按键都靠它才不丢内容）
         pend = self.feed_pending
         self.feed_pending = None
@@ -4782,8 +4787,13 @@ class StealthReader(QWidget):
         # 列表：一下就到（force 也就是"双击"，走同一条路，不重复动作）
         return self.feed_open()
 
-    def feed_highlight(self):
+    def feed_highlight(self, ensure=False):
         """把选中项提亮一档（extra selections，只改字色，不铺底色块）。
+
+        `ensure` 只有"人主动换条目"时才给（方向键、点选）：那时候把目标拉进可见区是用户
+        想要的。**渲染（render_feed）一律不带它**——进帖子时第一条评论天然是"当前条目"，
+        以前这里无条件 ensure，于是刚点进帖子就被滚到评论区开头（真人原话：
+        "点进帖子应该在顶部，现在是直接在评论区开头"）。
 
         定位文本由 feed.selection_needle 给（列表是标题、评论是表头那一行），每动一次
         重算一次——所以高亮永远跟着光标走，不依赖上一次渲染出来的标记。
@@ -4807,7 +4817,8 @@ class StealthReader(QWidget):
             fmt.setForeground(QColor(theme["mark"]))
             sel.format = fmt
             self.text_edit.setExtraSelections([sel])
-            self.feed_ensure_visible(cur)
+            if ensure:
+                self.feed_ensure_visible(cur)
         except Exception:
             pass
 
@@ -4850,7 +4861,7 @@ class StealthReader(QWidget):
         moved = nav.move_comment(step) if nav.view == "detail" else nav.move(step)
         if not moved:
             return False
-        self.feed_highlight()
+        self.feed_highlight(ensure=True)
         self.update_review_bar()
         if nav.view == "list":
             self.feed_warm_soon(nav.selected())      # 光标停在哪条，就把哪条先取回来
@@ -4863,6 +4874,7 @@ class StealthReader(QWidget):
         if nav is None or nav.view == "detail" or not nav.open_selected():
             return False
         self.feed_gen += 1                  # 视图换代：还在飞的列表结果不许再盖回来
+        self.feed_detail_top = True     # 正文回来时再钉一次顶部（标题先画，正文随后到）
         self.render_feed()              # 先把标题画出来，正文和评论随后台取数回来
         self.feed_scroll_top()          # 换了一屏内容就从最上面读起（不是停在评论那一行）
         self.feed_load("detail")

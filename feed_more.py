@@ -53,11 +53,45 @@ def _md_inline(text):
     return _clean(s)
 
 
+def _first_img(html):
+    """正文里第一张图的地址（订阅流的封面）：只认绝对地址，跳过 data: 和 1 像素统计图。"""
+    for m in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', str(html or ""), re.I):
+        url = _html.unescape(m.group(1)).strip()
+        if url.startswith(("http://", "https://")) and not re.search(r"\.gif(\?|$)", url, re.I):
+            return url
+    return ""
+
+
+def _md_cells(line):
+    """表格一行 -> 单元格列表（反斜杠转义的竖线不切）。"""
+    s = str(line or "").strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    parts = re.split(r"(?<!\\)\|", s)
+    return [_md_inline(p.replace("\\|", "|")) for p in parts]
+
+
+def _md_is_sep(line):
+    """`|---|:--:|` 这种表格分隔行。"""
+    return bool(re.match(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$", str(line or "").strip()))
+
+
+def _md_table_row(cells, sep=" · "):
+    return sep.join([c for c in cells if c])
+
+
 def md_blocks(text, max_blocks=200):
     """Markdown → Block 列表（GitHub 的 README 就是 Markdown）。
 
-    只认最要紧的那几种：标题、段落、列表项、引用、代码块、图片。README 里那些
-    徽章（`[![build](badge)](link)`）压完成空字符串就自然消失了，不会变成一排"图"。
+    认这些：标题、段落、列表项、引用、代码块、图片、**表格**、**任务列表**、分隔线。
+    README 里那些徽章（`[![build](badge)](link)`）压完成空字符串就自然消失了，不会变成一排"图"。
+
+    表格是最要紧的一处（2026-10-19 真人："github 点进去是 readme，支持一下 md 格式"）：
+    以前 `| a | b |` 那种行会攒成一个巨大的段落，满屏都是 `|---|` 竖线。现在表头当小标题、
+    每行当一条列表项，单元格之间用 ` · ` 连起来——竖排着读，比一张挤扁的表格清楚。
+    行内加粗/斜体仍然只留字（渲染层是纯文本段落，没有行内富文本）。
     """
     src = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     out = []
@@ -72,9 +106,14 @@ def md_blocks(text, max_blocks=200):
             if para:
                 out.append(Block(BLOCK_P, para))
 
-    for raw in src.split("\n"):
+    lines = src.split("\n")
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
         line = raw.rstrip()
         s = line.strip()
+        i += 1
+
         if s.startswith("```") or s.startswith("~~~"):
             if in_code:
                 body = "\n".join(code).strip("\n")
@@ -89,6 +128,31 @@ def md_blocks(text, max_blocks=200):
         if in_code:
             code.append(line)
             continue
+        # 表格：一行竖线 + 紧跟一行分隔线才算（单独的 `| xxx` 当普通段落）
+        # 表头不一定以 `|` 开头（`API | Description | Auth` 这种写法在 awesome 类 README 里很常见），
+        # 所以判据是"这一行有竖线 + 下一行是分隔行"
+        if "|" in s and i < len(lines) and _md_is_sep(lines[i]):
+            flush()
+            head = _md_table_row(_md_cells(s))
+            if head:
+                out.append(Block(BLOCK_H, head))
+            i += 1                       # 跳过 `|---|` 那一行
+            rows = 0
+            while i < len(lines) and "|" in lines[i] and not _md_is_sep(lines[i]):
+                cells = _md_cells(lines[i])
+                row = _md_table_row(cells)
+                i += 1
+                if not row:
+                    continue
+                out.append(Block(BLOCK_LIST, row))
+                rows += 1
+                if rows >= 40 or len(out) >= max_blocks:
+                    break
+            continue
+        # 分隔线（`---` / `***` / `___`）：以前会变成一个只有三个减号的段落
+        if re.match(r"^(-{3,}|\*{3,}|_{3,})$", s):
+            flush()
+            continue
         if not s:
             flush()
             continue
@@ -98,6 +162,13 @@ def md_blocks(text, max_blocks=200):
             head = _md_inline(m.group(2))
             if head:
                 out.append(Block(BLOCK_H, head))
+            continue
+        m = re.match(r"^([-*+]|\d+[.)])\s+\[([ xX])\]\s*(.*)$", s)
+        if m:
+            flush()
+            item = _md_inline(m.group(3))
+            if item:
+                out.append(Block(BLOCK_LIST, ("\u2611 " if m.group(2).lower() == "x" else "\u2610 ") + item))
             continue
         m = re.match(r"^([-*+]|\d+[.)])\s+(.*)$", s)
         if m:
@@ -132,11 +203,6 @@ def md_blocks(text, max_blocks=200):
         if body:
             out.append(Block(BLOCK_CODE, body, "", "text"))
     return out[:max_blocks]
-
-
-def _first_img(html):
-    m = re.search(r'<img[^>]+src="([^"]+)"', str(html or ""), re.I)
-    return m.group(1) if m else ""
 
 
 def _extract_div(html, marker, limit=600000):
@@ -266,10 +332,12 @@ class RssSource(RealSource):
     base_url = "https://medium.com"
     needs_auth = False
     PER_PAGE = 10
+    # 订阅源要挑**还活着的**：Better Programming 2023-11 就停更了（首页那 10 条永远是 2023 年），
+    # 换成两家还在供稿、而且带全文的 Medium 刊物；标签流只给摘要（正文末尾会补原文地址）。
     FEEDS = (
-        ("Better Programming", "https://betterprogramming.pub/feed"),
+        ("Level Up", "https://levelup.gitconnected.com/feed"),
+        ("Dev Genius", "https://blog.devgenius.io/feed"),
         ("编程", "https://medium.com/feed/tag/programming"),
-        ("科技", "https://medium.com/feed/tag/technology"),
         ("AI", "https://medium.com/feed/tag/artificial-intelligence"),
     )
 
@@ -368,11 +436,9 @@ class RssSource(RealSource):
 
 
 class SstSource(RealSource):
-    """SST 的博客（sst.dev/blog）。没有订阅地址，按页面结构抓：
-
-    - 列表页里 `<a href="/blog/<slug>">标题</a>` 就是一条，顺序即页面顺序（新在前）；
-    - 文章页的正文在 Starlight 的 `.sl-markdown-content` 那个 div 里，`<h1>` 是标题。
-    """
+    """（默认**不启用**）真人说过"sst 不用，我说的就是 rss"——他指的是 `feed_rss` 那种
+    通用订阅。这个类留着是因为它是个按页面结构抓 blog 的样板；要接一个新博客，
+    先看看能不能直接写进 `feed_rss`（RSS/Atom 优先），不行再照这个改。"""
 
     key = "sst"
     label = "SST"
@@ -433,6 +499,24 @@ class SstSource(RealSource):
 
     def comments(self, post, cursor=None):
         return [], NOTHING_TO_SAY
+
+
+def _abs_image_urls(text, full):
+    """把 README 里的相对图片路径补成 raw.githubusercontent 的绝对地址。
+
+    绝大多数仓库的图标/截图是 `docs/logo.png`、`./assets/x.svg` 这种相对写法，
+    交给下载器只会当成本地文件名（`_localize_images` 见非 http 就不下），最后留在正文里
+    是个空图。补成绝对地址之后，能下的就下、下不下来的照旧丢掉。"""
+    base = "https://raw.githubusercontent.com/%s/HEAD/" % full
+
+    def fix(m):
+        target = m.group(2).strip()
+        low = target.lower()
+        if low.startswith(("http://", "https://", "//", "data:")):
+            return m.group(0)
+        return m.group(1) + base + target.lstrip("./")
+
+    return re.sub(r"(!\[[^\]]*\]\()\s*([^)\s]+)", fix, str(text or ""))
 
 
 class GithubTrendingSource(RealSource):
@@ -540,6 +624,7 @@ class GithubTrendingSource(RealSource):
         text, name = self._readme(full)
         if not text.strip():
             raise FeedNetError("这个仓库没有取到 README")
+        text = _abs_image_urls(text, full)
         if name.endswith(".rst"):
             body = [Block(BLOCK_P, line.strip()) for line in text.splitlines()
                     if line.strip() and not line.strip().startswith("..")]
