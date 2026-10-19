@@ -1565,7 +1565,10 @@ class NgaSource(RealSource):
             return [], None                    # 拿不到就如实为空（老帖 403 是常态）
         out = []
         base = self._attach_base(data)
-        for it in _nga_rows(data, "__R"):
+        rows = _nga_rows(data, "__R")
+        # NGA 对别人只给 `UID:…` 占位；引用表头里有真名，被引用过的人能反查出来
+        names = _nga_name_from_quotes(rows)
+        for it in rows:
             if int(it.get("lou") or 0) == 0:
                 continue                       # 楼主帖已经在上面的正文里了
             body = self._localize_images(
@@ -1575,7 +1578,7 @@ class NgaSource(RealSource):
             ts = feed_mod.parse_time(it.get("postdatetimestamp") or it.get("postdate"))
             out.append(Comment(
                 cid=str(it.get("pid") or it.get("lou") or len(out)),
-                author=_nga_author(data, it),
+                author=_nga_author(data, it) or names.get(str(it.get("authorid")), ""),
                 created=feed_mod.human_time(ts),
                 score=0,                       # score 这个字段的含义没验证过，不往"赞"上摆
                 body=body,
@@ -1584,23 +1587,59 @@ class NgaSource(RealSource):
         return out, None
 
 
-_NGA_QUOTE_HEAD = (r"^\s*\[pid=[^\]]*\]\s*(?:Reply)?\s*\[/pid\]\s*\[b\]\s*Post by\s*"
-                   r"\[uid=[^\]]*\]([^\[]+)\[/uid\][^\[]*\[/b\]\s*")
-_NGA_QUOTE_HEAD_RE = re.compile(_NGA_QUOTE_HEAD, re.I)
+_NGA_UID_RE = re.compile(r"\[uid=[^\]]*\]\s*([^\[\]]{1,32}?)\s*\[/uid\]", re.I)
 
 
-def _nga_reply_to(html):
-    """NGA 的引用写在正文开头（平铺楼层里唯一准确的信息就是这个 `[uid=]` 后面的名字）：
+def _nga_quote_inner(raw):
+    """正文开头引用块的内部文本（没有引用块返回空串）。"""
+    m = re.match(r"\s*\[quote\](.*?)(?:\[/quote\]|$)", str(raw or ""), re.S | re.I)
+    return m.group(1) if m else ""
 
-        [quote][pid=885058074,47745238,1]Reply[/pid] [b]Post by [uid=2202186]某某某[/uid]
+
+def _nga_quote_head_len(inner):
+    """引用块里"表头"占多长：到第一个 `[/b]` 为止。
+
+    实测见过两种（2026-10-19）：
+
+        [quote][pid=885058074,47745238,1]Reply[/pid] [b]Post by [uid=2202186]某某[/uid]
         (2026-10-19 11:47):[/b]<br/><br/>被引用的那段[/quote]<br/>这条回复自己的话
+        [quote]Reply to [pid=..]Reply[/pid] [b]Post by [uid=..]asas123456789[/uid]
+        (2026-10-19 17:35):[/b]…
+
+    **按 `[b]…[/b]` 切，别按字面词切**：`Reply` / `Reply to` / `发表于` 这些写法都见过，
+    逐种写正则会漏一种就在正文里留一行机器话。没有 `[b]` 的老帖退回到"时间戳结束处"。
     """
-    raw = str(html or "").strip()
-    m = _NGA_QUOTE_HEAD_RE.match(raw)
-    if not m:
-        m = re.search(r"\[quote\]\s*\[pid=[^\]]*\]\s*(?:Reply)?\s*\[/pid\]\s*\[b\]\s*"
-                      r"Post by\s*\[uid=[^\]]*\]([^\[]+)\[/uid\]", raw, re.I)
+    text = str(inner or "")
+    cut = re.search(r"\[/b\]", text)
+    if cut:
+        return cut.end()
+    cut = re.search(r"\d{1,2}:\d{2}\s*[)）]?\s*:?|<br\s*/?>|\n", text)
+    return cut.end() if cut else 0
+
+
+def _nga_reply_to(raw):
+    """这条回复回的是谁：引用块表头里 `[uid=…]名字[/uid]` 的那个名字。"""
+    inner = _nga_quote_inner(raw)
+    m = _NGA_UID_RE.search(inner[:_nga_quote_head_len(inner)])
     return m.group(1).strip() if m else ""
+
+
+def _nga_name_from_quotes(rows):
+    """从各楼引用块的表头里收集 `uid -> 昵称`。
+
+    NGA 的接口对**别人**只给 `UID:12345678` 这种占位串（未登录或权限不够时），但它自己的
+    引用表头里写的是真名。所以"被引用过的人"能靠这个反查出来——比一片"匿名"强，
+    也不用瞎编：查不到的照旧不显示名字。
+    """
+    out = {}
+    for it in rows or []:
+        head = _nga_quote_inner(it.get("content") or "")
+        head = head[:_nga_quote_head_len(head)]
+        for m in re.finditer(r"\[uid=(\d+)\]\s*([^\[\]]{1,32}?)\s*\[/uid\]", head, re.I):
+            uid, name = m.group(1), m.group(2).strip()
+            if name and not name.startswith("UID:"):
+                out[uid] = name
+    return out
 
 
 def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
@@ -1630,8 +1669,8 @@ def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
         # 引用块的表头（`[pid=..]Reply[/pid] [b]Post by [uid=..]某人 (时间):[/b]`）不再是正文的一部分：
         # 收件人已经在表头写成"回复 某人"，留在这里就是一行"Reply Post by ..."的机器话。
         # 剩下被引用的那段包成 <blockquote>，排成引用样式（一眼看出这段是别人说的）。
-        inner = _NGA_QUOTE_HEAD_RE.sub("", m.group(1), count=1)
-        return "<blockquote>%s</blockquote>" % inner
+        inner = m.group(1)
+        return "<blockquote>%s</blockquote>" % inner[_nga_quote_head_len(inner):]
 
     text = re.sub(r"\[quote\](.*?)\[/quote\]", _quote, text, flags=re.I | re.S)
     text = re.sub(r"\[/?[a-z=*\u4e00-\u9fff][^\]]{0,40}\]", "", text)   # [b] [/b] [pid=..] [uid=..]
