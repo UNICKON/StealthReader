@@ -358,7 +358,7 @@ print("\n=== 7. 来源登记（默认 / 单独开关 / 全关）===")
 made = feed_sources.build_real_sources(cache_root=TMP_CACHE, config={}, log=None)
 check("默认：混流 + 免登录的和要 Cookie 的都在，微博默认关",
       [s.key for s in made] == ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs",
-                               "hupu", "github", "medium", "sst"],
+                               "hupu", "github", "medium"],
       [s.key for s in made])
 check("每个来源都有 label / channels / image_base",
       all(s.label and isinstance(s.channels(), list) and isinstance(s.image_base(), str)

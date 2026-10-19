@@ -3611,23 +3611,27 @@ class StealthReader(QWidget):
                 return True
             if event.type() == QEvent.MouseButtonRelease and self.on_viewport_release(event):
                 return True
-        if source == self.text_edit and event.type() == QEvent.Wheel:
-            # 【关键保护】如果既没选书，也不是本地模式，直接拦截滚轮不处理
-            if not self.is_local_mode and not self.current_book:
-                return True
+        # 滚轮：**viewport 和 text_edit 两条路都要接**。Qt 把滚轮发给谁是不一定的
+        # （鼠标停在正文上一般落在 viewport，焦点在控件上时可能落在 text_edit），以前只接了
+        # text_edit，于是本地书页"有时候滚一行、有时候翻一整页"（真人 2026-10-19 反馈）。
+        if (event.type() == QEvent.Wheel and not getattr(self, "_synth_wheel", False)
+                and (source is self.text_edit or source is self.text_edit.viewport())):
             if self.review_mode:
                 # 背诵时滚轮滚的是卡片（交给 Qt 默认逐行滚动），不翻页、不碰书的进度
                 return False
             if self.feed_mode:
-                # 社区页同理：滚它自己（Qt 默认滚动），不翻页、不碰书页的进度
+                # 社区页同理：滚它自己（Qt 默认滚动），不翻页、不碰书页的进度。
+                # **这条要排在"没选书就拦住"前面**：社区页跟书没关系，没选书也得能滚
+                # （以前排在后面，没选书时托盘里进社区页滚轮是死的）。
                 return False
+            # 【关键保护】如果既没选书，也不是本地模式，直接拦截滚轮不处理
+            if not self.is_local_mode and not self.current_book:
+                return True
 
             delta = event.angleDelta().y()
             if self.is_local_mode:
-                if delta < 0:
-                    self.scroll_page(1)
-                elif delta > 0:
-                    self.scroll_page(-1)
+                # 本地书页也逐行（到缓冲区边沿自动衔接），整页翻留给空格/PageDown
+                self._local_wheel_step(delta)
                 return True
             else:
                 scrollbar = self.text_edit.verticalScrollBar()
@@ -3952,8 +3956,24 @@ class StealthReader(QWidget):
             # 网络模式与窗口内行为一致：只滚缓冲区
             QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
             return
+        self._local_wheel_step(delta)
+
+    def _local_wheel_step(self, delta):
+        """本地书页的滚轮 = **逐行**（一格约 3 行），滚到 5000 字缓冲区边沿再自动衔接。
+
+        以前本地模式的滚轮走的是 `scroll_page(±1)`——一格就是一整页；而事件有时落在
+        viewport 上（Qt 默认逐行）有时落在 text_edit 上（我们自己的翻页），真人看到的就是
+        "有时候是行有时候是一页"。现在两条路都走这一个函数：**滚轮永远逐行**，
+        整页翻留给空格/PageDown/点击。"""
         sb = self.text_edit.verticalScrollBar()
-        QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+        # 合成的事件会再次进到 eventFilter（源就是 viewport）：用一个标记让它这一次
+        # 走 Qt 默认的逐行滚动，否则自己调自己会无限递归
+        self._synth_wheel = True
+        try:
+            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+        finally:
+            self._synth_wheel = False
+        moved = False
         if delta < 0 and sb.maximum() > 0 and sb.value() >= sb.maximum() - 2:
             # 缓冲区到底：下一页从"当前视口顶部"衔接，已看的字不重不漏
             cursor = self.text_edit.cursorForPosition(QPoint(0, 0))
@@ -3963,6 +3983,7 @@ class StealthReader(QWidget):
                 self.local_page_history.append(self.local_start_index)
                 self.local_start_index = new_start
                 self.render_local_page()
+                moved = True
         elif delta > 0 and sb.value() <= 2:
             # 缓冲区到顶：渲染更早的 5000 字并停在其底部，从这里继续往上滚
             new_start = max(0, self.local_start_index - 5000)
@@ -3971,6 +3992,11 @@ class StealthReader(QWidget):
                 self.render_local_page()
                 self.text_edit.verticalScrollBar().setValue(
                     self.text_edit.verticalScrollBar().maximum())
+                moved = True
+        if moved and not self._book_veiled():
+            # 缓冲区换了位置才存档（每个滚轮刻度都写盘太浪费）
+            self.config["last_local_pos"] = self.local_start_index
+            self.save_config()
 
     def _synth_wheel_event(self, delta):
         """造一个和真实滚轮等价的事件交给 viewport，走 Qt 默认的逐行滚动路径。"""
