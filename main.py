@@ -4937,11 +4937,43 @@ class StealthReader(QWidget):
         self.feed_load("detail")
         return True
 
+    def _feed_comment_y(self, comment):
+        """这条评论的表头在**视口里的高度**（找不到就 None）。"""
+        if comment is None:
+            return None
+        try:
+            for obj, kind, cur in self.feed_item_blocks():
+                if kind == "comment" and obj is comment:
+                    return self.text_edit.cursorRect(cur).top()
+        except Exception:
+            return None
+        return None
+
     def feed_toggle_collapse(self):
+        """折叠/展开当前这条评论，**屏幕上的位置不动**。
+
+        折叠会把这条评论的正文和整棵子回复从文档里拿掉，文档一下子变短；重画之后
+        `feed_highlight` 又会把目标拉进可见区（不在 12%~88% 那一段才滚，滚到 25% 处），
+        于是人点一下"收起"，整页往上/往下跳一截——真人报的就是这个。
+        现在先记下这条评论表头此刻的屏幕高度，重画完再按差值把滚动条挪回去：
+        被折叠的那一条留在原地，其余内容在它下面收起/展开。
+        """
         nav = self.feed_nav
-        if nav is None or nav.view != "detail" or not nav.toggle_collapse():
+        if nav is None or nav.view != "detail":
+            return False
+        target = nav.current_comment()
+        y_before = self._feed_comment_y(target)
+        if not nav.toggle_collapse():
             return False
         self.render_feed()              # 折叠改变了文档结构，只能重画
+        y_after = self._feed_comment_y(target)
+        if y_before is not None and y_after is not None and y_after != y_before:
+            try:
+                sb = self.text_edit.verticalScrollBar()
+                sb.setValue(int(max(sb.minimum(), min(sb.maximum(),
+                                                    sb.value() + (y_after - y_before)))))
+            except Exception:
+                pass
         return True
 
     def feed_reload(self):

@@ -1144,6 +1144,58 @@ check("收起后给了一行摘要（看得出这条在说什么）", "很长的
 check("再点一下展开回全文", w.feed_toggle_collapse() is True
       and _long in w.text_edit.toPlainText())
 
+# === 14. 点折叠：被点的那一条留在原地（页面不跳） ===
+print("\n=== 14. 折叠评论不挪页面 ===")
+
+
+def _settle(n=8):
+    for _ in range(n):
+        qapp.processEvents()
+        time.sleep(0.02)
+
+_many = [feed_sources.Comment(
+    cid="m%d" % i, author="甲%d" % i, created="10-19", score=i,
+    body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="第 %d 条。" % i + "话" * 70),
+          feed_sources.Block(kind=feed_sources.BLOCK_P, text="第二段。" + "呀" * 40)],
+    replies=[feed_sources.Comment(cid="m%d-r" % i, author="乙%d" % i, body=[
+        feed_sources.Block(kind=feed_sources.BLOCK_P, text="回复。" + "哦" * 30)])]
+    if i % 2 == 0 else [])
+    for i in range(14)]
+w.feed_nav.view = "detail"
+w.feed_nav.post = _ans_post
+w.feed_nav.stack = []
+w.feed_nav.set_detail(_ans_post, _many)
+w.feed_nav.collapsed = set()
+w.feed_nav.c_index = 0
+w.render_feed()
+_settle()
+_sb = w.text_edit.verticalScrollBar()
+check("这一页够长、真的能滚（不然这条断言没意义）", _sb.maximum() > 200, _sb.maximum())
+_sb.setValue(int(_sb.maximum() * 0.45))
+_settle()
+_vh = w.text_edit.viewport().height()
+_pick = None
+for _i, (_c, _d, _p) in enumerate(w.feed_nav.visible_comments()):
+    _y = w._feed_comment_y(_c)
+    if _y is not None and 40 <= _y <= _vh - 40:
+        _pick = (_i, _c, _y)
+        break
+check("折叠之前，视口里挑得到一条评论", _pick is not None, _pick)
+if _pick:
+    _i, _c, _y0 = _pick
+    w.feed_nav.c_index = _i
+    w.feed_toggle_collapse()
+    _settle()
+    _y1 = w._feed_comment_y(_c)
+    check("点折叠：被点的那一条留在原来的高度（整页不跳）",
+          _y1 is not None and abs(_y1 - _y0) <= 4, (_y0, _y1))
+    check("折叠确实生效了（不然上面那条是空过）", _c.id in w.feed_nav.collapsed,
+          w.feed_nav.collapsed)
+    w.feed_toggle_collapse()
+    _settle()
+    _y2 = w._feed_comment_y(_c)
+    check("再点展开：也留在原地", _y2 is not None and abs(_y2 - _y0) <= 4, (_y0, _y2))
+
 w.feed_sources = list(ORIG_SOURCES)          # 把第 6 节换掉的替身来源还原回来
 w.feed_source_i = [i for i, s in enumerate(w.feed_sources) if s.key == "demo"][0] \
     if any(s.key == "demo" for s in w.feed_sources) else 0
