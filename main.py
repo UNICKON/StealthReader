@@ -5017,8 +5017,18 @@ class StealthReader(QWidget):
         except Exception:
             chans = []
         remembered = str(self.config.get(self.feed_board_key()) or "")
-        if remembered and remembered in chans:
-            return remembered
+        if remembered:
+            if remembered in chans:
+                return remembered
+            # 记住的那一栏不在 channels() 里，但来源自己认（虎扑手填过 slug、NGA 改过版面表）：
+            # 照样用它——"上次看的是哪一栏，下次还回哪一栏"比"必须在本表里"更重要。
+            check = getattr(src, "accepts_channel", None)
+            if callable(check):
+                try:
+                    if check(remembered):
+                        return remembered
+                except Exception:
+                    pass
         return chans[0] if chans else "全部"
 
     def feed_cycle_source(self, step):
@@ -5069,6 +5079,8 @@ class StealthReader(QWidget):
         try:
             i = channels.index(self.feed_nav.channel)
         except ValueError:
+            # 当前这一栏不在表里（手填的 slug / 记忆里老名字）：就从它接着往后走
+            channels = [self.feed_nav.channel] + channels
             i = 0
         self.feed_nav.channel = channels[(i + step) % len(channels)]
         self.config[self.feed_board_key()] = self.feed_nav.channel
@@ -5146,18 +5158,28 @@ class StealthReader(QWidget):
         labels = []
         for b in boards:
             group = str(b.get("group") or "").strip()
-            labels.append(("%s · %s" % (group, b["label"])) if group else b["label"])
+            heat = str(b.get("heat") or "").strip()
+            bits = [x for x in (group, b["label"], heat) if x]
+            labels.append(" · ".join(bits))
         cur = 0
         for i, b in enumerate(boards):
             if b["label"] == self.feed_nav.channel:
                 cur = i
                 break
-        title = "%s · 换板块（共 %d 个，可以打字筛）" % (self.feed_source_label(), len(boards))
-        pick, ok = QInputDialog.getItem(self, title, "板块：", labels, cur, False)
+        title = ("%s · 换板块（共 %d 个，打字筛；也可以直接填 slug，比如 vote）"
+                 % (self.feed_source_label(), len(boards)))
+        # editable=True：表里搜不到时，可以直接填一个 slug（虎扑那种 /vote、/bxj 的）
+        pick, ok = QInputDialog.getItem(self, title, "板块：", labels, cur, True)
         if not ok or not pick:
             return False
-        i = labels.index(pick)
-        return self.feed_goto_channel(boards[i]["label"])
+        pick = str(pick).strip()
+        if pick in labels:
+            return self.feed_goto_channel(boards[labels.index(pick)]["label"])
+        check = getattr(src, "accepts_channel", None)
+        if pick and (not callable(check) or check(pick)):
+            return self.feed_goto_channel(pick)
+        self.review_hint("这个来源没有「%s」这个板块" % pick[:14], 1800)
+        return False
 
     def feed_source_picker(self):
         """社区（来源）选择器：一个可搜索的列表，选完立刻切过去。"""

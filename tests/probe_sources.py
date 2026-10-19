@@ -971,13 +971,35 @@ if raw_hl is None or raw_ht is None:
     skip("虎扑夹具", "缺 hupu_list.html / hupu_thread.html（先跑 tests/record_fixtures.py hupu）")
 else:
     hp = feed_sources.HupuSource(
-        FakeHttp(bytes_routes={"/bxj": raw_hl, "643064746.html": raw_ht}, cache=MemCache()))
-    check("虎扑的栏目就是真版面（17 个，名字和 slug 都不重复）",
-          len(hp.channels()) == 17 and len(set(hp.channels())) == 17, len(hp.channels()))
+        FakeHttp(bytes_routes={"/bxj": raw_hl, "/vote": raw_hl, "/topic-daily": raw_hl,
+                               "643064746.html": raw_ht}, cache=MemCache()))
+    check("虎扑的栏目 = 精选打头 + 全量目录（名字不重复，第一个还是步行街主干道）",
+          len(hp.channels()) > 200 and len(set(hp.channels())) == len(hp.channels())
+          and hp.channels()[0] == "步行街主干道", len(hp.channels()))
     check("板块表是静态的：boards() 不发网络请求，label/slug 双向翻译都对，认不出退回步行街",
           hp.http.calls == [] and hp.board_fid("篮球场") == "nba"
           and hp.board_label("nba") == "篮球场" and hp.board_fid("不认识的") == "bxj",
           (hp.http.calls, hp.board_fid("篮球场"), hp.board_label("nba")))
+    # 真人点名要的那个板：湿乎乎的话题（/vote）
+    check("湿乎乎的话题在板块表里，名字和 slug 双向都通",
+          "湿乎乎的话题" in hp.channels() and hp.board_fid("湿乎乎的话题") == "vote"
+          and hp.board_label("vote") == "湿乎乎的话题",
+          (hp.board_fid("湿乎乎的话题"), hp.board_label("vote")))
+    hp_boards = hp.boards()
+    _wet = [b for b in hp_boards if b["label"] == "湿乎乎的话题"]
+    check("板块搜索表里带分类和热度（湿乎乎：NBA · 18.7w）",
+          len(_wet) == 1 and _wet[0]["group"] == "NBA" and _wet[0]["heat"] == "18.7w"
+          and _wet[0]["fid"] == "vote", _wet)
+    check("板块表按名字去重（没有两条一样的板名）",
+          len(hp_boards) == len(set(b["label"] for b in hp_boards)), len(hp_boards))
+    check("手填 slug 也认（vote / bxj / lakers），中文乱填的不认",
+          hp.accepts_channel("vote") and hp.accepts_channel("bxj")
+          and hp.accepts_channel("lakers") and not hp.accepts_channel("这不是板"),
+          (hp.accepts_channel("vote"), hp.accepts_channel("这不是板")))
+    hp.http.calls.clear()
+    hp.list("湿乎乎的话题", 0)
+    check("选湿乎乎真的去请求 /vote（不是悄悄退回步行街）",
+          any(u.rstrip("/").endswith("/vote") for u in hp.http.calls), hp.http.calls)
     hp_posts, hp_nxt = hp.list("步行街主干道", 0)
     check("（真夹具）版面列表解出 12 条，标题/作者/回复/浏览都在",
           len(hp_posts) == 12 and all(p.title and p.author for p in hp_posts),
@@ -991,7 +1013,11 @@ else:
           all(p.ts > 0 for p in hp_posts), [p.created for p in hp_posts[:3]])
     check("（真夹具）有一页就说明还有下一页（12 条 < 阈值 20 → 没有下一页）",
           hp_nxt is None, hp_nxt)
-    hp.list("步行街主干道", 2)
+    check("「步行街主干道」按目录里那条走（/topic-daily，不是老的 /bxj）",
+          hp.board_fid("步行街主干道") == "topic-daily" and hp.board_fid("bxj") == "bxj",
+          (hp.board_fid("步行街主干道"), hp.board_fid("bxj")))
+    hp.list("bxj", 0)
+    hp.list("bxj", 2)
     urls = hp.http.calls
     check("翻页：第 1 页 /bxj，第 2 页 /bxj-2（?page=2 在虎扑不生效）",
           any(u.endswith("/bxj") for u in urls) and any(u.endswith("/bxj-2") for u in urls),

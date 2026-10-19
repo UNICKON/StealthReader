@@ -30,6 +30,7 @@ from html import escape as html_escape
 from urllib.parse import quote, unquote
 
 import feed as feed_mod
+import hupu_boards
 from feed import Block, Comment, Post, SourceAdapter, BLOCK_IMG, BLOCK_P, BLOCK_QUOTE
 import feed_net
 import xhs_sign
@@ -1976,7 +1977,21 @@ HUPU_BOARDS = (
     ("历史区", "history"),
     ("恋爱区", "love"),
     ("股票区", "stock"),
+    # 真人点名要的：湿乎乎的话题（`/vote`）。它在首页目录里也有，这里放到精选里图个顺手。
+    ("湿乎乎的话题", "vote"),
 )
+
+# 全量目录（`hupu_boards.py` 是生成物：255 个板，带分类和热度，2026-10-19 抓的）。
+# 两个方向各做一张表：`label -> slug` 给"按名字打开板"，`slug -> (分类, 板名, 帖数, 热度)`
+# 给"按 slug 打开"和选择器里的显示。
+HUPU_SLUG_OF = {}
+HUPU_BY_SLUG = {}
+for _group, _name, _slug, _count, _heat in hupu_boards.CATALOG:
+    HUPU_BY_SLUG.setdefault(_slug, (_group, _name, _count, _heat))
+    HUPU_SLUG_OF.setdefault(_name, _slug)
+for _label, _slug in HUPU_BOARDS:
+    HUPU_SLUG_OF.setdefault(_label, _slug)
+    HUPU_BY_SLUG.setdefault(_slug, ("精选", _label, 0, ""))
 
 
 def _hupu_rows(html):
@@ -2074,26 +2089,81 @@ class HupuSource(RealSource):
     MAX_PAGE_BYTES = 3000000
 
     def channels(self):
-        return list(self.CHANNELS)
+        """栏目 = 精选那几栏打头，后面跟全量目录（255 个板，同名去重）。
+
+        精选打头是为了"第一次进虎扑落在步行街主干道"、`[`/`]` 之后按 `.` 也是熟悉的那几栏；
+        后面接全量目录，真人按 `C` 就能一路往下跳（空板自动跳过，见 main.py 的
+        `feed_cycle_channel_skip`），按 `V` 能打字搜任何一个板。"""
+        out = list(self.CHANNELS)
+        seen = set(out)
+        for _group, name, _slug, _count, _heat in hupu_boards.CATALOG:
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+        return out
 
     def board_fid(self, channel):
-        """栏目名（或直接给的 slug）→ 虎扑的 slug。认不出来就退回步行街。"""
+        """栏目名 / slug → 虎扑的 slug。认不出来就退回步行街。
+
+        除了精选表和目录，还认"看着像 slug 的串"（`vote`、`bxj`、`lakers`）——这样在
+        板块搜索框里直接填一个 slug 也能进；真打错了页面会落回首页（标题里没有板名），
+        下一页也就没有帖子，界面上看得很清楚。
+        """
         s = str(channel or "").strip()
-        for label, slug in HUPU_BOARDS:
-            if s == label or s == slug:
-                return slug
+        if not s:
+            return HUPU_BOARDS[0][1]
+        if s in HUPU_SLUG_OF:
+            return HUPU_SLUG_OF[s]
+        if s in HUPU_BY_SLUG:
+            return s
+        if re.match(r"^[A-Za-z0-9][A-Za-z0-9\-]{1,24}$", s):
+            return s
         return HUPU_BOARDS[0][1]
 
     def board_label(self, fid):
+        """slug → 板名（目录里查得到就用真名，查不到就把 slug 原样显示）。"""
         s = str(fid or "").strip()
-        for label, f in HUPU_BOARDS:
-            if s == f:
-                return label
-        return s
+        hit = HUPU_BY_SLUG.get(s)
+        return hit[1] if hit else s
+
+    def accepts_channel(self, channel):
+        """这个来源认不认这一栏（选择器里手填的名字/slug 靠它把关）。"""
+        s = str(channel or "").strip()
+        if not s:
+            return False
+        return (s in HUPU_SLUG_OF or s in HUPU_BY_SLUG
+                or bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\-]{1,24}$", s)))
 
     def boards(self, force=False):
-        """板块表是**静态**的（已经逐条验证过），不需要联网，所以这里不发请求。"""
-        return [{"label": label, "fid": slug, "group": "虎扑"} for label, slug in HUPU_BOARDS]
+        """全量板块表（静态生成物，不联网）：255 个板，带分类和热度。
+
+        `heat` 是虎扑首页给的"帖子总数"文本（如 `18.7w`）；`count` 是同一个数的整数形态。
+        `count == 0` 的板子是真的没内容（目录里有 15 个），按 `C` 跳的时候直接跳过。"""
+        out = []
+        have_label, have_slug = set(), set()
+        for label, slug in HUPU_BOARDS:          # 精选那几栏排最前面（名字和 slug 都不重复）
+            # 目录里也有这个板（湿乎乎 /vote、篮球场 /nba …）就用目录里的真分类和热度，
+            # 别看它是"精选"就当成没有热度——那会让选择器里显示成 `精选 · 湿乎乎的话题`。
+            fid = HUPU_SLUG_OF.get(label) or slug      # 目录里同名的那条更权威（bxj -> topic-daily）
+            meta = HUPU_BY_SLUG.get(fid) or ()
+            if len(meta) == 4 and meta[3]:
+                out.append({"label": label, "fid": fid, "group": meta[0],
+                            "count": meta[2], "heat": meta[3]})
+            else:
+                out.append({"label": label, "fid": fid, "group": "精选",
+                            "count": 0, "heat": ""})
+            have_label.add(label)
+            have_slug.add(fid)
+        for group, name, slug, count, heat in hupu_boards.CATALOG:
+            # 同一个板可能既有"精选名"又有"目录名"（步行街主干道 bxj / topic-daily）：
+            # label 或 slug 撞了就不再重复放——选择器里出现两条一模一样的名字最难用。
+            if name in have_label or slug in have_slug:
+                continue
+            out.append({"label": name, "fid": slug, "group": group,
+                        "count": count, "heat": heat})
+            have_label.add(name)
+            have_slug.add(slug)
+        return out
 
     def _headers(self):
         return {"User-Agent": self.UA, "Referer": self.base_url + "/"}
