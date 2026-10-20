@@ -24,6 +24,7 @@ import concurrent.futures
 import json
 import os
 import re
+import sys
 import threading
 import time
 from html import escape as html_escape
@@ -58,9 +59,16 @@ SOURCE_CHOICES = (
 )
 
 
+def app_root():
+    """应用数据目录：源码运行时是本包目录，冻结成 exe 后是 exe 所在目录。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def auth_path(root=None):
     """`feed_auth.json` 在哪（应用目录，已 gitignore）。"""
-    root = root or os.path.dirname(os.path.abspath(__file__))
+    root = root or app_root()
     return os.path.join(root, "feed_auth.json")
 
 
@@ -2633,7 +2641,7 @@ def build_real_sources(cache_root=None, config=None, log=None):
     linux.do / 知乎 / NGA（顺序由下面这张表定，不跟着配置串的顺序走，这样按键顺序永远可预期）。"""
     config = config or {}
     cache = feed_net.Cache(cache_root) if cache_root else None
-    auth = load_auth(os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_auth.json"))
+    auth = load_auth(auth_path())
     enabled = config.get("feed_sources", None)
     if enabled is None:
         # 配置里没写过 -> 默认这几个；写成空列表 = 用户把它们全关了（只剩离线示例）。

@@ -1,9 +1,10 @@
 import sys
 import os
 
-# 自带依赖目录（PyQt5 / keyboard 都解包在 libs/）：不依赖启动器设置 PYTHONPATH，
-# 任何方式拉起本文件都能活。必须放在 import keyboard 之前。
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs"))
+# 开发态：PyQt5 / keyboard 解包在 libs/，不依赖启动器设置 PYTHONPATH，
+# 必须放在 import keyboard 之前。冻结成 exe 后依赖已打进包内，跳过。
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs"))
 
 import requests
 import json
@@ -74,7 +75,28 @@ except Exception as _weread_import_err:     # pragma: no cover
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
 QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
 
-CONFIG_FILE = "config.json"
+def _app_dir():
+    """可写目录：配置、标注、缓存、日志都放在这里。
+
+    源码运行时是本文件所在目录；冻结成 exe 后是 exe 所在目录——PyInstaller
+    单文件模式的 __file__ 指向临时解包目录，重启即消失，不能用来存数据。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _resource_dir():
+    """只读资源目录：随程序分发的示例数据等。"""
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", _app_dir())
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIR = _app_dir()
+RES_DIR = _resource_dir()
+
+CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
 # 行距（字号行高的百分比）、段间距（同样以行高为基准）、页边距（逻辑像素）
 LINE_SPACING_MIN = 80
@@ -740,7 +762,7 @@ def force_window_to_primary(hwnd, margin=60):
 def log_event(msg):
     """追加一行到 main.py 旁边的 stealthreader.log，失败静默（日志不能反过来影响功能）。"""
     try:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stealthreader.log")
+        path = os.path.join(APP_DIR, "stealthreader.log")
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%m-%d %H:%M:%S')} {msg}\n")
     except Exception:
@@ -835,7 +857,7 @@ def simplify_anki_html(html):
 
 
 def annotations_file():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "annotations.json")
+    return os.path.join(APP_DIR, "annotations.json")
 
 
 def load_annotations():
@@ -2886,9 +2908,8 @@ class StealthReader(QWidget):
         if FEED_OK:
             try:
                 self.feed_sources = feed_mod.build_sources(
-                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_demo"),
-                    cache_root=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                            "cache", "feed"),
+                    os.path.join(RES_DIR, "feed_demo"),
+                    cache_root=os.path.join(APP_DIR, "cache", "feed"),
                     config=self.config, log=log_event)
             except Exception as _e:
                 log_event(f"社区源登记失败: {_e}")
@@ -6996,8 +7017,8 @@ class StealthReader(QWidget):
             log_event(WEREAD_IMPORT_HINT)
             return
         client = weread_mod.build_weread(
-            cache_root=os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache"),
-            root=os.path.dirname(os.path.abspath(__file__)), log=log_event)
+            cache_root=os.path.join(APP_DIR, "cache"),
+            root=APP_DIR, log=log_event)
         self.weread_dialog = WereadShelfDialog(client, self)
         self.weread_dialog.exec_()
         self.weread_dialog = None
@@ -7903,9 +7924,8 @@ class StealthReader(QWidget):
             cur = ""
         try:
             self.feed_sources = feed_mod.build_sources(
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_demo"),
-                cache_root=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                        "cache", "feed"),
+                os.path.join(RES_DIR, "feed_demo"),
+                cache_root=os.path.join(APP_DIR, "cache", "feed"),
                 config=self.config, log=log_event)
         except Exception as exc:
             log_event("重建社区来源失败: %s" % exc)
