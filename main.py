@@ -116,6 +116,11 @@ FIRST_LINE_INDENT_DEFAULT = 2.0
 # 翻页时保留的上一页行数。翻一整页仍留几行上文，接续处才不用回头找
 PAGE_OVERLAP_LINES = 2
 PAGE_OVERLAP_MAX = 5
+# 方向键滚动的行数：一屏通常十几行，3 行接近滚轮转一格的观感
+ARROW_SCROLL_LINES = 3
+ARROW_SCROLL_MAX = 20
+# 滚轮一格 120 → 约 3 行。方向键按行数折算成滚轮量，两者滚动速度才不会差一截
+WHEEL_DELTA_PER_LINE = 40
 
 
 def clamp_config_int(config, key, default, low, high):
@@ -148,6 +153,7 @@ DEFAULT_CONFIG = {
     "first_line_indent": FIRST_LINE_INDENT_DEFAULT,
     "paragraph_indent": True,
     "page_overlap_lines": PAGE_OVERLAP_LINES,
+    "arrow_scroll_lines": ARROW_SCROLL_LINES,
     # 标题永远不缩进；这个键只作为 txt 猜错标题时的手动开关，不在界面上
     "heading_no_indent": True,
     "peek_key": "ctrl+e",
@@ -1189,6 +1195,13 @@ FEED_KEY_NAMES = {
 for _ch in "CEJKORVZ":
     FEED_KEY_NAMES[ord(_ch)] = getattr(Qt, "Key_" + _ch)
 
+# 偷瞄 + 书页时归我们的键：翻页与逐行滚动。这些键以前在偷瞄里算"别的输入"，
+# 一按就退出偷瞄——想翻页反而把窗口收了，于是"按空格把 ce 打破了"。
+BOOK_KEY_NAMES = {
+    0x20: "space", 0x21: "pageup", 0x22: "pagedown",
+    0x25: "left", 0x26: "up", 0x27: "right", 0x28: "down",
+}
+
 # 窗口内的 Qt 键 → 复习键名。窗口内这一套走 keyPressEvent，不经过任何钩子：
 # 窗口不是当前活动窗口就收不到，所以不会妨碍你在别的软件里打字。
 # 空格/回车在窗口内**永远**是翻面键（不翻面就没法用）；设置项只管"偷瞄时要不要全局捕获"。
@@ -1353,6 +1366,13 @@ class GlobalInputHook:
                         fk = FEED_KEY_NAMES.get(int(info.vkCode))
                         if fk is not None:
                             self.owner.feed_key_signal.emit(int(fk))
+                            return 1
+                    if self.owner.peek_captures_book_keys():
+                        # 偷瞄着看书：翻页键和方向键也是我们自己的，收了交给主线程，
+                        # 窗口不聚焦也能翻，而且不退出偷瞄。
+                        bk = BOOK_KEY_NAMES.get(int(info.vkCode))
+                        if bk is not None:
+                            self.owner.book_key_signal.emit(bk)
                             return 1
                     self.owner.peek_exit_signal.emit("key")
                     return 0  # 其他按键放行（也退出偷瞄）
@@ -2024,7 +2044,7 @@ class SettingsDialog(QDialog):
             key: self.config.get(key) for key in
             ("font_size", "font_family", "line_spacing", "paragraph_spacing",
              "page_margin_chars", "first_line_indent", "paragraph_indent",
-             "feed_font_size", "feed_font_family")
+             "arrow_scroll_lines", "feed_font_size", "feed_font_family")
         }
 
         self.cookie_edits = {}      # 这一轮贴/找到的 Cookie：点保存才写进 feed_auth.json
@@ -2201,6 +2221,16 @@ class SettingsDialog(QDialog):
         self.add_row(lay, "页边距", self.margin_spin,
                      "文字四周的留白（上下左右相同），单位是「字」——1 字 = 一个全角空格宽，\n"
                      "随字号字体等比变化。窗口很窄时别设太大，会挤掉每行字数。")
+
+        self.arrow_spin = QSpinBox()
+        self.arrow_spin.setRange(1, ARROW_SCROLL_MAX)
+        self.arrow_spin.setSuffix(" 行")
+        self.arrow_spin.setValue(clamp_config_int(self.config, "arrow_scroll_lines",
+                                                 ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX))
+        self.arrow_spin.valueChanged.connect(self.on_typography_change)
+        self.add_row(lay, "方向键滚动", self.arrow_spin,
+                     "上下箭头每次滚动的行数，和滚轮一个手感（滚轮一格约 3 行）。\n"
+                     "整页翻仍然是空格 / PageUp / PageDown / 左右箭头。")
 
         self.para_indent_check = QCheckBox("段落缩进")
         self.para_indent_check.setChecked(bool(self.config.get("paragraph_indent", True)))
@@ -2637,6 +2667,7 @@ class SettingsDialog(QDialog):
         self.config["line_spacing"] = self.spacing_spin.value()
         self.config["paragraph_spacing"] = self.para_spin.value()
         self.config["page_margin_chars"] = self.margin_spin.value()
+        self.config["arrow_scroll_lines"] = self.arrow_spin.value()
         self.config["first_line_indent"] = self.indent_spin.value()
         self.config["paragraph_indent"] = self.para_indent_check.isChecked()
         if self.main_window:
@@ -2735,6 +2766,7 @@ class SettingsDialog(QDialog):
         self.config["line_spacing"] = self.spacing_spin.value()
         self.config["paragraph_spacing"] = self.para_spin.value()
         self.config["page_margin_chars"] = self.margin_spin.value()
+        self.config["arrow_scroll_lines"] = self.arrow_spin.value()
         self.config["first_line_indent"] = self.indent_spin.value()
         self.config["paragraph_indent"] = self.para_indent_check.isChecked()
         if self.feed_font_check.isChecked():
@@ -2818,6 +2850,8 @@ class StealthReader(QWidget):
     review_key_signal = pyqtSignal(str)
     # 社区页的键也来自钩子线程（偷瞄时窗口不聚焦，只能在全局层收），发回主线程处理
     feed_key_signal = pyqtSignal(int)
+    # 书页的翻页/滚动键同理：偷瞄里按空格、方向键不该被当成"别的输入"而退出偷瞄
+    book_key_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -2979,6 +3013,7 @@ class StealthReader(QWidget):
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
         self.feed_key_signal.connect(self.on_feed_peek_key, Qt.QueuedConnection)
+        self.book_key_signal.connect(self.on_peek_book_key, Qt.QueuedConnection)
         self.bookshelf_updated_signal.connect(self.on_bookshelf_updated)
         # 最后一道保险：任何退出路径（托盘退出、右键退出、关窗、异常退出）都要停掉 Anki
         # 后台线程。QThread 还在跑就被析构，PyQt 会直接崩，而且 Anki 可能停在"藏起来"的状态。
@@ -3586,15 +3621,48 @@ class StealthReader(QWidget):
             target_val = current_val + (direction * (self.text_edit.viewport().height() - 30))
 
             if direction > 0:
-                if current_val >= max_val - 5:
+                if current_val >= max_val:
                     self.next_chapter()
                 else:
                     scrollbar.setValue(min(target_val, max_val))
             else:
-                if current_val <= min_val + 5:
+                if current_val <= min_val:
                     self.prev_chapter()
                 else:
                     scrollbar.setValue(max(target_val, min_val))
+
+    def scroll_lines(self, direction):
+        """方向键 = 逐行滚动，和滚轮完全同一套（含缓冲区边沿的衔接）。
+
+        以前上下箭头直通 `scroll_page`：按一下整页翻，翻过头只能再翻回来；
+        "往上滚一点"和"往上翻一页"还是同一个动作。行数可以在配置里调
+        （`arrow_scroll_lines`，默认 3 行），按行数折算成滚轮量，两者速度一致。
+        """
+        lines = clamp_config_int(self.config, "arrow_scroll_lines",
+                                 ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
+        delta = -int(direction) * WHEEL_DELTA_PER_LINE * lines
+
+        if self.feed_mode or (self.review_mode and not self.safe_mode):
+            # 社区页、卡片页：滚它们自己，不碰书页
+            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+            return
+        if self.is_local_mode and self.local_full_text:
+            self._local_wheel_step(delta)
+            return
+        if not self.current_book:
+            return
+        # 网络模式：先让它自己滚；**滚不动了**（真的在两端）才换章。
+        # 以前是不管滚没滚，只要位置靠近两端就换章——边缘几像素内往上滚一下，
+        # 整章就被翻走了。
+        sb = self.text_edit.verticalScrollBar()
+        before = sb.value()
+        QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+        if sb.value() != before:
+            return
+        if direction > 0:
+            self.next_chapter()
+        else:
+            self.prev_chapter()
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -4129,12 +4197,14 @@ class StealthReader(QWidget):
                 return True
             else:
                 scrollbar = self.text_edit.verticalScrollBar()
+                # 只在**真的滚不动**时换章：以前留了 2px 余量，滚到离两端还差一两像素
+                # 就把下一章/上一章翻出来了，读起来像"滚着滚着突然翻页"。
                 if delta < 0:
-                    if scrollbar.value() >= scrollbar.maximum() - 2:
+                    if scrollbar.value() >= scrollbar.maximum():
                         self.next_chapter()
                         return True
                 elif delta > 0:
-                    if scrollbar.value() <= scrollbar.minimum() + 2:
+                    if scrollbar.value() <= scrollbar.minimum():
                         self.prev_chapter()
                         return True
         return super().eventFilter(source, event)
@@ -6614,6 +6684,32 @@ class StealthReader(QWidget):
             return
         self.on_feed_key(int(key))
 
+    def peek_captures_book_keys(self):
+        """偷瞄这一层要不要把书页的翻页/滚动键收下来。
+
+        社区页和卡片页各有自己的一套（见上面两个捕获），这里只管书页。
+        安全文档也算书页：内容不同，翻页方式一样。"""
+        if not self.peek_mode:
+            return False
+        if self.feed_mode:
+            return False
+        if self.review_mode and not self.safe_mode:
+            return False
+        return True
+
+    def on_peek_book_key(self, name):
+        """偷瞄时收到的书页键（主线程）：上下箭头逐行滚，其余整页翻。"""
+        if not self.peek_mode:
+            return
+        if name == "down":
+            self.scroll_lines(1)
+        elif name == "up":
+            self.scroll_lines(-1)
+        elif name in ("space", "pagedown", "right"):
+            self.scroll_page(1)
+        elif name in ("pageup", "left"):
+            self.scroll_page(-1)
+
     def on_review_key(self, name):
         """复习键回调。信号从钩子线程发过来，QueuedConnection 保证在这里是主线程。"""
         if not self.review_mode:
@@ -8022,9 +8118,13 @@ class StealthReader(QWidget):
             elif key in [Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp]:
                 sb.setValue(max(sb.minimum(), sb.value() - page))
             return
-        if key in [Qt.Key_Right, Qt.Key_Down, Qt.Key_Space, Qt.Key_PageDown]:
+        if key in (Qt.Key_Down, Qt.Key_Up):
+            # 上下箭头 = 逐行滚动（行数可调），和滚轮一个手感；
+            # 整页翻留给空格/PageDown/PageUp/左右箭头
+            self.scroll_lines(1 if key == Qt.Key_Down else -1)
+        elif key in [Qt.Key_Right, Qt.Key_Space, Qt.Key_PageDown]:
             self.scroll_page(1)
-        elif key in [Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp]:
+        elif key in [Qt.Key_Left, Qt.Key_PageUp]:
             self.scroll_page(-1)
 
     def closeEvent(self, event):
