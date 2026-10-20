@@ -116,11 +116,9 @@ FIRST_LINE_INDENT_DEFAULT = 2.0
 # 翻页时保留的上一页行数。翻一整页仍留几行上文，接续处才不用回头找
 PAGE_OVERLAP_LINES = 2
 PAGE_OVERLAP_MAX = 5
-# 方向键滚动的行数：一屏通常十几行，3 行接近滚轮转一格的观感
+# 每次滚动的行数：上下箭头与鼠标滚轮共用同一个值（一格 = 这么多行）
 ARROW_SCROLL_LINES = 3
 ARROW_SCROLL_MAX = 20
-# 滚轮一格 120 → 约 3 行。方向键按行数折算成滚轮量，两者滚动速度才不会差一截
-WHEEL_DELTA_PER_LINE = 40
 
 
 def clamp_config_int(config, key, default, low, high):
@@ -2228,9 +2226,9 @@ class SettingsDialog(QDialog):
         self.arrow_spin.setValue(clamp_config_int(self.config, "arrow_scroll_lines",
                                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX))
         self.arrow_spin.valueChanged.connect(self.on_typography_change)
-        self.add_row(lay, "方向键滚动", self.arrow_spin,
-                     "上下箭头每次滚动的行数，和滚轮一个手感（滚轮一格约 3 行）。\n"
-                     "整页翻仍然是空格 / PageUp / PageDown / 左右箭头。")
+        self.add_row(lay, "滚动行数", self.arrow_spin,
+                     "上下箭头和鼠标滚轮每次滚动的行数（滚轮转一格 = 这么多行）。\n"
+                     "整页翻仍然由空格 / PageUp / PageDown / 左右箭头负责。")
 
         self.para_indent_check = QCheckBox("段落缩进")
         self.para_indent_check.setChecked(bool(self.config.get("paragraph_indent", True)))
@@ -3636,33 +3634,11 @@ class StealthReader(QWidget):
 
         以前上下箭头直通 `scroll_page`：按一下整页翻，翻过头只能再翻回来；
         "往上滚一点"和"往上翻一页"还是同一个动作。行数可以在配置里调
-        （`arrow_scroll_lines`，默认 3 行），按行数折算成滚轮量，两者速度一致。
+        （`arrow_scroll_lines`，默认 3 行）——**滚轮也吃这个值**。
         """
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
-        delta = -int(direction) * WHEEL_DELTA_PER_LINE * lines
-
-        if self.feed_mode or (self.review_mode and not self.safe_mode):
-            # 社区页、卡片页：滚它们自己，不碰书页
-            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
-            return
-        if self.is_local_mode and self.local_full_text:
-            self._local_wheel_step(delta)
-            return
-        if not self.current_book:
-            return
-        # 网络模式：先让它自己滚；**滚不动了**（真的在两端）才换章。
-        # 以前是不管滚没滚，只要位置靠近两端就换章——边缘几像素内往上滚一下，
-        # 整章就被翻走了。
-        sb = self.text_edit.verticalScrollBar()
-        before = sb.value()
-        QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
-        if sb.value() != before:
-            return
-        if direction > 0:
-            self.next_chapter()
-        else:
-            self.prev_chapter()
+        self.scroll_px(int(direction) * lines * self._line_height_px())
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -4176,37 +4152,25 @@ class StealthReader(QWidget):
         # 滚轮：**viewport 和 text_edit 两条路都要接**。Qt 把滚轮发给谁是不一定的
         # （鼠标停在正文上一般落在 viewport，焦点在控件上时可能落在 text_edit），以前只接了
         # text_edit，于是本地书页"有时候滚一行、有时候翻一整页"（真人 2026-10-19 反馈）。
-        if (event.type() == QEvent.Wheel and not getattr(self, "_synth_wheel", False)
+        if (event.type() == QEvent.Wheel
                 and (source is self.text_edit or source is self.text_edit.viewport())):
-            if self.review_mode:
-                # 背诵时滚轮滚的是卡片（交给 Qt 默认逐行滚动），不翻页、不碰书的进度
-                return False
-            if self.feed_mode:
-                # 社区页同理：滚它自己（Qt 默认滚动），不翻页、不碰书页的进度。
+            delta = event.angleDelta().y()
+            if not delta:
+                return super().eventFilter(source, event)     # 横向滚轮/倾斜轮：不抢
+            if self.review_mode or self.feed_mode:
+                # 卡片页、社区页：滚它们自己（同样是设置里那几行），不接页、不碰书页进度。
                 # **这条要排在"没选书就拦住"前面**：社区页跟书没关系，没选书也得能滚
                 # （以前排在后面，没选书时托盘里进社区页滚轮是死的）。
-                return False
+                self._local_wheel_step(delta)
+                return True
             # 【关键保护】如果既没选书，也不是本地模式，直接拦截滚轮不处理
             if not self.is_local_mode and not self.current_book:
                 return True
 
-            delta = event.angleDelta().y()
-            if self.is_local_mode:
-                # 本地书页也逐行（到缓冲区边沿自动衔接），整页翻留给空格/PageDown
-                self._local_wheel_step(delta)
-                return True
-            else:
-                scrollbar = self.text_edit.verticalScrollBar()
-                # 只在**真的滚不动**时换章：以前留了 2px 余量，滚到离两端还差一两像素
-                # 就把下一章/上一章翻出来了，读起来像"滚着滚着突然翻页"。
-                if delta < 0:
-                    if scrollbar.value() >= scrollbar.maximum():
-                        self.next_chapter()
-                        return True
-                elif delta > 0:
-                    if scrollbar.value() <= scrollbar.minimum():
-                        self.prev_chapter()
-                        return True
+            # 本地书页（到缓冲区边沿自动衔接）和网络书（滚不动才换章）都走这一条，
+            # 一格滚多少行由设置决定
+            self._local_wheel_step(delta)
+            return True
         return super().eventFilter(source, event)
 
     def _point_on_desktop(self, x, y):
@@ -4505,69 +4469,76 @@ class StealthReader(QWidget):
         log_event(f"偷瞄退出（{reason or '未说明'}）→ 窗口已隐藏")
 
     def on_peek_wheel(self, delta):
-        """偷瞄模式的滚轮 = 窗口内滚动的手感：一格滚几行（事件交给 QTextEdit 默认处理，
-        实测一格约 60px ≈ 3 行），滚到 5000 字缓冲区边沿后自动衔接前后页，不跳字不空页。
+        """偷瞄模式的滚轮 = 窗口内的手感：一格还是设置里那几行，到边沿才衔接前后页。
 
-        卡片页（背诵）不参与分页：只滚卡片自己——它的 local_* 是空壳，一个字都不许碰。"""
-        if self.review_mode:
-            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
-            return
-        if self.feed_mode:
-            # 偷瞄里滚轮滚的也是社区流自己（和卡片页一样：只滚，一个字都不碰书的 local_*）
-            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
-            return
-        if not self.is_local_mode:
-            # 网络模式与窗口内行为一致：只滚缓冲区
-            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
-            return
+        卡片页/社区页也只滚自己（它们的 local_* 是空壳，一个字都不许碰）。"""
         self._local_wheel_step(delta)
 
-    def _local_wheel_step(self, delta):
-        """本地书页的滚轮 = **逐行**（一格约 3 行），滚到 5000 字缓冲区边沿再自动衔接。
-
-        以前本地模式的滚轮走的是 `scroll_page(±1)`——一格就是一整页；而事件有时落在
-        viewport 上（Qt 默认逐行）有时落在 text_edit 上（我们自己的翻页），真人看到的就是
-        "有时候是行有时候是一页"。现在两条路都走这一个函数：**滚轮永远逐行**，
-        整页翻留给空格/PageDown/点击。"""
-        sb = self.text_edit.verticalScrollBar()
-        # 合成的事件会再次进到 eventFilter（源就是 viewport）：用一个标记让它这一次
-        # 走 Qt 默认的逐行滚动，否则自己调自己会无限递归
-        self._synth_wheel = True
+    def _line_height_px(self):
+        """一行字在文档里实际占多少像素（跟着字号、行距走）。"""
         try:
-            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
-        finally:
-            self._synth_wheel = False
-        moved = False
-        if delta < 0 and sb.maximum() > 0 and sb.value() >= sb.maximum() - 2:
-            # 缓冲区到底：下一页从"当前视口顶部"衔接，已看的字不重不漏
-            cursor = self.text_edit.cursorForPosition(QPoint(0, 0))
-            new_start = min(self.local_start_index + cursor.position(),
-                            max(0, len(self.local_full_text) - 1))
-            if new_start > self.local_start_index:
-                self.local_page_history.append(self.local_start_index)
-                self.local_start_index = new_start
-                self.render_local_page()
-                moved = True
-        elif delta > 0 and sb.value() <= 2:
-            # 缓冲区到顶：渲染更早的 5000 字并停在其底部，从这里继续往上滚
-            new_start = max(0, self.local_start_index - 5000)
-            if new_start < self.local_start_index:
-                self.local_start_index = new_start
-                self.render_local_page()
-                self.text_edit.verticalScrollBar().setValue(
-                    self.text_edit.verticalScrollBar().maximum())
-                moved = True
-        if moved and not self._book_veiled():
-            # 缓冲区换了位置才存档（每个滚轮刻度都写盘太浪费）
-            self.config["last_local_pos"] = self.local_start_index
-            self.save_config()
+            h = int(round(self.text_edit.cursorRect(self.text_edit.textCursor()).height()))
+        except Exception:
+            h = 0
+        if 6 <= h <= 400:
+            return h
+        return max(6, int(self.text_edit.fontMetrics().height()))
 
-    def _synth_wheel_event(self, delta):
-        """造一个和真实滚轮等价的事件交给 viewport，走 Qt 默认的逐行滚动路径。"""
-        vp = self.text_edit.viewport()
-        return QWheelEvent(QPointF(vp.rect().center()), QPointF(QCursor.pos()),
-                           QPoint(0, 0), QPoint(0, delta),
-                           Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
+    def scroll_px(self, px):
+        """按像素滚正文——滚轮和方向键共用这一条，滚多少行由设置决定。
+
+        滚到**真的滚不动**时才衔接前后页、才换章：以前按"离两端还差几像素"判断，
+        于是滚着滚着就整页/整章翻走。"""
+        if not px:
+            return
+        sb = self.text_edit.verticalScrollBar()
+        before = sb.value()
+        sb.setValue(int(round(before + px)))
+        moved = False
+
+        if self.feed_mode or (self.review_mode and not self.safe_mode):
+            return                          # 社区/卡片：滚它们自己，不接页、不碰书页进度
+        if self.is_local_mode and self.local_full_text:
+            if px > 0 and sb.maximum() > 0 and sb.value() >= sb.maximum():
+                # 缓冲区到底：下一页从"当前视口顶部"衔接，已看的字不重不漏
+                cursor = self.text_edit.cursorForPosition(QPoint(0, 0))
+                new_start = min(self.local_start_index + cursor.position(),
+                                max(0, len(self.local_full_text) - 1))
+                if new_start > self.local_start_index:
+                    self.local_page_history.append(self.local_start_index)
+                    self.local_start_index = new_start
+                    self.render_local_page()
+                    moved = True
+            elif px < 0 and sb.value() <= 0:
+                # 缓冲区到顶：渲染更早的 5000 字并停在其底部，从这里继续往上滚
+                new_start = max(0, self.local_start_index - 5000)
+                if new_start < self.local_start_index:
+                    self.local_start_index = new_start
+                    self.render_local_page()
+                    self.text_edit.verticalScrollBar().setValue(
+                        self.text_edit.verticalScrollBar().maximum())
+                    moved = True
+            if moved and not self._book_veiled():
+                # 缓冲区换了位置才存档（每个滚轮刻度都写盘太浪费）
+                self.config["last_local_pos"] = self.local_start_index
+                self.save_config()
+            return
+        if not self.current_book:
+            return
+        if sb.value() == before:            # 网络书：滚不动了才换章
+            if px > 0:
+                self.next_chapter()
+            else:
+                self.prev_chapter()
+
+    def _local_wheel_step(self, delta):
+        """滚轮一格（120）= 设置里的行数，和方向键同一套手感。
+
+        以前本地书页的滚轮交给 Qt 默认（固定约 3 行），方向键却整页翻；
+        现在两边都走 `scroll_px`，行数在设置里一起调。"""
+        lines = clamp_config_int(self.config, "arrow_scroll_lines",
+                                 ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
+        self.scroll_px((float(-delta) / 120.0) * lines * self._line_height_px())
 
     def on_peek_exit(self, reason):
         self.exit_peek(reason)
@@ -7850,10 +7821,10 @@ class StealthReader(QWidget):
         self.is_popup_open = False
 
     def on_panel_wheel(self, delta):
-        """滚轮：视为不确认，但滚轮本身照样翻页（手动把这一下补回去）。"""
+        """滚轮：视为不确认，但滚轮本身照样滚动（手动把这一下补回去）。"""
         self.dismiss_action_panel(cancelled=True)
         try:
-            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
+            self._local_wheel_step(delta)
         except Exception:
             pass
 
