@@ -120,6 +120,7 @@ python main.py
 | `ip` | Legado Web 服务地址 |
 | `opacity` `font_family` `font_size` | 窗口透明度与正文字体 |
 | `line_spacing` `paragraph_spacing` `page_margin_chars` `first_line_indent` | 排版参数 |
+| `page_overlap_lines` | 翻页时保留的上一页行数，默认 2；设为 0 则新一页从上一页的下一行开始 |
 | `boss_key` `peek_key` `safe_key` `anki_key` `feed_key` | 五个全局热键 |
 | `safe_doc_path` | 安全文档使用的文件，留空则使用内置文档 |
 | `anki_deck` `anki_conceal` `anki_api_key` | 默认牌组、是否隐藏 Anki 窗口、AnkiConnect 密钥 |

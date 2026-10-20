@@ -113,6 +113,9 @@ PAGE_MARGIN_DEFAULT = 1.0
 FIRST_LINE_INDENT_MIN = 0.0
 FIRST_LINE_INDENT_MAX = 4.0
 FIRST_LINE_INDENT_DEFAULT = 2.0
+# 翻页时保留的上一页行数。翻一整页仍留几行上文，接续处才不用回头找
+PAGE_OVERLAP_LINES = 2
+PAGE_OVERLAP_MAX = 5
 
 
 def clamp_config_int(config, key, default, low, high):
@@ -144,6 +147,7 @@ DEFAULT_CONFIG = {
     "page_margin_chars": PAGE_MARGIN_DEFAULT,   # 页边距：单位"字"，四边相同
     "first_line_indent": FIRST_LINE_INDENT_DEFAULT,
     "paragraph_indent": True,
+    "page_overlap_lines": PAGE_OVERLAP_LINES,
     # 标题永远不缩进；这个键只作为 txt 猜错标题时的手动开关，不在界面上
     "heading_no_indent": True,
     "peek_key": "ctrl+e",
@@ -3464,7 +3468,33 @@ class StealthReader(QWidget):
         if next_pos_in_buffer >= len(self.text_edit.toPlainText()):
             return len(self.text_edit.toPlainText())
 
-        return next_pos_in_buffer
+        return self.with_page_overlap(next_pos_in_buffer)
+
+    def with_page_overlap(self, next_pos):
+        """把下一页的起点往前挪几行，让上一页末尾的几行在新一页顶部重现。
+
+        紧接上一页最后一行开始，视线等于直接落进陌生段落的开头，要往回找才能接上；
+        退 PAGE_OVERLAP_LINES 行之后，重复的那几行本身就是接续位置的标记。
+
+        三种情况退回原值，宁可少重叠也不能把翻页卡住：
+        页首就在缓冲区开头（退无可退）、字体或窗口小到重叠超过半页、
+        Qt 没能退动。
+        """
+        lines = clamp_config_int(self.config, "page_overlap_lines",
+                                 PAGE_OVERLAP_LINES, 0, PAGE_OVERLAP_MAX)
+        if lines <= 0 or next_pos <= 0:
+            return next_pos
+
+        cursor = self.text_edit.textCursor()
+        cursor.setPosition(next_pos)
+        cursor.movePosition(QTextCursor.Up, QTextCursor.MoveAnchor, lines)
+        start = cursor.position()
+
+        if start <= 0 or start >= next_pos:
+            return next_pos
+        if next_pos - start > next_pos // 2:
+            return next_pos
+        return start
 
     # --- 核心：基于反向排版探测上一页起始位置 ---
     def calc_prev_page_start(self):
