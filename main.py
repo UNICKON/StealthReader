@@ -26,7 +26,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QFrame, QTextEdit, QShortcut, QListWidget,
                              QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog,
                              QInputDialog, QMessageBox, QToolTip, QTabWidget, QScrollArea,
-                             QStackedWidget)
+                             QStackedWidget, QGridLayout)
 from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject,
                           QThread, QTimer, QEvent, QUrl)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
@@ -247,14 +247,12 @@ SETTINGS_QSS = """
     QCheckBox::indicator:hover { border-color: #7a7a7a; }
     QCheckBox::indicator:checked { background: #3d6df0; border-color: #3d6df0; }
     QCheckBox::indicator:disabled { border-color: #3a3a3a; background: #2b2b2b; }
-    QCheckBox { color: #d6d6d6; spacing: 8px; }
-    QCheckBox::indicator {
-        width: 15px; height: 15px; border-radius: 4px;
-        border: 1px solid #5a5a5a; background: #333333;
+    QPushButton#miniButton {
+        background: #383838; border: 1px solid #4a4a4a; color: #d6d6d6; padding: 3px 12px;
     }
-    QCheckBox::indicator:hover { border-color: #7a7a7a; }
-    QCheckBox::indicator:checked { background: #3d6df0; border-color: #3d6df0; }
-    QCheckBox::indicator:disabled { border-color: #3a3a3a; background: #2b2b2b; }
+    QPushButton#miniButton:hover { background: #434343; border-color: #5c5c5c; }
+    QLabel#stateLabel { color: #9a9a9a; }
+    QLabel#hintLabel { color: #8a8a8a; }
     QSlider::groove:horizontal { height: 4px; background: #444444; border-radius: 2px; }
     QSlider::handle:horizontal {
         width: 14px; margin: -6px 0; border-radius: 7px; background: #8ab4f8;
@@ -2003,6 +2001,9 @@ class SettingsDialog(QDialog):
              "feed_font_size", "feed_font_family")
         }
 
+        self.cookie_edits = {}      # 这一轮贴/找到的 Cookie：点保存才写进 feed_auth.json
+        self.auth_rows = {}
+        self.source_checks = {}
         self.setWindowTitle("设置")
         self.resize(350, 560)
         self.setStyleSheet(DARK_STYLESHEET)
@@ -2353,6 +2354,73 @@ class SettingsDialog(QDialog):
         feed_font_row.setEnabled(self.feed_font_check.isChecked())
         self.add_row(lay, "字号 / 字体", feed_font_row)
 
+        lay = self.new_card(col, "来源")
+        self.source_checks = {}
+        try:
+            import feed_sources as _feed_sources
+            choices = list(getattr(_feed_sources, "SOURCE_CHOICES", ()))
+        except Exception:
+            choices = []
+        want_on = self.config.get("feed_sources", None)
+        want_on = {str(x) for x in want_on} if isinstance(want_on, list) else None
+        grid_host = QWidget()
+        grid_host.setObjectName("formRow")
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(6)
+        for i, (key, label, _can) in enumerate(choices):
+            cb = QCheckBox(label)
+            cb.setChecked(key in want_on if want_on is not None else True)
+            self.source_checks[key] = cb
+            grid.addWidget(cb, i // 2, i % 2)
+        self.add_wide(lay, grid_host,
+                      "勾上的才在社区页里出现（[ ] 切换也只在勾上的之间轮）。\n"
+                      "全不勾 = 只剩离线示例那一页（验版面用）。")
+
+        lay = self.new_card(col, "登录")
+        self.auth_rows = {}
+        try:
+            import feed_sources as _feed_sources
+            _auth = _feed_sources.load_auth(_feed_sources.auth_path())
+        except Exception:
+            _auth = {}
+        for key, label, can_auth in choices:
+            if not can_auth:
+                continue
+            row = QWidget()
+            row.setObjectName("formRow")
+            row_lay = QHBoxLayout(row)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.setSpacing(8)
+            state = QLabel()
+            state.setObjectName("stateLabel")
+            btn = QPushButton("粘贴")
+            btn.setObjectName("miniButton")
+            btn.clicked.connect(lambda _c=False, k=key, lab=label: self.edit_cookie(k, lab))
+            row_lay.addWidget(state, 1)
+            row_lay.addWidget(btn)
+            self.auth_rows[key] = state
+            self.add_row(lay, label, row)
+            self._refresh_auth_row(key)
+
+        tools = QWidget()
+        tools.setObjectName("formRow")
+        tools_lay = QHBoxLayout(tools)
+        tools_lay.setContentsMargins(0, 0, 0, 0)
+        tools_lay.setSpacing(10)
+        self.btn_scan_cookies = QPushButton("从浏览器读取")
+        self.btn_scan_cookies.clicked.connect(self.scan_cookies)
+        self.cookie_note = QLabel("只读本机浏览器里这几个站点的 Cookie")
+        self.cookie_note.setObjectName("hintLabel")
+        self.cookie_note.setWordWrap(True)
+        tools_lay.addWidget(self.btn_scan_cookies)
+        tools_lay.addWidget(self.cookie_note, 1)
+        self.add_wide(lay, tools,
+                      "读 Chrome / Edge / Brave / Vivaldi / Firefox 的 Cookie 库：**只读**、\n"
+                      "只挑这几个站点的域名，找到就写进 feed_auth.json。\n"
+                      "浏览器开着时那个库被它独占，读不了——会照实说；也可以先关掉浏览器再点。")
+
         lay = self.new_card(col, "显示")
         self.feed_lowkey_check = QCheckBox("低调显示")
         self.feed_lowkey_check.setChecked(bool(self.config.get("feed_lowkey", False)))
@@ -2360,6 +2428,97 @@ class SettingsDialog(QDialog):
                       "工位上比老板键更不显眼的一道保险：只剩文字，字号配色和书页一致。")
 
         col.addStretch(1)
+
+    # --- 登录（Cookie）：自动找 / 手动贴 ---------------------------------
+    def _auth_data(self):
+        try:
+            import feed_sources as fs
+            return fs.load_auth(fs.auth_path())
+        except Exception:
+            return {}
+
+    def _refresh_auth_row(self, key):
+        lab = getattr(self, "auth_rows", {}).get(key)
+        if lab is None:
+            return
+        text = self.cookie_edits.get(key)
+        if text is None:
+            text = str((self._auth_data().get(key) or {}).get("cookie") or "")
+        lab.setText("已配置" if str(text).strip() else "未配置")
+
+    def edit_cookie(self, key, label):
+        """手动贴一条 Cookie —— 浏览器锁着、或者它新版加密读不出来时的退路。"""
+        cur = str((self._auth_data().get(key) or {}).get("cookie") or "")
+        text, ok = QInputDialog.getText(self, "登录 %s" % label,
+                                        "整行 Cookie（a=1; b=2，留空 = 清掉）：",
+                                        QLineEdit.Normal, cur)
+        if not ok:
+            return
+        self.cookie_edits[key] = text.strip()
+        self._refresh_auth_row(key)
+
+    def scan_cookies(self):
+        """[从浏览器读取]：找一遍 → **只记下来**，点保存才落盘（取消就是没动过）。"""
+        try:
+            import feed_cookies
+        except Exception as exc:
+            QMessageBox.warning(self, "读不了浏览器", "这个模块没加载起来：%s" % exc)
+            return
+        found, notes = feed_cookies.scan()
+        if not found:
+            locked = list(dict.fromkeys(feed_cookies.locked_browsers()))
+            if locked:
+                names = "、".join(locked)
+                answer = QMessageBox.question(
+                    self, "要从浏览器读 Cookie",
+                    "%s 正在运行，Cookie 库被它独占着，读不了。\n\n"
+                    "现在关掉 %s 再读一次？（它下次打开会恢复标签页）" % (names, names),
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if answer == QMessageBox.Yes:
+                    for name in locked:
+                        feed_cookies.close_browser(name)
+                    for _i in range(15):            # 等它真的退出（最多 3 秒）
+                        if not feed_cookies.locked_browsers():
+                            break
+                        time.sleep(0.2)
+                    found, notes = feed_cookies.scan()
+        if not found:
+            QMessageBox.information(
+                self, "没找到 Cookie",
+                "没能从浏览器里读到可用的 Cookie。\n\n"
+                + "\n".join(notes[:4] or ["这台机器上没找到浏览器 profile"])
+                + "\n\n可以点某一行的「粘贴」，直接把浏览器里的 Cookie 贴进来。")
+            self.cookie_note.setText(feed_cookies.describe(found, notes))
+            return
+        for key, info in found.items():
+            self.cookie_edits[key] = info["cookie"]
+            self._refresh_auth_row(key)
+        self.cookie_note.setText(feed_cookies.describe(found, notes) + "（点保存生效）")
+        log_event("登录：从浏览器读到 %s" % "、".join(sorted(found)))
+
+    def save_cookie_edits(self):
+        """把这一轮贴/找到的 Cookie 合进 feed_auth.json（其它键原样保留）。"""
+        edits = dict(getattr(self, "cookie_edits", {}) or {})
+        if not edits:
+            return
+        try:
+            import feed_sources as fs
+            path = fs.auth_path()
+            data = fs.load_auth(path)
+            for key, text in edits.items():
+                text = str(text or "").strip()
+                if text:
+                    ent = data.get(key) if isinstance(data.get(key), dict) else {}
+                    ent["cookie"] = text
+                    data[key] = ent
+                elif isinstance(data.get(key), dict):
+                    data[key].pop("cookie", None)
+                    if not data[key]:
+                        data.pop(key, None)
+            fs.save_auth(path, data)
+            log_event("登录：写回 feed_auth.json（%d 个来源）" % len(edits))
+        except Exception as exc:
+            log_event("写 feed_auth.json 失败: %s" % exc)
 
     def build_page_ui(self):
         col = self.new_page("界面")
@@ -2587,6 +2746,11 @@ class SettingsDialog(QDialog):
         self.config["antishot_mode"] = self.check_antishot.isChecked()
         self.config["show_corners"] = self.check_corners.isChecked()
         self.config["show_bar"] = self.check_bar.isChecked()
+        if self.source_checks:
+            # 只留勾上的键。一个都没勾就是空列表 = 全关（只剩离线示例那一页）
+            self.config["feed_sources"] = [k for k, cb in self.source_checks.items()
+                                           if cb.isChecked()]
+        self.save_cookie_edits()
         if self.main_window:
             # 「保存并应用」= 真的生效、真的落盘（字体这类只在保存时才改的项也在里面）
             self.main_window.apply_style()
@@ -4952,13 +5116,19 @@ class StealthReader(QWidget):
         self._feed_sig = self._feed_sig_now()
         want = self.feed_restore_pos
         self.feed_restore_pos = None
-        if want is None and nav.view == "list":
-            want = before       # 同一屏重画（比如到底续了一页）别把人弹回顶部
+        if want is None:
+            # 同一屏重画（到底续了一页、追加评论、摊开子回复）：位置**不能动**。
+            # `setHtml` 一律把滚动条打回 0，以前只在列表里补这一下，详情里就没人管——
+            # 于是读评论时往下翻一页，屏幕直接跳回顶上（人报的"下翻加载评论会跳屏到
+            # 评论区第一条"）。要"从头读"的地方都显式给了 `feed_restore_pos = 0`。
+            want = before
         if want:
             # 文档刚换完，高度还没算出来，得等这一轮事件走完再滚；期间要是又有人
             # 明确要求"回顶部"（feed_scroll_top），这次恢复就作废，别把它拽回去。
             self._feed_pending_scroll = want
             QTimer.singleShot(0, self._feed_apply_pending_scroll)
+        else:
+            self._feed_pending_scroll = None      # 这一次明确不要恢复，别让上一次的排单生效
 
     def apply_feed_style(self):
         """社区页排版：左对齐、不首行缩进、行距沿用阅读设置；卡片间距和评论缩进由 HTML 自带。
@@ -5113,7 +5283,10 @@ class StealthReader(QWidget):
         # 先把这个条目变成当前条目（双击可能点的就是别的条目）
         if kind == "comment":
             for i, (c, _d, _p) in enumerate(nav.visible_comments()):
-                if c is obj:
+                # 按 **id** 比，不能按对象身份：`visible_comments()` 里的"还有 N 条回复"
+                # 那一行是每次现造的（cid 才是稳定的），`is` 永远不成立 → 点上去等于没选中，
+                # 展开/收起就落到上一条身上。人报的"更多子评论点了没反应"就是这个。
+                if c is obj or c.id == getattr(obj, "id", None):
                     nav.c_index = i
                     break
         else:
@@ -5189,8 +5362,13 @@ class StealthReader(QWidget):
             return False
 
     def feed_scroll_top(self):
-        """换了一屏内容（进详情/切来源/切栏目）就回到最上面——不然会停在上一屏的位置。"""
-        self.feed_restore_pos = 0
+        """换了一屏内容（进详情/切来源/切栏目）就回到最上面——不然会停在上一屏的位置。
+
+        **不要**往 `feed_restore_pos` 里写 0：它表示"下一次重画要落到哪"，而这里通常
+        没有"下一次重画"来消费它，0 就会一直留着，把后面那次"保持位置"的重画（详情里
+        追加评论）也改成"不恢复"——`setHtml` 打回的 0 就留在屏幕上了（跳屏那类毛病）。
+        取消排队 + 立刻 setValue(0) 已经够了。
+        """
         self._feed_pending_scroll = None    # 排队中的"恢复旧位置"作废：现在就要顶部
         try:
             self.text_edit.verticalScrollBar().setValue(0)
@@ -5375,6 +5553,7 @@ class StealthReader(QWidget):
         if nav is None or not nav.back():
             return False
         self.feed_gen += 1                  # 退回列表了，还在飞的详情结果不许把视图又弹回详情
+        self.feed_restore_pos = 0           # 换了一层：从顶上读（列表会再 ensure 到刚才那条）
         self.render_feed()
         cur = self.feed_current_block()
         if cur is not None:
@@ -5473,6 +5652,9 @@ class StealthReader(QWidget):
         y_before = self._feed_comment_y(target)
         if not nav.toggle_collapse():
             return False
+        # 折叠/展开要**按差值**把这条留在原地（下面那段算术），所以这里明确不要
+        # render_feed 的"恢复原像素位置"——两套补偿叠在一起会互相打架。
+        self.feed_restore_pos = 0
         self.render_feed()              # 折叠改变了文档结构，只能重画
         y_after = self._feed_comment_y(target)
         if y_before is not None and y_after is not None and y_after != y_before:
@@ -7707,6 +7889,39 @@ class StealthReader(QWidget):
         # 老入口保留，直接开三合一的目录页
         self.open_reading_marks(0)
 
+    def apply_feed_sources(self):
+        """设置里改了"哪些来源生效"：就地重建来源列表，**保住当前这个来源**。
+
+        不重载整本书、也不退出社区页；只是把 `feed_sources` 换一份新的。
+        当前那个来源要是被关掉了，就落到第一个（混流）；正在看社区页的话重新拉一页。
+        """
+        if not FEED_OK:
+            return
+        try:
+            cur = getattr(self.feed_source(), "key", "")
+        except Exception:
+            cur = ""
+        try:
+            self.feed_sources = feed_mod.build_sources(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "feed_demo"),
+                cache_root=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "cache", "feed"),
+                config=self.config, log=log_event)
+        except Exception as exc:
+            log_event("重建社区来源失败: %s" % exc)
+            return
+        keys = [getattr(src, "key", "") for src in self.feed_sources]
+        self.feed_source_i = keys.index(cur) if cur in keys else 0
+        self._feed_memo.clear()
+        self._feed_sig = None
+        if self.feed_mode and self.feed_nav is not None:
+            self.feed_nav.reset()
+            self.feed_nav.channel = self.feed_first_channel()
+            self.render_feed()
+            self.feed_load("list")
+        log_event("社区来源：%d 个（当前 %s）" % (len(self.feed_sources),
+                                                getattr(self.feed_source(), "key", "")))
+
     def open_settings(self):
         self.is_settings_open = True
         was_auto = self.config.get("auto_mode")
@@ -7721,6 +7936,7 @@ class StealthReader(QWidget):
             self.config = dialog.config
             self.save_config()
             self.apply_style()
+            self.apply_feed_sources()
             self.refresh_hotkeys()
             if self.config["ip"].startswith("http"):
                 self.fetch_bookshelf_silent()

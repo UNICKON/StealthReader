@@ -43,6 +43,46 @@ COVER_PER_PAGE = 6      # 一页最多下几张封面：25 张图一起下会让
 FAIL_COOLDOWN = 60      # 某个来源刚失败过，就歇这么久再去碰它（别每翻一页都去撞一次南墙）
 
 
+SOURCE_CHOICES = (
+    # (key, 界面上叫什么, 能不能贴 Cookie)
+    ("ithome", "IT之家", False),
+    ("v2ex", "V2EX", True),
+    ("linuxdo", "linux.do", True),
+    ("zhihu", "知乎", True),
+    ("weibo", "微博", True),
+    ("nga", "NGA", True),
+    ("xhs", "小红书", True),
+    ("hupu", "虎扑", False),
+    ("github", "GitHub 趋势", False),
+    ("medium", "Medium / RSS", False),
+)
+
+
+def auth_path(root=None):
+    """`feed_auth.json` 在哪（应用目录，已 gitignore）。"""
+    root = root or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(root, "feed_auth.json")
+
+
+def save_auth(path, data):
+    """写回 feed_auth.json：先备份成 .bak，再原子替换。
+
+    只由"设置里贴了 Cookie / 从浏览器读到 Cookie"调用；写坏一次就要重贴一遍，
+    所以宁可先留一份 .bak。
+    """
+    import shutil
+    try:
+        if os.path.isfile(path):
+            shutil.copy2(path, path + ".bak")
+    except OSError:
+        pass
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
 def load_auth(path):
     """读 feed_auth.json。读不到/格式不对都返回空字典（来源会退化成"未配置"，不炸）。"""
     try:

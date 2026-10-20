@@ -880,7 +880,7 @@ class FeedNav(object):
                 if rest > 0:
                     out.append((Comment(
                         cid="__more__" + c.id,
-                        body=[Block(BLOCK_P, "还有 %d 条回复 · 回车展开" % rest)],
+                        body=[Block(BLOCK_P, "还有 %d 条回复 · 点开" % rest)],
                         more_for=c.id), depth + 1, c))
 
         walk(list(self.roots[:max(1, int(self.c_show or COMMENT_PAGE))]), 0)

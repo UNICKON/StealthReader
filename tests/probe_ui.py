@@ -441,6 +441,7 @@ qapp.processEvents()
 # 人的感受就是"点一下没反应、还跳了一下，得再点一次"。
 use_sources([make_ithome()])
 w.enter_feed_mode()
+w.feed_nav.channel = "全部"                   # 夹具里"全部"才有 12 条
 w.feed_load("list")
 pump(lambda: len(w.feed_nav.posts) >= 6 and not w.feed_busy)
 for i in (0, 3, 5):
@@ -1403,6 +1404,108 @@ w.finish_poll({"card": {"cardId": 3, "question": "Q3"}}, False, _seq_now)
 check("版本号对得上时对账照旧换成 Anki 当前的卡（守卫没把功能关掉）",
       w.review_session["card_id"] == 3, w.review_session["card_id"])
 w.review_mode, w.review_session, w.anki_call = _rm2, _rs2, _call2
+
+
+# ===== AC 轮：评论续页不跳屏 / "还有 N 条回复"点得动 / 设置里选来源与登录 =====
+def _flash(rounds=8):
+    """把排队的 0ms 定时器（滚动恢复是 singleShot 走的）真跑掉。"""
+    for _i in range(rounds):
+        qapp.processEvents()
+        time.sleep(0.01)
+
+
+_nav4 = w.feed_nav
+_nav4.view = "detail"
+_nav4.post = feed_sources.Post(source="demo", source_label="示例", pid="s1", title="标题",
+                               body=[feed_sources.Block(kind=feed_sources.BLOCK_P,
+                                                        text="正文。" * 60)])
+_nav4.roots = [feed_sources.Comment(
+    cid="c%d" % i, author="甲%d" % i,
+    body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="第%d条。" % i * 40)])
+    for i in range(40)]
+_nav4.flat = feed_mod.comment_forest(_nav4.roots)
+_nav4.detail_loaded = True
+_nav4.collapsed = set()
+_nav4.child_show = {}
+_nav4.c_show = feed_mod.COMMENT_PAGE
+_nav4.c_more = True
+_nav4.c_index = 0
+_nav4.stack = []
+_nav4.stack_via = []
+w.feed_more_armed = False                    # 量位置时别让"滚到底"自己先续一页
+w.render_feed()
+w.feed_scroll_top()
+_flash()
+_sb4 = w.text_edit.verticalScrollBar()
+_sb4.setValue(_sb4.maximum())
+_flash()
+_pos_before = _sb4.value()
+_n_before = len(_nav4.visible_comments())
+w.feed_more_armed = True
+w.feed_autoload_more()
+_flash()
+_flash()
+check("往下翻加载评论：位置不动（不会跳回评论区第一条）",
+      _pos_before > 0 and _sb4.value() >= _pos_before - 5
+      and len(_nav4.visible_comments()) > _n_before,
+      (_pos_before, _sb4.value(), _n_before, len(_nav4.visible_comments())))
+
+_parent = feed_sources.Comment(
+    cid="p1", author="甲",
+    body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="父评论。")],
+    replies=[feed_sources.Comment(cid="p1r%d" % i, author="乙%d" % i,
+                                  body=[feed_sources.Block(kind=feed_sources.BLOCK_P,
+                                                           text="回复%d。" % i)])
+             for i in range(8)])
+_nav4.roots = [_parent]
+_nav4.flat = feed_mod.comment_forest(_nav4.roots)
+_nav4.child_show = {}
+_nav4.c_show = 50
+_nav4.c_more = False
+w.render_feed()
+w.feed_scroll_top()
+_flash()
+_lim_before = _nav4.child_limit(_parent)
+_more_pt = None
+for _obj, _kind, _cur in w.feed_item_blocks():
+    if getattr(_obj, "more_for", ""):
+        _more_pt = w.text_edit.cursorRect(_cur).center()
+        break
+_clicked_more = w.feed_click(_more_pt) if _more_pt is not None else False
+_flash()
+check("点子评论那行「还有 N 条回复」就展开（不用回车）",
+      _clicked_more is True and _nav4.child_limit(_parent) > _lim_before,
+      (_clicked_more, _lim_before, _nav4.child_limit(_parent)))
+
+_set4 = app_mod.SettingsDialog(w.config, w)
+qapp.processEvents()
+check("设置里能挑哪些社区来源生效（10 个来源各一个勾）",
+      len(_set4.source_checks) == 10 and "weibo" in _set4.source_checks,
+      list(_set4.source_checks))
+_set4.source_checks["weibo"].setChecked(True)
+_set4.source_checks["xhs"].setChecked(False)
+_set4.accept()
+qapp.processEvents()
+_on_now = w.config.get("feed_sources") or []
+check("取消勾选的来源就真的不生效（写进 feed_sources）",
+      "weibo" in _on_now and "xhs" not in _on_now, _on_now)
+
+import feed_sources as _fs                                                # noqa: E402
+import tempfile as _tf                                                    # noqa: E402
+_tmp_auth = os.path.join(_tf.mkdtemp(prefix="srauth"), "feed_auth.json")
+_auth_path_bak = _fs.auth_path
+_fs.auth_path = lambda root=None: _tmp_auth
+try:
+    _set5 = app_mod.SettingsDialog(w.config, w)
+    qapp.processEvents()
+    _set5.cookie_edits["zhihu"] = "z_c0=fromprobe"
+    _set5.save_cookie_edits()          # 点"保存"那一刻做的事
+finally:
+    _fs.auth_path = _auth_path_bak
+_got_auth = _fs.load_auth(_tmp_auth)
+check("贴进来（或自动找到）的 Cookie 只有点保存才写进 feed_auth.json",
+      str((_got_auth.get("zhihu") or {}).get("cookie")) == "z_c0=fromprobe", _got_auth)
+w.config.pop("feed_sources", None)      # 探针自己造的键不留在真配置里
 
 
 w.exit_feed_mode(reason="probe")
