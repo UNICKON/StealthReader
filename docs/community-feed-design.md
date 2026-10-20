@@ -1234,9 +1234,28 @@ Cookie，所以给它三条门，按"最省事"排：
 - **只暂存，点保存才写**：`cookie_edits` 先记在对话框里，`accept()`→`save_cookie_edits()`
   才落盘（写前留 `.bak`，原子替换），点「取消」等于没动过。
 
+**⑤ 微博热搜点进去是空的（AC 轮补）。** 以前详情只有一个"热度 ××"——热搜榜公开、正文被
+`Sina Visitor System` 挡着（`m.weibo.cn` 容器返 432 / 空壳），所以按"拿不到就是没有"处理。
+
+贴了浏览器 Cookie 之后实测（2026-10-20）：**`s.weibo.com/weibo?q=词条` 200、30 万字节、
+18 张卡片**——`<p class="txt">` 正文、`<a class="name">` 作者、`<a class="from">` 时间、
+`mid="…"`（能拼 `m.weibo.cn/detail/<mid>`）。于是详情改成：
+
+- 有 Cookie：`parse_weibo_search()` 拆出前 8 条，摆成"作者 · 时间"+ 引用块；只取文字，
+  图不搬（一张图要一次请求，8 条就是 8 次）。
+- 没 Cookie：热度 + 一句"正文要登录"（`needs_auth = True`，页脚那句"这个来源要 Cookie"现在对正文是真的）。
+- 被挡在登录页 / 页面改版：照实说"这次没取到正文（原因）"，**不编内容**。
+- 清掉两种噪声：视频卡的尾巴 `L某某的微博视频`（`<a>` 里的下载提示）、每条重复的 `#词条#`
+  前缀（标题已经写着词条）。
+
+`m.weibo.cn` 的 100103（搜索）/ 231522（话题）容器**带 Cookie 也只回**
+`{"ok":-100,"url":"passport.weibo.com/sso/signin…"}`，要 wapsso 登录——那条路不走，
+代码注释里写清了这个结论，免得以后再试一遍。
+
 **验收**：`probe_ui.py` 163 项全过（+4：续页后位置不动且真的多摆了 20 条、点子评论那行
 就展开、来源开关写进 `feed_sources`、Cookie 暂存到点保存才落盘）；
-`probe_sources.py` 295、`probe_weread.py` 47 不变；
+`probe_sources.py` 303（+8：搜索页拆出两条/作者时间正文分得开/视频尾巴和话题前缀清掉/
+mid 拼得出详情地址/带 Cookie 的详情摆出引用块/被挡在登录页说人话）、`probe_weread.py` 47 不变；
 新增 `probe_cookies.py` 12 项（自己造一份 Chromium profile：DPAPI 包密钥 + v10 AES-GCM
 解值、域名过滤、v20 报读不了、cookies.txt 解析、说明行）。
 

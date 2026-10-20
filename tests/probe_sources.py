@@ -282,10 +282,55 @@ else:
     check("话题转义正确",
           ws._search_url("#测试话题#") == "https://s.weibo.com/weibo?q=%23%E6%B5%8B%E8%AF%95%E8%AF%9D%E9%A2%98%23")
     wd, _ = ws.detail(wp[0])
-    check("微博详情只给热度（拿不到正文就不编，也不写说明书）",
+    check("没 Cookie：热度 + 一句'要登录'，不编正文",
           any("热度" in b.text for b in wd.body)
-          and not any("登录" in b.text or "按 O" in b.text for b in wd.body))
+          and len(wd.body) == 2
+          and any("Cookie" in b.text for b in wd.body),
+          [b.text[:24] for b in wd.body])
     check("微博评论如实为空", ws.comments(wp[0]) == ([], None))
+
+    # 带 Cookie：正文来自 s.weibo.com 搜索页（夹具按真页面结构裁的三张卡，其中一张没有正文）
+    wpage = fixture_bytes("weibo_search.html")
+    if not wpage:
+        skip("微博搜索页", "缺夹具")
+    else:
+        whtml = wpage.decode("utf-8")
+        witems = feed_sources.parse_weibo_search(whtml, "测试话题")
+        check("搜索页解析出两条（没有正文的壳子跳过）", len(witems) == 2, len(witems))
+        check("作者/时间/正文都拆开了",
+              witems and witems[0]["author"] == "甲某"
+              and witems[0]["created"] == "23分钟前"
+              and witems[0]["text"].startswith("第一条正文"),
+              witems[0] if witems else None)
+        check("视频卡的尾巴和话题前缀都清掉",
+              witems and "的微博视频" not in witems[0]["text"]
+              and "#测试话题#" not in witems[0]["text"],
+              witems[0]["text"] if witems else "")
+        check("mid 拼成能开的详情地址",
+              witems and witems[0]["url"] == "https://m.weibo.cn/detail/5000000000000001",
+              witems[0]["url"] if witems else "")
+        check("没带话题的那条原样留着（不误删）",
+              len(witems) > 1 and witems[1]["text"].startswith("第二条"), 
+              witems[1]["text"][:24] if len(witems) > 1 else "")
+        wc = feed_sources.WeiboSource(
+            FakeHttp(bytes_routes={"s.weibo.com/weibo?q=": wpage}, cache=MemCache()),
+            auth={"cookie": "SUB=test"})
+        wcd, _ = wc.detail(wp[0])
+        check("配了 Cookie：详情把词条下的微博摆进来",
+              any(b.kind == feed_mod.BLOCK_QUOTE for b in wcd.body)
+              and any("甲某" in b.text for b in wcd.body),
+              [b.text[:18] for b in wcd.body][:4])
+        check("第一句说清只取前几条",
+              any("前 2 条" in b.text for b in wcd.body),
+              [b.text[:24] for b in wcd.body][:2])
+        wblk = feed_sources.WeiboSource(
+            FakeHttp(bytes_routes={"s.weibo.com/weibo?q=":
+                                   b"<html><head><title>Sina Visitor System</title></head></html>"},
+                    cache=MemCache()),
+            auth={"cookie": "SUB=test"})
+        wbd, _ = wblk.detail(wp[0])
+        check("被挡在登录页时说人话（没取到正文，不编）",
+              any("没取到正文" in b.text for b in wbd.body), [b.text[:32] for b in wbd.body])
 
 # ---------------------------------------------------------------- 单位与渲染
 print("\n=== 5. 统计单位：数字说人话，单位跟来源走 ===")

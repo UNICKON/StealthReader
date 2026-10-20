@@ -1194,6 +1194,66 @@ def _zhihu_name(author):
     return ""
 
 
+# ---- 微博搜索页：带 Cookie 时正文从这里来 --------------------------------------
+# 2026-10-20 实测（本机网络 + 浏览器 Cookie）：`s.weibo.com/weibo?q=词条` 返回 200、
+# 30 万字节、18 张 `<div class="card-wrap" ... action-type="feed_list_item">` 卡片；
+# 每张卡片里 `<a class="name">作者</a>`、`<a class="from">23分钟前</a>`、
+# `<p class="txt">正文</p>`、`mid="数字"`（能拼 https://m.weibo.cn/detail/<mid>）。
+# 同一天 `m.weibo.cn/api/container/getIndex`（100103 搜索 / 231522 话题）带着 Cookie 也只回
+# `{"ok":-100,"url":"https://passport.weibo.com/sso/signin..."}`——移动端容器要走 wapsso
+# 登录，那条路彻底放弃，只认 PC 搜索页。
+_WEIBO_CARD = re.compile(r'<div class="card-wrap"')
+
+
+def _weibo_clean_text(raw, word=""):
+    """卡片里的 HTML/尾巴 → 一行能读的文字。
+
+    要清的两样噪声：① `<img title="[惊恐]">` 这类表情（`strip_html` 已经把标签扔掉）；
+    ② 视频卡片在正文末尾留的 `L某某的微博视频`——那是 `<a>` 里的下载提示，人眼看到就是废物。
+    另外 18 条里有 17 条以同一个话题开头，标题已经写着词条了，重开一条就不再重复它。
+    """
+    s = feed_mod.strip_html(raw or "")
+    s = s.replace("\u200b", "").replace("\xa0", " ")
+    s = re.sub(r"L[^\s]{0,40}的微博视频", "", s)
+    s = re.sub(r"[\s\u3000]+", " ", s).strip()
+    if word:
+        topic = "#%s#" % str(word).strip()
+        if s.startswith(topic):
+            s = s[len(topic):].strip()
+    return s
+
+
+def parse_weibo_search(html, word="", limit=0):
+    """把 s.weibo.com 搜索结果页拆成 [{"mid","author","created","text","url"}]。
+
+    只认这一种卡片结构；页面改版就返回空列表——**空就是空**，不猜、不编。
+    """
+    out = []
+    for chunk in _WEIBO_CARD.split(html or "")[1:]:
+        if "feed_list_item" not in chunk:
+            continue                    # 顶部"热门"条、广告卡之类的壳子没有正文
+        m_text = re.search(r'<p[^>]*class="txt"[^>]*>(.*?)</p>', chunk, re.S)
+        if not m_text:
+            continue
+        text = _weibo_clean_text(m_text.group(1), word)
+        if not text:
+            continue
+        m_mid = re.search(r'mid="(\d+)"', chunk)
+        m_name = re.search(r'class="name"[^>]*>(.*?)</a>', chunk, re.S)
+        m_time = re.search(r'class="from"[^>]*>(.*?)</a>', chunk, re.S)
+        mid = m_mid.group(1) if m_mid else ""
+        out.append({
+            "mid": mid,
+            "author": _weibo_clean_text(m_name.group(1)) if m_name else "",
+            "created": _weibo_clean_text(m_time.group(1)) if m_time else "",
+            "text": text,
+            "url": ("https://m.weibo.cn/detail/" + mid) if mid else "",
+        })
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
 class WeiboSource(RealSource):
     """微博热搜。**只有"榜单"这一层免登录**——和知乎是同一类情况，但更薄。
 
@@ -1202,8 +1262,18 @@ class WeiboSource(RealSource):
         `label_name`（新 / 热 / 爆）、`word_scheme`（能直接拼搜索地址）；
       - 正文和评论都要登录：`m.weibo.cn/api/container/getIndex...` 返回 **HTTP 432**（空体），
         网页版接口要前端签名，`m.weibo.cn` 还要 `X-Requested-With` + 签名参数。
-    所以这里是"热榜"形态：一条就是**一个词条**，详情页给的是热度 + 一句实话 + 搜索地址，
-    不编造正文和评论。
+    所以列表这一层是"热榜"形态：一条就是**一个词条**。
+
+    **正文这一层 2026-10-20 打通了**（贴了浏览器 Cookie 之后实测）：
+      - `s.weibo.com/weibo?q=词条` + Cookie → 200、30 万字节、18 张卡片
+        （`p.txt` 正文 / `a.name` 作者 / `a.from` 时间 / `mid` 拼详情地址），
+        见上面的 `parse_weibo_search`；
+      - `m.weibo.cn` 的 100103（搜索）/ 231522（话题）容器**带 Cookie 也只回**
+        `{"ok":-100,"url":"passport.weibo.com/sso/signin..."}`（要 wapsso 登录），
+        移动端那条路彻底放弃；
+      - 没 Cookie 时搜索页给的是 `Sina Visitor System` 空壳 → 详情照实说"要登录"，不编内容。
+
+    所以：**热搜榜免登录，词条正文/评论要 Cookie**。详情 = 热度 + 这个词条下的微博。
 
     **默认关闭**（设计文档里微博属于"单独开关"的那一档）：`feed_sources` 里写
     `["ithome","v2ex","linuxdo","zhihu","weibo"]` 才会出现在来源列表里。
@@ -1211,9 +1281,13 @@ class WeiboSource(RealSource):
     key = "weibo"
     label = "微博"
     base_url = "https://weibo.com"
-    needs_auth = False
+    # 热搜榜免登录，**词条正文/评论要 Cookie**：页脚那句"这个来源要 Cookie"对正文是真的。
+    needs_auth = True
     CHANNELS = ("热搜",)
     HOT_URL = "https://weibo.com/ajax/side/hotSearch"
+    UA_PC = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36")
+    MAX_PAGE_BYTES = 4 << 20      # 搜索结果页 30 万字节上下，给足余量
 
     def channels(self):
         return list(self.CHANNELS)
@@ -1255,14 +1329,58 @@ class WeiboSource(RealSource):
         """热搜词条给人点的地址。用 s.weibo.com 的搜索页：它认话题（#xx#）也认普通词。"""
         return "https://s.weibo.com/weibo?q=" + quote(str(word or ""), safe="")
 
+    def _page_headers(self):
+        return {"User-Agent": self.UA_PC, "Referer": "https://s.weibo.com/"}
+
+    def search_posts(self, word, limit=8):
+        """这个词条下的微博（PC 搜索页第一页，只取文字）。没 Cookie 就没有内容。"""
+        word = str(word or "").strip()
+        if not word:
+            return []
+        try:
+            raw = self.http.get_bytes(self._search_url(word), ttl=TTL_DETAIL,
+                                      headers=self._page_headers(),
+                                      max_bytes=self.MAX_PAGE_BYTES, timeout=LIST_TIMEOUT)
+        except FeedNetError:
+            raise
+        except Exception as e:
+            raise FeedNetError("搜索页取不回来（%s）" % type(e).__name__)
+        self.served_stale = bool(getattr(self.http, "served_stale", False))
+        html = raw.decode("utf-8", "replace")
+        items = parse_weibo_search(html, word, limit=limit)
+        if not items and ("passport.weibo.com" in html or "Sina Visitor System" in html):
+            raise FeedNetError("微博把这次请求当没登录（跳到了登录页）")
+        return items
+
     def detail(self, post, cursor=None):
-        """微博给不了正文：把热度摆出来，直说为什么只有这么点，搜索地址留着给 O。"""
+        """热搜词条点进去：热度 + 这个词条下的微博（配了 Cookie 才有正文）。"""
         out = Post.from_dict(post.to_dict())
+        word = str(post.title or post.id or "").strip()
         body = []
         if out.score:
             body.append(Block(kind=BLOCK_P, text="热度 %s（微博热搜榜）" % feed_mod._num(out.score)))
-        # 微博只给热搜词条：正文接口要登录 + 前端签名，这一层没接（详情见 README）。
-        # 以前这里塞了一大段解释，属于"注释性语言进前端"，删掉；拿不到就是没有正文。
+        items, why = [], ""
+        if self.has_auth:
+            try:
+                items = self.search_posts(word)
+            except FeedNetError as e:
+                why = str(e)
+            except Exception as e:
+                why = "解析失败（%s）" % type(e).__name__
+        if items:
+            body.append(Block(kind=BLOCK_P,
+                              text="这个词条下的微博：前 %d 条（只有文字）" % len(items)))
+            for it in items:
+                head = " · ".join([x for x in (it.get("author"), it.get("created")) if x])
+                if head:
+                    body.append(Block(kind=BLOCK_P, text=head))
+                body.append(Block(kind=BLOCK_QUOTE, text=it.get("text") or ""))
+        elif self.has_auth:
+            body.append(Block(kind=BLOCK_P, text="这次没取到正文（%s）。O 打开搜索页看。"
+                              % (why or "搜索页里没解析出微博")))
+        else:
+            body.append(Block(kind=BLOCK_P,
+                              text="热搜榜是公开的，正文要登录：设置 → 社区 → 登录 → 微博 贴一次 Cookie。"))
         out.body = body
         return out, None
 

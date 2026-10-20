@@ -22,4 +22,6 @@ cache/
 
 # 社区页的登录凭据（我自己贴的 Cookie / UA）。
 # **绝对不能进版本库**：这东西等同于账号密码。
+# 连 `.bak` 一起忽略：保存时留的那份备份里也是明文 Cookie。
 feed_auth.json
+feed_auth.json.bak

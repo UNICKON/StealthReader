@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>微博搜索 - 测试话题</title>
+</head>
+<body>
+<!-- 按 2026-10-20 真页面（s.weibo.com/weibo?q=词条）的结构裁的三张卡片：
+     ① 带话题前缀 + 表情图 + 视频尾巴的正文；② 普通文字；③ 一张没有 feed_list_item 的壳子（顶部"热门"条那种）。
+     名字/正文都是编的，夹具只负责"结构真"。 -->
+<div class="card-wrap" action-type="feed_list_item" mid="5000000000000001">
+    <div class="card">
+        <div class="card-feed">
+            <div class="avator"><a href="//weibo.com/u/1001"><img src="//tvax1.sinaimg.cn/a.jpg"></a></div>
+            <div class="content">
+                <div class="info">
+                    <div class="msg">
+                        <a class="name" href="//weibo.com/u/1001" nick-name="甲某">甲某</a>
+                        <div class="from">
+                            <a class="from" href="//weibo.com/1001/RnvPH1liZ" target="_blank">
+                                23分钟前
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                <p class="txt" node-type="feed_list_content" nick-name="甲某">
+                    <a href="/weibo?q=%23%E6%B5%8B%E8%AF%95%E8%AF%9D%E9%A2%98%23" target="_blank">#测试话题#</a>第一条正文，带个表情<img src="//face.t.sinajs.cn/e8.png" title="[惊恐]" alt="[惊恐]" class="face" /> <a href="http://t.cn/AXlkRToC" target="_blank">L甲某的微博视频</a>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="card-wrap" action-type="feed_list_item" mid="5000000000000002">
+    <div class="card">
+        <div class="card-feed">
+            <div class="avator"><a href="//weibo.com/u/1002"><img src="//tvax1.sinaimg.cn/b.jpg"></a></div>
+            <div class="content">
+                <div class="info">
+                    <div class="msg">
+                        <a class="name" href="//weibo.com/u/1002" nick-name="乙某">乙某</a>
+                        <div class="from">
+                            <a class="from" href="//weibo.com/1002/RnvPH2liZ" target="_blank">1小时前</a>
+                        </div>
+                    </div>
+                </div>
+                <p class="txt" node-type="feed_list_content" nick-name="乙某">
+                    第二条 &amp; 带一个实体字符，还有 <a href="http://t.cn/XyZ" target="_blank">图3张</a>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="card-wrap" >
+    <div class="card-top">
+        <h4 class="title"><a href="/weibo?q=%E6%B5%8B%E8%AF%95%E8%AF%9D%E9%A2%98&amp;xsort=hot" target="_blank">热门</a></h4>
+    </div>
+</div>
+</body>
+</html>
