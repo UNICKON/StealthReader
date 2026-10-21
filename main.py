@@ -171,6 +171,7 @@ DEFAULT_CONFIG = {
     "anki_api_key": "",                  # AnkiConnect 配了 apiKey 时填这里
     # --- 社区统一流（知乎/V2EX/微博…统一成一种帖子，当第三个内容页，见 docs/community-feed-design.md）---
     "feed_key": "ctrl+alt+f",            # 进/出社区统一流
+    "lowkey_key": "ctrl+alt+l",          # 社区页有图 ↔ 无图（低调显示），当场生效
     "feed_lowkey": False,                # 低调显示：社区页不出图、[图] 占位，工位上更不显眼
     "ghost_mode": False,
     "auto_mode": False,
@@ -2325,6 +2326,11 @@ class SettingsDialog(QDialog):
                      "排版（字体/行距/页边距/窗口大小）和书页完全一致；\n"
                      "再按一次换回书，回到原来那一页。划线会一起隐藏。")
 
+        self.lowkey_key_input = QLineEdit(self.config.get("lowkey_key", "ctrl+alt+l"))
+        self.add_row(lay, "无图", self.lowkey_key_input,
+                     "社区页在有图/无图（低调显示）之间切换，当场生效，不用进设置再保存；\n"
+                     "无图时只剩文字，图片的位置是一个 [图]。")
+
         col.addStretch(1)
 
     def build_page_card(self):
@@ -2783,6 +2789,7 @@ class SettingsDialog(QDialog):
         self.config["safe_doc_path"] = self.safe_doc_input.text().strip()
         self.config["anki_key"] = self.anki_key_input.text().strip() or "ctrl+alt+a"
         self.config["feed_key"] = self.feed_key_input.text().strip() or "ctrl+alt+f"
+        self.config["lowkey_key"] = self.lowkey_key_input.text().strip() or "ctrl+alt+l"
         lowkey_now = self.feed_lowkey_check.isChecked()
         _win = self.main_window
         if _win is not None:
@@ -2842,6 +2849,7 @@ class StealthReader(QWidget):
     safe_hotkey_signal = pyqtSignal()
     review_hotkey_signal = pyqtSignal()
     feed_hotkey_signal = pyqtSignal()
+    lowkey_hotkey_signal = pyqtSignal()          # 无图开关（钩子线程 → 主线程）
     # 社区页取数一律在后台线程里跑，取回来用这个信号回主线程（payload 一律是普通 Python 对象）
     feed_data_signal = pyqtSignal(str, object)
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
@@ -2918,6 +2926,7 @@ class StealthReader(QWidget):
         self.feed_mode = False
         self.feed_snapshot = None       # 进社区页前的书状态（和安全文档/背诵共用同一套快照函数）
         self.feed_shortcut = None
+        self.lowkey_shortcut = None
         self.feed_nav = None            # feed.FeedNav：选中/翻页/进详情/折叠全在它里面
         self.feed_sources = []          # 已登记的来源适配器（批次 B 起每加一个站就在这里多一个）
         self.feed_source_i = 0
@@ -3020,6 +3029,7 @@ class StealthReader(QWidget):
         self.safe_hotkey_signal.connect(self.toggle_safe_mode)
         self.review_hotkey_signal.connect(self.toggle_review_mode)
         self.feed_hotkey_signal.connect(self.toggle_feed_mode)
+        self.lowkey_hotkey_signal.connect(self.toggle_lowkey)
         self.feed_data_signal.connect(self.on_feed_data, Qt.QueuedConnection)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
@@ -3700,6 +3710,7 @@ class StealthReader(QWidget):
         safe_key_str = (self.config.get("safe_key", "ctrl+alt+d") or "").strip()
         review_key_str = (self.config.get("anki_key", "ctrl+alt+a") or "").strip()
         feed_key_str = (self.config.get("feed_key", "ctrl+alt+f") or "").strip()
+        lowkey_key_str = (self.config.get("lowkey_key", "ctrl+alt+l") or "").strip()
         taken = set()
         try:
             keyboard.unhook_all()   # 只拆 keyboard 库自己的钩子；偷瞄/背诵的 ctypes 钩子是独立管理的
@@ -3730,6 +3741,7 @@ class StealthReader(QWidget):
         g_safe = _reg_global(safe_key_str, self.on_safe_hotkey_triggered, "安全文档")
         g_review = _reg_global(review_key_str, self.on_review_hotkey_triggered, "背诵")
         g_feed = _reg_global(feed_key_str, self.on_feed_hotkey_triggered, "社区")
+        g_lowkey = _reg_global(lowkey_key_str, self.on_lowkey_hotkey_triggered, "无图")
         # 松键回调也重挂一遍（unhook_all 会把它一起拆掉）：热键"同一下只认第一次"靠它复位。
         try:
             keyboard.on_release(self.on_hotkey_release)
@@ -3785,6 +3797,17 @@ class StealthReader(QWidget):
                 self.feed_shortcut = QShortcut(QKeySequence(feed_key_str), self)
                 self.feed_shortcut.setAutoRepeat(False)
                 self.feed_shortcut.activated.connect(self.toggle_feed_mode)
+        except:
+            pass
+
+        try:
+            if self.lowkey_shortcut:
+                self.lowkey_shortcut.setKey(QKeySequence())
+                self.lowkey_shortcut = None
+            if not g_lowkey and lowkey_key_str:
+                self.lowkey_shortcut = QShortcut(QKeySequence(lowkey_key_str), self)
+                self.lowkey_shortcut.setAutoRepeat(False)
+                self.lowkey_shortcut.activated.connect(self.toggle_lowkey)
         except:
             pass
 
@@ -3906,6 +3929,18 @@ class StealthReader(QWidget):
         except Exception as e:
             try:
                 log_event(f"社区键回调异常: {e}")
+            except Exception:
+                pass
+
+    def on_lowkey_hotkey_triggered(self):
+        try:
+            if self.hotkey_is_repeat("lowkey", self.config.get("lowkey_key", "")):
+                return
+            log_event("无图开关热键触发")
+            self.lowkey_hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"无图键回调异常: {e}")
             except Exception:
                 pass
 
@@ -5548,6 +5583,39 @@ class StealthReader(QWidget):
         if self.feed_busy:
             return                    # 上一次还没回来：这一拍跳过，下一拍再说
         self.feed_load("scores" if mode == "list" else "detail", fresh=True)
+
+    def toggle_lowkey(self):
+        """有图 ↔ 无图（低调显示）：当场生效，不用进设置再保存。
+
+        图要不要落地是**取数那一刻**就定了的（缓存里存的是"要不要图"的答案），所以
+        无图 → 有图 得把手边那份清掉重取；反过来只要重排一次（[图] 占位是渲染时换的）。
+        """
+        on = not bool(self.config.get("feed_lowkey", False))
+        self.config["feed_lowkey"] = on
+        for _src in (self.feed_sources or []):
+            try:
+                _src.images_off = on        # 当场生效，不用重启
+            except Exception:
+                pass
+        try:
+            self.feed_lowkey_check.setChecked(on)      # 设置里那个勾跟着走，别下次保存又翻回去
+        except Exception:
+            pass
+        try:
+            self.save_config()
+        except Exception:
+            pass
+        log_event("低调显示：%s" % ("开（无图）" if on else "关（有图）"))
+        if not self.feed_mode or self.feed_nav is None:
+            return                          # 不在社区页：下次打开就是新的那一种
+        if on:
+            self.render_feed()              # 手里这页已经有图：重排就换成 [图] 占位
+            return
+        try:
+            self._feed_memo.clear()
+        except Exception:
+            pass
+        self.feed_load("detail" if self.feed_nav.view == "detail" else "list", fresh=True)
 
     def feed_toggle_view(self):
         """文字直播 ↔ 数据统计（只有这一场支持切换的来源才动）。

@@ -843,6 +843,27 @@ for _s in w.feed_sources:
     if getattr(_s, "images_off", None) is not None:
         _s.images_off = _low_before
 
+# 8.5.3 同一个开关也有热键（默认 Ctrl+Alt+L，设置里能改）：不在社区页时只改状态并存盘
+_save0 = w.save_config
+w.save_config = lambda *a, **k: None
+check("无图键有默认值，也能自己改",
+      (w.config.get("lowkey_key") or "").strip().lower() == "ctrl+alt+l"
+      and hasattr(w, "lowkey_hotkey_signal"), w.config.get("lowkey_key"))
+_low0 = bool(w.config.get("feed_lowkey", False))
+_img0 = [getattr(_s, "images_off", None) for _s in w.feed_sources]
+w.toggle_lowkey()
+check("按一下：配置、每个来源、设置里那个勾一起换",
+      bool(w.config.get("feed_lowkey")) == (not _low0)
+      and all(getattr(_s, "images_off", None) == (not _low0) for _s in w.feed_sources
+              if getattr(_s, "images_off", None) is not None),
+      (w.config.get("feed_lowkey"), [getattr(_s, "images_off", None) for _s in w.feed_sources]))
+w.toggle_lowkey()
+check("再按一下回到原样（不留痕，也不多发请求）",
+      bool(w.config.get("feed_lowkey")) == _low0
+      and [getattr(_s, "images_off", None) for _s in w.feed_sources] == _img0,
+      (w.config.get("feed_lowkey"), _img0))
+w.save_config = _save0
+
 # 8.5.1 按 R 刷新：必须**明确要求不吃缓存**（列表缓 5 分钟、正文缓一天，吃缓存等于没刷新）
 _calls = []
 _orig_load = w.feed_load
