@@ -850,7 +850,8 @@ for _s in w.feed_sources:
 _save0 = w.save_config
 w.save_config = lambda *a, **k: None
 check("无图键有默认值，也能自己改",
-      (w.config.get("lowkey_key") or "").strip().lower() == "ctrl+alt+l"
+      (w.config.get("lowkey_key") or "").strip().lower()
+      == (app_mod.DEFAULT_CONFIG.get("lowkey_key") or "").strip().lower()
       and hasattr(w, "lowkey_hotkey_signal"), w.config.get("lowkey_key"))
 _low0 = bool(w.config.get("feed_lowkey", False))
 _img0 = [getattr(_s, "images_off", None) for _s in w.feed_sources]
@@ -1568,6 +1569,26 @@ pump(lambda: w.feed_nav.posts and not w.feed_busy)
 check("示例源照常出内容", len(w.feed_nav.posts) >= 5, len(w.feed_nav.posts))
 
 # 10. 这一轮的键位：C/V 直接切、Z 撤回与回主页、E 到评论区、选字不折叠、偷瞄不收起
+# 无图开关就是一个字母 e（真人："Ctrl+Alt+L 太长了，e 就行"）：窗口里有焦点时才生效
+_save_e = w.save_config
+w.save_config = lambda *a, **k: None
+_lk0 = w.config.get("lowkey_key")
+w.config["lowkey_key"] = "e"                # 人自己可能配的是组合键，这里只验"配成 e 时"
+_low_e = bool(w.config.get("feed_lowkey", False))
+_e1 = w.on_feed_key(Qt.Key_E)
+check("E 一键换无图/有图（不用按长组合键）",
+      _e1 is True and bool(w.config.get("feed_lowkey")) == (not _low_e),
+      (w.config.get("feed_lowkey"), _low_e))
+w.on_feed_key(Qt.Key_E)
+pump(lambda: not w.feed_busy)
+w.save_config = _save_e
+w.config["lowkey_key"] = _lk0
+check("再按一下 E 换回原样", bool(w.config.get("feed_lowkey")) == _low_e,
+      w.config.get("feed_lowkey"))
+check("无图键的默认值就是一个字母 e（单键不挂全局钩子，不然打字就会翻图）",
+      (app_mod.DEFAULT_CONFIG.get("lowkey_key") or "").strip().lower() == "e",
+      app_mod.DEFAULT_CONFIG.get("lowkey_key"))
+
 _i0 = w.feed_source_i
 _n = len(w.feed_sources)
 w.feed_switch_prev = None
@@ -1621,7 +1642,8 @@ check("重画之后还能落回刚才那一行（不是永远顶部）",
       w.text_edit.verticalScrollBar().value() == _want,
       (_want, w.text_edit.verticalScrollBar().value()))
 
-# 详情：E 到评论区顶部、Z 一口气回列表、知乎"回答→问题"的 Esc 也回列表
+# 详情：B 到评论区顶部（原来是 E，E 让给无图开关了）、Z 一口气回列表、
+# 知乎"回答→问题"的 Esc 也回列表
 def _fake_detail(via=""):
     nav = w.feed_nav
     nav.view = "detail"
@@ -1645,7 +1667,7 @@ def _fake_detail(via=""):
 
 
 _fake_detail()
-_e_ok = w.on_feed_key(Qt.Key_E)
+_e_ok = w.on_feed_key(Qt.Key_B)
 _sb2 = w.text_edit.verticalScrollBar()
 check("E 直接跳到评论区（不用一段段滚）",
       _e_ok is True and _sb2.value() > 0, (_e_ok, _sb2.value()))

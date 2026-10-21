@@ -171,7 +171,9 @@ DEFAULT_CONFIG = {
     "anki_api_key": "",                  # AnkiConnect 配了 apiKey 时填这里
     # --- 社区统一流（知乎/V2EX/微博…统一成一种帖子，当第三个内容页，见 docs/community-feed-design.md）---
     "feed_key": "ctrl+alt+f",            # 进/出社区统一流
-    "lowkey_key": "ctrl+alt+l",          # 社区页有图 ↔ 无图（低调显示），当场生效
+    "lowkey_key": "e",                   # 社区页有图 ↔ 无图（低调显示），当场生效
+                                         # 单个字母只在窗口里有焦点时算（挂全局钩子会跟打字打架）；
+                                         # 写成 ctrl+alt+l 这种组合就注册成全局热键
     "feed_lowkey": False,                # 低调显示：社区页不出图、[图] 占位，工位上更不显眼
     "ghost_mode": False,
     "auto_mode": False,
@@ -2326,10 +2328,12 @@ class SettingsDialog(QDialog):
                      "排版（字体/行距/页边距/窗口大小）和书页完全一致；\n"
                      "再按一次换回书，回到原来那一页。划线会一起隐藏。")
 
-        self.lowkey_key_input = QLineEdit(self.config.get("lowkey_key", "ctrl+alt+l"))
+        self.lowkey_key_input = QLineEdit(self.config.get("lowkey_key", "e"))
         self.add_row(lay, "无图", self.lowkey_key_input,
                      "社区页在有图/无图（低调显示）之间切换，当场生效，不用进设置再保存；\n"
-                     "无图时只剩文字，图片的位置是一个 [图]。")
+                     "无图时只剩文字，图片的位置是一个 [图]。\n"
+                     "写单个字母（例如 e）= 只在窗口里有焦点时生效；\n"
+                     "写 ctrl+alt+l 这种组合 = 全局热键，窗口在后台也能按。")
 
         col.addStretch(1)
 
@@ -2789,7 +2793,7 @@ class SettingsDialog(QDialog):
         self.config["safe_doc_path"] = self.safe_doc_input.text().strip()
         self.config["anki_key"] = self.anki_key_input.text().strip() or "ctrl+alt+a"
         self.config["feed_key"] = self.feed_key_input.text().strip() or "ctrl+alt+f"
-        self.config["lowkey_key"] = self.lowkey_key_input.text().strip() or "ctrl+alt+l"
+        self.config["lowkey_key"] = self.lowkey_key_input.text().strip() or "e"
         lowkey_now = self.feed_lowkey_check.isChecked()
         _win = self.main_window
         if _win is not None:
@@ -3710,7 +3714,7 @@ class StealthReader(QWidget):
         safe_key_str = (self.config.get("safe_key", "ctrl+alt+d") or "").strip()
         review_key_str = (self.config.get("anki_key", "ctrl+alt+a") or "").strip()
         feed_key_str = (self.config.get("feed_key", "ctrl+alt+f") or "").strip()
-        lowkey_key_str = (self.config.get("lowkey_key", "ctrl+alt+l") or "").strip()
+        lowkey_key_str = (self.config.get("lowkey_key", "e") or "").strip()
         taken = set()
         try:
             keyboard.unhook_all()   # 只拆 keyboard 库自己的钩子；偷瞄/背诵的 ctypes 钩子是独立管理的
@@ -3741,7 +3745,14 @@ class StealthReader(QWidget):
         g_safe = _reg_global(safe_key_str, self.on_safe_hotkey_triggered, "安全文档")
         g_review = _reg_global(review_key_str, self.on_review_hotkey_triggered, "背诵")
         g_feed = _reg_global(feed_key_str, self.on_feed_hotkey_triggered, "社区")
-        g_lowkey = _reg_global(lowkey_key_str, self.on_lowkey_hotkey_triggered, "无图")
+        _lowkey_bare = bool(lowkey_key_str) and "+" not in lowkey_key_str and len(lowkey_key_str) == 1
+        if _lowkey_bare:
+            # 单个字母不能挂全局钩子（那样在任何程序里打出它都会翻一次图），也不建 QShortcut
+            # （那会把输入框里的字母吃掉）；交给社区页自己的按键处理，见 on_feed_key。
+            g_lowkey = False
+            log_event("无图键是单个字母（%s）：只在窗口里有焦点、且在社区页时生效" % lowkey_key_str)
+        else:
+            g_lowkey = _reg_global(lowkey_key_str, self.on_lowkey_hotkey_triggered, "无图")
         # 松键回调也重挂一遍（unhook_all 会把它一起拆掉）：热键"同一下只认第一次"靠它复位。
         try:
             keyboard.on_release(self.on_hotkey_release)
@@ -3804,7 +3815,7 @@ class StealthReader(QWidget):
             if self.lowkey_shortcut:
                 self.lowkey_shortcut.setKey(QKeySequence())
                 self.lowkey_shortcut = None
-            if not g_lowkey and lowkey_key_str:
+            if not g_lowkey and lowkey_key_str and not _lowkey_bare:
                 self.lowkey_shortcut = QShortcut(QKeySequence(lowkey_key_str), self)
                 self.lowkey_shortcut.setAutoRepeat(False)
                 self.lowkey_shortcut.activated.connect(self.toggle_lowkey)
@@ -5953,7 +5964,7 @@ class StealthReader(QWidget):
         return True
 
     def feed_scroll_comments_top(self):
-        """E：跳到评论区顶部（第一条评论的表头那一行）。"""
+        """B：跳到评论区顶部（第一条评论的表头那一行）。"""
         nav = self.feed_nav
         if nav is None or nav.view != "detail":
             return False
@@ -6487,8 +6498,14 @@ class StealthReader(QWidget):
             if nav.view == "detail":
                 return self.feed_home()
             return self.feed_undo_switch()
-        if key == Qt.Key_E:
-            # E：直接到评论区顶部（正文再长也不用一段段滚）
+        _lk = (self.config.get("lowkey_key", "e") or "").strip().lower()
+        if len(_lk) == 1 and key == ord(_lk.upper()):
+            # 无图 ↔ 有图：单键（默认 e）只在这个窗口里生效，所以放在页面键里处理。
+            # 挂成全局钩子的话，在任何程序里打出这个字母都会翻一次图。
+            self.toggle_lowkey()
+            return True
+        if key == Qt.Key_B:
+            # B：直接到评论区顶部（正文再长也不用一段段滚）——原来是 E，E 让给无图开关了
             return self.feed_scroll_comments_top()
         if key == Qt.Key_BracketLeft:
             self.feed_cycle_source(-1)
