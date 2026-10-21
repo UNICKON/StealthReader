@@ -2350,6 +2350,9 @@ def _hupu_time(text):
 HUPU_STANDINGS_URL = "https://nba.hupu.com/standings"
 HUPU_SCHEDULE_URL = "https://nba.hupu.com/schedule"
 HUPU_PBP_URL = "https://nba.hupu.com/games/playbyplay/%s"
+# `/games/<YYYY-MM-DD>`（比赛中心）：赛程页只给"数据统计/比赛前瞻"，**比分在这个页面上**，
+# 一天一次请求就能把当天所有比赛的比分和状态拿全。
+HUPU_GAMES_URL = "https://nba.hupu.com/games/%s"
 HUPU_BOX_URL = "https://nba.hupu.com/games/boxscore/%s"
 HUPU_LIVE_TTL = 20          # 文字直播的缓存寿命：比列表短得多，按 R 就是真去问一次
 
@@ -2418,6 +2421,34 @@ def parse_hupu_schedule(html):
             "stage": cells[2] if len(cells) > 2 else "",
             "url": (HUPU_PBP_URL % mid.group(1)) if mid else "",
         })
+    return out
+
+
+def parse_hupu_day_scores(html):
+    """比赛中心 `/games/<日期>` → `{match_id: {...}}`（赛程页本身不给比分）。
+
+    每场一块 `class="team_vs"`：`team_vs_a_1` 是客队、`team_vs_a_2` 是主队，两边各有一个
+    `<span class="num [red]">76</span>`（赢的那个带 `red`）；状态在 `team_vs_c` / `team_vs_b`
+    的 `<span class="b">` 里（"进行中 第三节剩5:57" / "已结束"）；同一块里
+    `boxscore/<matchId>` 就是这一场。**在 `table_data` 之前截断**，那里的分节表也有数字。
+    """
+    out = {}
+    for seg in str(html or "").split('class="team_vs"')[1:]:
+        head = seg.split("table_data")[0]
+        mid = re.search(r"boxscore/(\d+)", head)
+        names = re.findall(r"/teams/[A-Za-z0-9\-]+[^>]*>([^<]+)</a>", head)
+        nums = re.findall(r'class="num[^"]*">\s*([^<]*)</span>', head)
+        if not mid or len(names) < 2 or len(nums) < 2:
+            continue
+        status = re.search(r'class="b">(.*?)</span>', head, re.S)
+        st = status.group(1) if status else ""
+        out[mid.group(1)] = {
+            "away": feed_mod.strip_html(names[0]),
+            "home": feed_mod.strip_html(names[1]),
+            "away_score": nums[0].strip(),
+            "home_score": nums[1].strip(),
+            "status": re.sub(r"\s+", " ", feed_mod.strip_html(st)).strip(),
+        }
     return out
 
 
@@ -2794,20 +2825,60 @@ class HupuSource(RealSource):
             raise FeedNetError("虎扑战绩页没解析出表格（可能改版了）")
         return posts
 
+    def _day_scores(self, rows):
+        """当天比赛中心里的比分：`{match_id: {...}}`。
+
+        赛程页只写"数据统计/比赛前瞻"，**比分得另问一次**（`/games/<日期>`，一天一次，
+        不是一场一次）；还没开打的日子整页不用问。拿不到就照实不给比分，不影响列表。
+        """
+        days = []
+        for it in rows:
+            if (it.get("stage") or "比赛前瞻") == "比赛前瞻":
+                continue                       # 还没开打的不用问
+            ts = _hupu_match_ts(it["date"], it["time"])
+            if not ts:
+                continue
+            day = time.strftime("%Y-%m-%d", time.localtime(ts))
+            if day not in days:
+                days.append(day)
+        out = {}
+        for day in days[:2]:                   # 一次最多问两天，别把列表拖成 N 个请求
+            try:
+                out.update(parse_hupu_day_scores(self._html(HUPU_GAMES_URL % day,
+                                                            HUPU_LIVE_TTL)))
+            except Exception:
+                continue
+        return out
+
     def _schedule_posts(self, channel=None):
-        """赛程表上的每一场（时间 + 客 vs 主 + 到哪一步了）：直播栏和数据统计栏共用。"""
+        """赛程表上的每一场（时间 + 客 vs 主 + 比分/到哪一步了）：直播栏和数据统计栏共用。"""
         channel = channel or self.NBA_LIVE
         rows = parse_hupu_schedule(self._html(HUPU_SCHEDULE_URL, TTL_LIST))
+        scores = self._day_scores(rows)
         posts = []
         for it in rows:
             stage = it.get("stage") or ""
+            sc = scores.get(it["match_id"]) or {}
+            away = sc.get("away") or it["away"]
+            home = sc.get("home") or it["home"]
+            asc = str(sc.get("away_score") or "").strip()
+            hsc = str(sc.get("home_score") or "").strip()
+            excerpt = stage
+            if asc and hsc:
+                # 列表里一眼看到打到几比几：`96 - 92 · 进行中 第三节剩5:57`
+                bits = ["%s - %s" % (asc, hsc)]
+                if sc.get("status"):
+                    bits.append(sc["status"])
+                elif stage:
+                    bits.append(stage)
+                excerpt = " · ".join(bits)
             posts.append(Post(
                 source=self.key, source_label=self.label, channel=channel,
                 pid=it["match_id"] or ("%s-%s" % (it["away"], it["home"])),
-                title="%s vs %s" % (it["away"], it["home"]),
+                title="%s vs %s" % (away, home),
                 author="NBA", created="%s %s" % (it["date"], it["time"]),
                 ts=_hupu_match_ts(it["date"], it["time"]),
-                score=0, n_comments=0, excerpt=stage,
+                score=0, n_comments=0, excerpt=excerpt,
                 url=it["url"] or HUPU_SCHEDULE_URL,
                 tags=[stage] if stage else [],
             ))

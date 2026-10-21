@@ -1019,13 +1019,16 @@ else:
     raw_sc = fixture_bytes("hupu_schedule.html")
     raw_pb = fixture_bytes("hupu_playbyplay.html")
     raw_bx = fixture_bytes("hupu_boxscore.html")
+    raw_gd = fixture_bytes("hupu_games_day.html")
     hp = feed_sources.HupuSource(
         FakeHttp(bytes_routes={"/bxj": raw_hl, "/vote": raw_hl, "/topic-daily": raw_hl,
                                "643064746.html": raw_ht,
                                "nba.hupu.com/standings": raw_st,
                                "nba.hupu.com/schedule": raw_sc,
                                "nba.hupu.com/games/playbyplay/": raw_pb,
-                               "nba.hupu.com/games/boxscore/": raw_bx},
+                               "nba.hupu.com/games/boxscore/": raw_bx,
+                               # 比赛中心按日期：/games/2026-10-21（赛程页本身不给比分）
+                               "nba.hupu.com/games/20": raw_gd or b""},
                  cache=MemCache()))
     check("虎扑的栏目 = 两栏 NBA + 精选 + 全量目录（名字不重复，步行街排在它们后面）",
           len(hp.channels()) > 200 and len(set(hp.channels())) == len(hp.channels())
@@ -1140,16 +1143,25 @@ else:
               len(_stw_rows) > 1 and _stw_rows[1].startswith("1\t独行侠\t"), _stw_rows[1:2])
         check("净胜分带正负号（一眼看得出赢分还是输分）",
               "+8.0" in (_st_rows[1]) and "-8.0" in (_st_rows[2]), _st_rows[1:3])
+        _calls0 = len(hp.http.calls)
         lv_posts, lv_nxt = hp.list("NBA 赛程")
+        _day_calls = [u for u in hp.http.calls[_calls0:] if "/games/20" in u]
         check("赛程栏 = 赛程上的每一场（表头那行'客队 vs 主队'挡掉，只剩真比赛）",
               len(lv_posts) == 14 and lv_nxt is None
               and all(p.id.isdigit() for p in lv_posts)
               and lv_posts[0].title == "凯尔特人 vs 活塞"
               and lv_posts[0].created == "10月21日 星期三 03:00",
               [(p.id, p.title, p.created) for p in lv_posts[:2]])
-        check("赛程行带着'到哪一步了'（数据直播/比赛前瞻），点进去才知道比分",
+        check("赛程行带着'到哪一步了'（数据直播/比赛前瞻）",
               lv_posts[1].tags == ["数据直播"] and lv_posts[2].tags == ["比赛前瞻"],
               [p.tags for p in lv_posts[:3]])
+        check("赛程列表里直接写比分：打完的'113 - 121 · 已结束'，进行中的带节次",
+              lv_posts[0].excerpt == "113 - 121 · 已结束"
+              and lv_posts[2].excerpt == "74 - 67 · 进行中 第三节剩5:57",
+              [p.excerpt for p in lv_posts[:3]])
+        check("比分是「当天比分页」一次问来的（不是一场一个请求），还没开打的日子不问",
+              len(_day_calls) == 1 and "/games/20" in _day_calls[0],
+              _day_calls)
         lvd, _ = hp.detail(lv_posts[1])
         check("（真夹具）文字直播：先比分和状态，再一条条回合（最新的在上）",
               lvd.body[0].text == "76人 96 - 92 尼克斯（第四节剩5:22）"

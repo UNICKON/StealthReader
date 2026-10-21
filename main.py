@@ -2042,7 +2042,10 @@ class SettingsDialog(QDialog):
             key: self.config.get(key) for key in
             ("font_size", "font_family", "line_spacing", "paragraph_spacing",
              "page_margin_chars", "first_line_indent", "paragraph_indent",
-             "arrow_scroll_lines", "feed_font_size", "feed_font_family")
+             "feed_font_size", "feed_font_family")
+            # 注意 **不包含 arrow_scroll_lines**（滚动行数）：它不是"排版预览"，
+            # 屏幕上没有预览可退；以前点「取消」会把它悄悄改回旧值再落盘，
+            # 表现出来就是"调了滚动行数没生效"（真人报过两次）。
         }
 
         self.cookie_edits = {}      # 这一轮贴/找到的 Cookie：点保存才写进 feed_auth.json
@@ -3646,7 +3649,7 @@ class StealthReader(QWidget):
         """
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
-        self.scroll_px(int(direction) * lines * self._line_height_px())
+        self.scroll_px(int(direction) * lines * self._line_height_px(), flip=False)
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -4503,11 +4506,12 @@ class StealthReader(QWidget):
             return h
         return max(6, int(self.text_edit.fontMetrics().height()))
 
-    def scroll_px(self, px):
+    def scroll_px(self, px, flip=True):
         """按像素滚正文——滚轮和方向键共用这一条，滚多少行由设置决定。
 
-        滚到**真的滚不动**时才衔接前后页、才换章：以前按"离两端还差几像素"判断，
-        于是滚着滚着就整页/整章翻走。"""
+        `flip=False`（滚轮 / 上下方向键）：滚到顶就**停住**，绝不自动翻页、绝不换章。
+        真人："有时候向上滚动还是会变成翻了一整页，我希望这个永远不出现。"
+        往前/往后翻整页只留给**明确的翻页键**（空格 / PageUp / PageDown）。"""
         if not px:
             return
         sb = self.text_edit.verticalScrollBar()
@@ -4518,6 +4522,8 @@ class StealthReader(QWidget):
         if self.feed_mode or (self.review_mode and not self.safe_mode):
             return                          # 社区/卡片：滚它们自己，不接页、不碰书页进度
         if self.is_local_mode and self.local_full_text:
+            if not flip:
+                return                      # 滚轮：滚到边就停，别悄悄换一屏文字
             if px > 0 and sb.maximum() > 0 and sb.value() >= sb.maximum():
                 # 缓冲区到底：下一页从"当前视口顶部"衔接，已看的字不重不漏
                 cursor = self.text_edit.cursorForPosition(QPoint(0, 0))
@@ -4544,6 +4550,8 @@ class StealthReader(QWidget):
             return
         if not self.current_book:
             return
+        if not flip:
+            return                          # 滚轮：到头就停，别自动换下一章
         if sb.value() == before:            # 网络书：滚不动了才换章
             if px > 0:
                 self.next_chapter()
@@ -4557,7 +4565,7 @@ class StealthReader(QWidget):
         现在两边都走 `scroll_px`，行数在设置里一起调。"""
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
-        self.scroll_px((float(-delta) / 120.0) * lines * self._line_height_px())
+        self.scroll_px((float(-delta) / 120.0) * lines * self._line_height_px(), flip=False)
 
     def _feed_hstep(self):
         """左右滑一格走多少像素：和竖直同一套——"滚动行数 × 一行高"。"""

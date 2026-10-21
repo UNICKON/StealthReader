@@ -526,6 +526,53 @@ w.render_local_page()
 qapp.processEvents()
 
 
+class _BookWheel(object):
+    """只为走一遍 eventFilter 的滚轮分支（真 QWheelEvent 要凑一堆参数）。"""
+
+    def __init__(self, dy):
+        self._dy = dy
+
+    def type(self):
+        return QEvent.Wheel
+
+    def angleDelta(self):
+        return QPoint(0, self._dy)
+
+    def modifiers(self):
+        return Qt.NoModifier
+
+
+# 真人："有时候向上滚动还是会变成翻了一整页，我希望这个永远不出现。"
+_keep_local = (w.local_start_index, w.local_full_text)
+w.local_full_text = ("这一行只是把正文撑长，好让滚动条有得滚。" * 900)
+w.local_start_index = 6000            # 前面还有得翻，才试得出来"有没有偷偷翻"
+w.render_local_page()
+qapp.processEvents()
+_sb_book = w.text_edit.verticalScrollBar()
+_sb_book.setValue(0)
+_idx0 = w.local_start_index
+for _ in range(3):
+    w.eventFilter(w.text_edit.viewport(), _BookWheel(120))
+    qapp.processEvents()
+check("滚到顶再往上滚：只是停住，不会悄悄翻到上一屏",
+      w.local_start_index == _idx0 and _sb_book.value() == 0,
+      (w.local_start_index, _idx0, _sb_book.value()))
+_sb_book.setValue(_sb_book.maximum())
+_idx0 = w.local_start_index
+for _ in range(3):
+    w.eventFilter(w.text_edit.viewport(), _BookWheel(-120))
+    qapp.processEvents()
+check("滚到底再往下滚也一样：停在原地，不换下一屏",
+      w.local_start_index == _idx0 and _sb_book.value() == _sb_book.maximum(),
+      (w.local_start_index, _idx0, _sb_book.value()))
+w.scroll_lines(1)
+check("方向键同一套：到头就停（往前翻整页只留给空格/PageUp/PageDown）",
+      w.local_start_index == _idx0, (w.local_start_index, _idx0))
+w.local_start_index, w.local_full_text = _keep_local
+w.render_local_page()
+qapp.processEvents()
+
+
 def _glyph_font(te):
     """正文**字符自己**带的那套字体（不是控件字体、也不是文档默认字体）。
 
@@ -684,6 +731,9 @@ qapp.processEvents()
 
 # 8.5 设置窗口里真的有这个开关，而且取消勾选是"删掉键"而不是留个 0
 _set_dlg = app_mod.SettingsDialog(w.config, w)
+check("滚动行数不在「点取消就退回」的排版预览名单里（调了就该留下）",
+      "arrow_scroll_lines" not in _set_dlg.original_typography,
+      sorted(_set_dlg.original_typography))
 _set_dlg.feed_font_check.setChecked(True)
 _set_dlg.feed_font_spin.setValue(19)
 qapp.processEvents()
