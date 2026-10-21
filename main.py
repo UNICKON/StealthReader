@@ -2954,6 +2954,7 @@ class StealthReader(QWidget):
         self._feed_live_fail = 0                     # 连着失败了几拍
         self._feed_live_retry_at = 0.0               # 退让到什么时候之前不发请求
         self._feed_live_mode_was = ""                 # 上一帧在盯什么（""/detail/list）
+        self._feed_live_best = {}                     # (来源, 比赛id) → (进度, 见过的摘要)
         if FEED_OK:
             try:
                 self.feed_sources = feed_mod.build_sources(
@@ -5263,8 +5264,9 @@ class StealthReader(QWidget):
             # （真人："点进去文字直播总是停留在某个时刻的比分"）。
             digest = hashlib.sha1(
                 "\n".join(b.text or "" for b in body).encode("utf-8")).hexdigest()
-            return ("detail", getattr(p, "id", ""), len(body), digest,
-                    len(roots), sum(c.total() for c in roots))
+            # 摘要那一行也是比分（详情页标题下面那行），以前它变了不算"变了"
+            return ("detail", getattr(p, "id", ""), getattr(p, "excerpt", ""), len(body),
+                    digest, len(roots), sum(c.total() for c in roots))
         posts = nav.posts or []
         return ("list", getattr(nav, "channel", ""), nav.view, len(posts),
                 tuple(p.id for p in posts))
@@ -5341,6 +5343,12 @@ class StealthReader(QWidget):
             self.feed_error = ""
             nav = self.feed_nav
             if kind == "list":
+                for _p in (posts or []):
+                    _ex = getattr(_p, "excerpt", "") or ""
+                    if _ex:
+                        _new2 = self._live_newest((tag, getattr(_p, "id", "")), _ex)
+                        if _new2 != _ex:
+                            _p.excerpt = _new2
                 if not append:
                     nav.reset()
                     nav.add_page(posts, nxt)
@@ -5351,7 +5359,12 @@ class StealthReader(QWidget):
                 # 新一页到了：重新武装"到底自动续页"（每次到底只发一次）
                 self.feed_more_armed = True
             elif kind == "detail":
-                nav.set_detail(post, cmts, cnxt)
+                _live_text = (getattr(post, "excerpt", "") or "")
+                if not _live_text:
+                    _b = getattr(post, "body", None) or []
+                    _live_text = next((b.text for b in _b if getattr(b, "text", "")), "")
+                if self._live_guard((tag, getattr(post, "id", "")), _live_text):
+                    nav.set_detail(post, cmts, cnxt)
                 self._feed_live_fail = 0        # 这一拍成了：退让清零
                 self._feed_live_retry_at = 0.0
             elif kind == "comments":
@@ -5363,8 +5376,10 @@ class StealthReader(QWidget):
                 for _p in (nav.posts or []):
                     new = (mapping or {}).get(str(_p.id))
                     if new and new != (_p.excerpt or ""):
-                        _p.excerpt = new
-                        changed = True
+                        _new2 = self._live_newest((tag, _p.id), new)
+                        if _new2 != (_p.excerpt or ""):
+                            _p.excerpt = _new2
+                            changed = True
                 self._feed_live_fail = 0
                 self._feed_live_retry_at = 0.0
                 if changed:
@@ -5454,6 +5469,35 @@ class StealthReader(QWidget):
     def _feed_live_watching(self):
         """此刻是不是"还有活的东西在看"（定时重取、失败退让都看这一条）。"""
         return bool(self._feed_live_mode())
+
+    def _live_guard(self, key, text):
+        """这份比分能盖到屏幕上吗？站点有时会把**更旧的快照**回给你。
+
+        实测同一场比赛在几分钟里取到过 `87 - 72 第三节剩2:41`、`95 - 86 第四节剩9:24`、
+        `102 - 90 第四节剩6:57` 三份（不同节点、不同年龄），所以刷新完切走再回来会"变回去"。
+        比分不会往回走、同一节的剩余时间只会变少：更小就是更旧，旧的不许盖新的。
+        读不出进度的（别的来源、没有比分）一律放行——不猜。
+        """
+        import feed_sources as _fs
+        prog = _fs.hupu_progress(text)
+        if prog is None:
+            return True
+        k = str(key)
+        best = self._feed_live_best.get(k)
+        if best is not None and prog < best[0]:
+            return False
+        if len(self._feed_live_best) > 300:          # 一天的比赛不会这么多，顺手清一清
+            for _k in list(self._feed_live_best)[:100]:
+                self._feed_live_best.pop(_k, None)
+        self._feed_live_best[k] = (prog, text)
+        return True
+
+    def _live_newest(self, key, text):
+        """整页换新的时候用：这份比见过的旧，就顶回见过的那份。"""
+        if self._live_guard(key, text):
+            return text
+        best = self._feed_live_best.get(str(key))
+        return best[1] if best else text
 
     def feed_live_watch(self):
         """按当前视图决定直播那张表要不要走，走多快：

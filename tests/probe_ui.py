@@ -1184,6 +1184,21 @@ pump(lambda: cs.n_detail > _n_live, 12.0)
 check("5 秒到点真的会再问一次（不只是把表开起来）", cs.n_detail > _n_live,
       (cs.n_detail, _n_live))
 
+# 站点会回更旧的快照（实测同一场比赛几分钟内能收到三份不同年龄的页）
+_tag_now = getattr(w.feed_source(), "key", "")
+_cur_post = w.feed_nav.post
+_newer_post = feed_sources.Post.from_dict(_cur_post.to_dict())
+_newer_post.excerpt = "110 - 99 · 进行中 第四节剩1:00"
+w._live_guard((_tag_now, _newer_post.id), _newer_post.excerpt)     # 先让它"见过"这份
+_older_post = feed_sources.Post.from_dict(_cur_post.to_dict())
+_older_post.excerpt = "96 - 92 · 进行中 第四节剩5:22"
+w.on_feed_data("detail", (_older_post, [], None, w.feed_gen, _tag_now))
+qapp.processEvents()
+check("详情页也认进度：更旧的快照顶不上来",
+      w.feed_nav.post is not _older_post,
+      (getattr(w.feed_nav.post, "excerpt", "")[:20],))
+w._feed_live_best.clear()      # 别把后面列表那几条的进度记录搅乱
+
 # 打完就停表，但停之前要再问最后一次：不然屏幕停在倒数第二拍的比分
 w.feed_live_timer.stop()
 w._feed_live_fail = 0
@@ -1305,6 +1320,18 @@ check("补比分只动摘要：屏幕上直接是新比分，列表本身没被�
       _p0.excerpt == "101 - 98 · 进行中 第四节剩3:12"
       and "101 - 98" in w.text_edit.toPlainText() and w.feed_nav.view == "list",
       (_p0.excerpt, w.feed_nav.view))
+_live_fn = w.feed_source().live_scores
+w.feed_source().live_scores = lambda posts: {str(_p0.id): "96 - 92 · 进行中 第四节剩5:22"}
+pump(lambda: not w.feed_busy, 10.0)
+w._feed_live_fail = 0
+w._feed_live_retry_at = 0.0
+w.feed_live_tick()
+pump(lambda: not w.feed_busy, 10.0)
+qapp.processEvents()
+check("列表也一样：站点回旧的那份，屏幕上的比分不往回退",
+      _p0.excerpt.startswith("101 - 98"), _p0.excerpt)
+w.feed_source().live_scores = _live_fn
+
 _p0.excerpt = "106 - 100 · 已结束"
 w.render_feed()
 check("场上都打完了就不再自己问（表停掉）", not w.feed_live_timer.isActive())

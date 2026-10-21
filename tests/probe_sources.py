@@ -1121,6 +1121,18 @@ else:
           _lives[:3] == [True, True, True] and _lives[3:] == [False, False, False],
           _lives)
 
+    # 比分进度：越大越新（站点会回更旧的快照，靠它认出来）
+    _prog = [feed_sources.hupu_progress(t) for t in (
+        "87 - 72 · 进行中 第三节剩2:41",
+        "95 - 86 · 进行中 第四节剩9:24",
+        "102 - 90 · 进行中 第四节剩6:57",
+        "101 - 99 · 已结束",
+        "比赛前瞻",
+    )]
+    check("比分进度：节次往后/同节剩余更少/总分更高 才算新；没比分的读不出来",
+          _prog[0] < _prog[1] < _prog[2] < _prog[3] and _prog[4] is None,
+          _prog)
+
     # ---- NBA：战绩 + 赛程（一场一条，详情里 T 切文字直播/数据统计）----
     if raw_st is None or raw_sc is None or raw_pb is None or raw_bx is None:
         skip("虎扑 NBA", "缺 hupu_standings/schedule/playbyplay/boxscore 夹具")
@@ -1175,6 +1187,15 @@ else:
         _calls1 = len(hp.http.calls)
         _live_map = hp.live_scores(lv_posts)
         _day_calls2 = [u for u in hp.http.calls[_calls1:] if "/games/20" in u]
+        _live_p = [p for p in lv_posts if "进行中" in (p.excerpt or "")][0]
+        _d, _ = hp.detail(_live_p)
+        _head = next((b.text for b in _d.body if getattr(b, "text", "")), "")
+        _num = re.search(r"(\d+) - (\d+)", _head)
+        check("详情的摘要跟着这一刻的比分走（不是进列表那一刻那份）",
+              bool(_num) and _d.excerpt.startswith("%s - %s" % (_num.group(1), _num.group(2)))
+              and "进行中" in _d.excerpt,
+              (_d.excerpt, _head))
+
         check("列表补比分同样是一天一个请求，回来的是 id → 摘要",
               _live_map.get("168864") == "74 - 67 · 进行中 第三节剩5:57"
               and _live_map.get("168862") == "113 - 121 · 已结束"

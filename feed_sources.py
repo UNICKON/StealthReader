@@ -2452,6 +2452,36 @@ def parse_hupu_day_scores(html):
     return out
 
 
+_HUPU_CN_PERIOD = {"一": 1, "二": 2, "三": 3, "四": 4}
+
+
+def hupu_progress(text):
+    """从"比分 + 状态"里读出 (节次, -剩余秒, 总分)：越大越新。读不出来返回 None。
+
+    为什么要它：虎扑自己的页面会隔一会儿才重排，**不同节点拿到的快照年龄能差好几分钟**
+    （实测同一时刻取到过 `95 - 86 第四节剩9:24` 和 `102 - 90 第四节剩6:57` 两份，后者更新）。
+    比分不会往回走、同一节的剩余时间只会变少，所以"更小"就是"更旧"——旧的不许盖掉新的。
+    """
+    s = str(text or "")
+    m = re.search(r"(\d{1,3})\s*-\s*(\d{1,3})", s)
+    if not m:
+        return None
+    total = int(m.group(1)) + int(m.group(2))
+    if any(k in s for k in ("已结束", "完场", "比赛结束", "全场结束")):
+        return (9, 0, total)
+    m2 = re.search(r"第([一二三四])节", s)
+    if not m2:
+        if "中场休息" in s:
+            return (2, 0, total)                 # 中场 = 第二节打完了
+        if "加时" in s:
+            return (5, 0, total)
+        return None
+    period = _HUPU_CN_PERIOD[m2.group(1)]
+    m3 = re.search(r"剩\s*(\d{1,2}):(\d{2})", s)
+    left = (int(m3.group(1)) * 60 + int(m3.group(2))) if m3 else 0
+    return (period, -left, total)
+
+
 def _hupu_score_excerpt(sc, stage=""):
     """一场比赛的列表摘要：`96 - 92 · 进行中 第三节剩5:57`；没有比分就退回阶段文字。"""
     sc = sc or {}
@@ -2465,6 +2495,15 @@ def _hupu_score_excerpt(sc, stage=""):
     elif stage:
         bits.append(stage)
     return " · ".join(bits)
+
+
+def _hupu_with_live(sc):
+    """文字直播/技术统计页的状态只有"第四节剩5:22"，摘要里补上"进行中"（和列表一个样子）。"""
+    sc = dict(sc or {})
+    st = str(sc.get("status") or "").strip()
+    if sc.get("live") and st and "进行中" not in st:
+        sc["status"] = "进行中 " + st
+    return sc
 
 
 def _hupu_match_ts(day, hhmm):
@@ -2979,6 +3018,9 @@ class HupuSource(RealSource):
         flush()
         out.body = body
         out.url = HUPU_PBP_URL % mid
+        # 摘要那一行也是比分：不跟着刷新的话，正文都换了几轮，标题下面还挂着进列表那一刻的
+        # 旧比分（真人截图里就是这个：正文已经第四节，标题下面还是"第三节剩2:41"）
+        out.excerpt = _hupu_score_excerpt(_hupu_with_live(data))
         self._tag_live(out, data["live"], data["status"])
         self._tag_view(out, "live")
         return out
@@ -3071,6 +3113,7 @@ class HupuSource(RealSource):
                 # lang="wide"：17 列不折行，屏幕左右滑（横条不显示）
                 body.append(Block(kind=BLOCK_TABLE, text=ptable, lang="wide"))
         out.body = body
+        out.excerpt = _hupu_score_excerpt(_hupu_with_live(head))
         out.url = HUPU_BOX_URL % mid
         self._tag_live(out, head["live"], head["status"])
         self._tag_view(out, "stats")
