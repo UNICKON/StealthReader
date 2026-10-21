@@ -1580,6 +1580,13 @@ check("Z 撤回上一次切社区", w.on_feed_key(Qt.Key_Z) is True and w.feed_s
 pump(lambda: not w.feed_busy)
 check("撤完再按 Z 就说“没得撤”，不装作成功",
       w.on_feed_key(Qt.Key_Z) is False)
+# D/F 是 C/V 的回头路（真人："d 上一个社区，f 上一个板块"）
+_i1 = w.feed_source_i
+w.on_feed_key(Qt.Key_C)
+pump(lambda: not w.feed_busy)
+check("D 直接切回上一个社区（跟 C 对称）",
+      w.on_feed_key(Qt.Key_D) is True and w.feed_source_i == _i1, (w.feed_source_i, _i1))
+pump(lambda: not w.feed_busy)
 _ith = [i for i, _s in enumerate(w.feed_sources) if _s.key == "ithome"]
 if _ith:
     w.feed_source_i = _ith[0]
@@ -1588,6 +1595,12 @@ if _ith:
     check("V 直接切到下一栏（不弹窗）",
           w.on_feed_key(Qt.Key_V) is True and w.feed_nav.channel != _ch0,
           (w.feed_nav.channel, _ch0))
+    pump(lambda: not w.feed_busy)
+    check("F 直接切回上一栏（跟 V 对称）",
+          w.on_feed_key(Qt.Key_F) is True and w.feed_nav.channel == _ch0,
+          (w.feed_nav.channel, _ch0))
+    pump(lambda: not w.feed_busy)
+    w.on_feed_key(Qt.Key_V)                     # 再往前一步，下面验 Z
     pump(lambda: not w.feed_busy)
     check("Z 撤回板块切换", w.on_feed_key(Qt.Key_Z) is True and w.feed_nav.channel == _ch0,
           (w.feed_nav.channel, _ch0))

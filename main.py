@@ -6519,6 +6519,12 @@ class StealthReader(QWidget):
         if key == Qt.Key_V:
             # V = 直接切到下一个板块（来源内的栏目），Z 撤回
             return self.feed_cycle_channel(1)
+        if key == Qt.Key_D:
+            # D = 上一个社区：C 的反向（真人："d 上一个社区"），Z 同样能撤回
+            return self.feed_cycle_source(-1)
+        if key == Qt.Key_F:
+            # F = 上一个板块：V 的反向（真人："f 上一个板块"）
+            return self.feed_cycle_channel(-1)
         if key in (Qt.Key_Left, Qt.Key_Right):
             # 列多的表：左右箭头左右滑（横条不显示，只有这两个键和滚轮）
             step = self._feed_hstep()
@@ -8353,6 +8359,8 @@ class StealthReader(QWidget):
             act.setChecked(i == self.feed_source_i)
             act.triggered.connect(lambda _=False, idx=i: self.feed_goto_source(idx))
         src_menu.addSeparator()
+        src_menu.addAction("◀️ 上一个社区（D）").triggered.connect(
+            lambda: self.feed_cycle_source(-1))
         src_menu.addAction("▶️ 下一个社区（C）").triggered.connect(
             lambda: self.feed_cycle_source(1))
         src_menu.addAction("🔍 选一个社区…").triggered.connect(self.feed_source_picker)
@@ -8372,6 +8380,8 @@ class StealthReader(QWidget):
             board_menu.addSeparator()
             board_menu.addAction("　…还有 %d 个（用下面的列表搜）" % (len(channels) - 24)).setEnabled(False)
         board_menu.addSeparator()
+        board_menu.addAction("◀️ 上一个板块（F）").triggered.connect(
+            lambda: self.feed_cycle_channel(-1))
         board_menu.addAction("▶️ 下一个板块（V）").triggered.connect(
             lambda: self.feed_cycle_channel(1))
         board_menu.addAction("🔍 选一个板块…").triggered.connect(self.feed_board_picker)
