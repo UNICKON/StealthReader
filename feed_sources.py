@@ -2452,6 +2452,21 @@ def parse_hupu_day_scores(html):
     return out
 
 
+def _hupu_score_excerpt(sc, stage=""):
+    """一场比赛的列表摘要：`96 - 92 · 进行中 第三节剩5:57`；没有比分就退回阶段文字。"""
+    sc = sc or {}
+    asc = str(sc.get("away_score") or "").strip()
+    hsc = str(sc.get("home_score") or "").strip()
+    if not (asc and hsc):
+        return stage
+    bits = ["%s - %s" % (asc, hsc)]
+    if sc.get("status"):
+        bits.append(str(sc["status"]).strip())
+    elif stage:
+        bits.append(stage)
+    return " · ".join(bits)
+
+
 def _hupu_match_ts(day, hhmm):
     """`10月21日 星期三` + `03:00` → epoch（今年；认不出来给 0）。"""
     d = re.search(r"(\d{1,2})月(\d{1,2})日", day or "")
@@ -2850,6 +2865,37 @@ class HupuSource(RealSource):
                 continue
         return out
 
+    def live_scores(self, posts):
+        """列表里这几场比赛的**当前**比分 → `{pid: "96 - 92 · 进行中 第三节剩5:57"}`。
+
+        列表本身缓存 5 分钟，对"进行中的比赛"太久了（真人："比赛在进行中时赛程的比分应该
+        会刷新"）。这一条只更新摘要：一天一个请求、不重排整个列表、不动光标。
+        """
+        now = time.time()
+        days = []
+        for p in posts or []:
+            ts = int(getattr(p, "ts", 0) or 0)
+            if not ts or abs(now - ts) > 8 * 3600:
+                continue                        # 只看今天前后这几场，历史比赛不追问
+            day = time.strftime("%Y-%m-%d", time.localtime(ts))
+            if day not in days:
+                days.append(day)
+        out = {}
+        for day in days[:2]:
+            try:
+                scores = parse_hupu_day_scores(self._html(HUPU_GAMES_URL % day,
+                                                          HUPU_LIVE_TTL))
+            except Exception:
+                continue
+            for pid, sc in scores.items():
+                stage = ""
+                for p in posts or []:
+                    if str(getattr(p, "id", "")) == str(pid):
+                        stage = (p.tags[0] if p.tags else "")
+                        break
+                out[str(pid)] = _hupu_score_excerpt(sc, stage)
+        return out
+
     def _schedule_posts(self, channel=None):
         """赛程表上的每一场（时间 + 客 vs 主 + 比分/到哪一步了）：直播栏和数据统计栏共用。"""
         channel = channel or self.NBA_LIVE
@@ -2861,17 +2907,8 @@ class HupuSource(RealSource):
             sc = scores.get(it["match_id"]) or {}
             away = sc.get("away") or it["away"]
             home = sc.get("home") or it["home"]
-            asc = str(sc.get("away_score") or "").strip()
-            hsc = str(sc.get("home_score") or "").strip()
-            excerpt = stage
-            if asc and hsc:
-                # 列表里一眼看到打到几比几：`96 - 92 · 进行中 第三节剩5:57`
-                bits = ["%s - %s" % (asc, hsc)]
-                if sc.get("status"):
-                    bits.append(sc["status"])
-                elif stage:
-                    bits.append(stage)
-                excerpt = " · ".join(bits)
+            # 列表里一眼看到打到几比几：`96 - 92 · 进行中 第三节剩5:57`
+            excerpt = _hupu_score_excerpt(sc, stage)
             posts.append(Post(
                 source=self.key, source_label=self.label, channel=channel,
                 pid=it["match_id"] or ("%s-%s" % (it["away"], it["home"])),

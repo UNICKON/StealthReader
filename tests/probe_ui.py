@@ -497,6 +497,7 @@ qapp.processEvents()
 # 8.3 真按键（走 Qt 事件，不是直接调 on_feed_key——以前探针只验了后者）
 from PyQt5.QtGui import QKeyEvent                                          # noqa: E402
 from PyQt5.QtCore import QEvent, QPoint                                       # noqa: E402
+from PyQt5.QtGui import QTextCursor                                         # noqa: E402
 use_sources(ORIG_SOURCES)                  # 得有不止一个来源，否则"切过去了"看不出来
 w.feed_load("list")
 pump(lambda: w.feed_nav.posts and not w.feed_busy)
@@ -542,32 +543,53 @@ class _BookWheel(object):
         return Qt.NoModifier
 
 
-# 真人："有时候向上滚动还是会变成翻了一整页，我希望这个永远不出现。"
+# 真人："滚轮向上到顶应该把上一页渲染出来然后继续向上滚动，无缝无感知。"
 _keep_local = (w.local_start_index, w.local_full_text)
 w.local_full_text = ("这一行只是把正文撑长，好让滚动条有得滚。" * 900)
-w.local_start_index = 6000            # 前面还有得翻，才试得出来"有没有偷偷翻"
+w.local_start_index = 6000
 w.render_local_page()
 qapp.processEvents()
+_step = int(w._line_height_px() * int(w.config.get("arrow_scroll_lines") or 3))
+
+# 往下到底：接下一段，新缓冲第 0 行就是刚才视口第一行（同一行不重不漏）
+_sb_book = w.text_edit.verticalScrollBar()
+_sb_book.setValue(_sb_book.maximum())
+_first = w.text_edit.cursorForPosition(QPoint(0, 0)).position()
+_want_start = w.local_start_index + _first
+_idx_down = w.local_start_index
+w.eventFilter(w.text_edit.viewport(), _BookWheel(-120))
+qapp.processEvents()
+check("滚到底再往下滚：接上下一段（新缓冲从刚才那一行开始），不是跳回页首",
+      w.local_start_index == _want_start and w.local_start_index > _idx_down,
+      (w.local_start_index, _want_start, _idx_down))
+
+# 往上到顶：接上一段，而且原来屏幕第一行还在屏幕上、只往下挪了一格滚轮那么远
 _sb_book = w.text_edit.verticalScrollBar()
 _sb_book.setValue(0)
-_idx0 = w.local_start_index
+_anchor = w.local_start_index
+w.eventFilter(w.text_edit.viewport(), _BookWheel(120))
+qapp.processEvents()
+_cur_anchor = QTextCursor(w.text_edit.document())
+_cur_anchor.setPosition(max(0, _anchor - w.local_start_index))
+_y_anchor = w.text_edit.cursorRect(_cur_anchor).top()
+check("滚轮往上到顶：上一段接上了，而且不是翻一整页（原来那一行还在屏幕上）",
+      w.local_start_index < _anchor and 0 < _y_anchor < _step + 30,
+      (w.local_start_index, _anchor, _y_anchor, _step))
+
+# 全文开头：往上就是停住（不绕回结尾、不换章）
+w.local_start_index = 0
+w.render_local_page()
+qapp.processEvents()
+w.text_edit.verticalScrollBar().setValue(0)
 for _ in range(3):
     w.eventFilter(w.text_edit.viewport(), _BookWheel(120))
     qapp.processEvents()
-check("滚到顶再往上滚：只是停住，不会悄悄翻到上一屏",
-      w.local_start_index == _idx0 and _sb_book.value() == 0,
-      (w.local_start_index, _idx0, _sb_book.value()))
-_sb_book.setValue(_sb_book.maximum())
-_idx0 = w.local_start_index
-for _ in range(3):
-    w.eventFilter(w.text_edit.viewport(), _BookWheel(-120))
-    qapp.processEvents()
-check("滚到底再往下滚也一样：停在原地，不换下一屏",
-      w.local_start_index == _idx0 and _sb_book.value() == _sb_book.maximum(),
-      (w.local_start_index, _idx0, _sb_book.value()))
-w.scroll_lines(1)
-check("方向键同一套：到头就停（往前翻整页只留给空格/PageUp/PageDown）",
-      w.local_start_index == _idx0, (w.local_start_index, _idx0))
+check("已经在全文开头：再往上滚只是停住（不绕到结尾）",
+      w.local_start_index == 0 and w.text_edit.verticalScrollBar().value() == 0,
+      (w.local_start_index, w.text_edit.verticalScrollBar().value()))
+w.local_start_index, w.local_full_text = _keep_local
+w.render_local_page()
+qapp.processEvents()
 w.local_start_index, w.local_full_text = _keep_local
 w.render_local_page()
 qapp.processEvents()
@@ -1082,6 +1104,18 @@ w.render_feed()
 check("进行中的比赛：详情页把'每 5 秒自己再问一次'开起来",
       w.feed_live_timer.isActive() and w.feed_live_timer.interval() == 5000,
       (w.feed_live_timer.isActive(), w.feed_live_timer.interval()))
+# 同一长度地变（96 - 92 → 98 - 94、5:22 → 5:14）：以前只数字数会被当成"没变"，
+# 屏幕上就一直是那一刻的比分（真人："总是停留在某个时刻的比分，要手动刷新才会变"）。
+_live_body = list(_live_post.body or [])
+_live_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_P,
+                                      text="雷霆 96 - 92 马刺（第四节剩5:22）")]
+_sig_a = w._feed_sig_now()
+_live_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_P,
+                                      text="雷霆 98 - 94 马刺（第四节剩5:14）")]
+_sig_b = w._feed_sig_now()
+_live_post.body = _live_body
+check("比分同长度地变一下也算'变了'（签名按内容算，不是只数字数）",
+      _sig_a != _sig_b, (_sig_a[2:4], _sig_b[2:4]))
 # 2 秒一拍这么密，失败必须退让：翻倍、封顶 30 秒；退让没到点就不发请求。
 _tag0 = getattr(w.feed_source(), "key", "")
 _n_live = cs.n_detail
@@ -1176,6 +1210,31 @@ check("没有'进行中'的详情不开表（打完的比赛不会空转重取�
 check("这一页没有'文字直播/数据统计'可切：T 不硬切、菜单里也不写这一项",
       w.feed_view_label() == "" and w.on_feed_key(Qt.Key_T) is False,
       (w.feed_view_label(), w.on_feed_key(Qt.Key_T)))
+
+# 赛程列表：有一场正在打，比分也得自己刷新（详情 5 秒 / 列表 20 秒，一天一个请求）
+_list_src = w.feed_source()
+_list_src.live_scores = lambda posts: ({str(posts[0].id): "101 - 98 · 进行中 第四节剩3:12"}
+                                       if posts else {})
+_p0 = w.feed_nav.posts[0]
+_p0.excerpt = "96 - 92 · 进行中 第四节剩5:22"
+w.render_feed()
+check("列表里有进行中的比赛：补比分那张表开起来，但慢一档（20 秒）",
+      w.feed_live_timer.isActive() and w.feed_live_timer.interval() == 20000,
+      (w.feed_live_timer.isActive(), w.feed_live_timer.interval()))
+w.feed_live_timer.stop()                 # 手动驱动这一拍：别和定时器抢 feed_busy
+pump(lambda: not w.feed_busy, 10.0)
+w._feed_live_fail = 0
+w._feed_live_retry_at = 0.0
+w.feed_live_tick()
+pump(lambda: _p0.excerpt.startswith("101"), 10.0)      # 等结果回来，别等 feed_busy
+check("补比分只动摘要：屏幕上直接是新比分，列表本身没被重拉",
+      _p0.excerpt == "101 - 98 · 进行中 第四节剩3:12"
+      and "101 - 98" in w.text_edit.toPlainText() and w.feed_nav.view == "list",
+      (_p0.excerpt, w.feed_nav.view))
+_p0.excerpt = "106 - 100 · 已结束"
+w.render_feed()
+check("场上都打完了就不再自己问（表停掉）", not w.feed_live_timer.isActive())
+del _list_src.live_scores
 
 # 内容没变就不重排（不然每次刷新都抖一下、滚动条归位）
 _renders = []

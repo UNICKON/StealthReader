@@ -8,6 +8,7 @@ if not getattr(sys, "frozen", False):
 
 import requests
 import json
+import hashlib
 import re
 import posixpath
 import queue
@@ -4506,12 +4507,79 @@ class StealthReader(QWidget):
             return h
         return max(6, int(self.text_edit.fontMetrics().height()))
 
+    LOCAL_PAGE_CHARS = 5000
+
+    def _local_scroll_seamless(self, px):
+        """长文本按像素滚，边沿处把前/后一段**接上**，视线上不跳。
+
+        往下到底：下一段的第 0 行 = 刚才视口的第一行，所以滚动条归 0 就是续着看；
+        往上到顶：先把更早的一段渲染出来，再把"原来视口第一行"摆回屏幕顶端（用它的
+        cursorRect 定位，不靠猜），然后把剩下的像素继续滚——于是"往上一点"真的只
+        往上一点，不会忽然退到一整屏之前，也不会翻章。
+        """
+        te = self.text_edit
+        guard = 0
+        while px and guard < 12:
+            guard += 1
+            sb = te.verticalScrollBar()
+            before = sb.value()
+            sb.setValue(int(round(before + px)))
+            px -= sb.value() - before
+            if not px:
+                break
+            sb = te.verticalScrollBar()
+            if px > 0 and sb.maximum() > 0 and sb.value() >= sb.maximum():
+                # 到底：接下一段（新缓冲第 0 行就是刚才视口第一行，视线无缝）
+                cursor = te.cursorForPosition(QPoint(0, 0))
+                new_start = min(self.local_start_index + cursor.position(),
+                                max(0, len(self.local_full_text) - 1))
+                if new_start <= self.local_start_index:
+                    break                       # 已经是全文最后一屏
+                self.local_page_history.append(self.local_start_index)
+                self.local_start_index = new_start
+                self.render_local_page()
+                self._save_local_pos()
+                continue
+            if px < 0 and sb.maximum() > 0 and sb.value() <= 0:
+                # 到顶：接上一段，并让"原来视口第一行"还停在屏幕顶端。
+                # 只往前挪**半屏**：窗口是固定 5000 字，挪满 5000 的话那一行正好落在窗口
+                # 末尾，再想把它摆回顶端就没下文可垫（会被滚到底钳住），视线就还是跳。
+                if self.local_start_index <= 0:
+                    break                       # 已经是全文开头
+                anchor = self.local_start_index        # 旧视口第一行对应的全文位置
+                new_start = max(0, anchor - self.LOCAL_PAGE_CHARS // 2)
+                self.local_start_index = new_start
+                self.render_local_page()
+                sb = te.verticalScrollBar()
+                cur = QTextCursor(te.document())
+                cur.setPosition(max(0, min(anchor - new_start,
+                                           max(0, len(te.toPlainText()) - 1))))
+                # cursorRect 是视口坐标：加上当前滚动量才是"要把这一行顶到屏幕顶端"的值
+                y_doc = te.cursorRect(cur).top() + sb.value()
+                sb.setValue(max(0, int(round(y_doc))))
+                # 缓冲区是"往回续"的，翻页历史已经对不上（PageUp 会几何重算，够用）
+                del self.local_page_history[:]
+                self._save_local_pos()
+                continue
+            break
+
+    def _save_local_pos(self):
+        """缓冲区换了位置才存档（每个滚轮刻度都写盘太浪费；安全文档/背诵模式不存）。"""
+        if self._book_veiled():
+            return
+        self.config["last_local_pos"] = self.local_start_index
+        self.save_config()
+
     def scroll_px(self, px, flip=True):
         """按像素滚正文——滚轮和方向键共用这一条，滚多少行由设置决定。
 
-        `flip=False`（滚轮 / 上下方向键）：滚到顶就**停住**，绝不自动翻页、绝不换章。
-        真人："有时候向上滚动还是会变成翻了一整页，我希望这个永远不出现。"
-        往前/往后翻整页只留给**明确的翻页键**（空格 / PageUp / PageDown）。"""
+        滚到边时**接上下文而不是翻一整页**（真人："滚轮向上到顶应该把上一页渲染出来然后
+        继续向上滚动，无缝无感知"）：本地长文本往上到顶就先渲染更早的一段、把原来屏幕上
+        第一行摆回原处，剩下那点像素继续滚；往下到底则从"当前视口第一行"接下一段。
+
+        `flip=False`（滚轮 / 上下方向键）只禁掉**换章**（网络书那种整章跳转），
+        接上下文照接——那才是无缝。真人："向上滚动还是会变成翻了一整页，这个永远不出现。"
+        翻整章/整页仍然只留给明确的翻页键（空格 / PageUp / PageDown）。"""
         if not px:
             return
         sb = self.text_edit.verticalScrollBar()
@@ -4522,36 +4590,12 @@ class StealthReader(QWidget):
         if self.feed_mode or (self.review_mode and not self.safe_mode):
             return                          # 社区/卡片：滚它们自己，不接页、不碰书页进度
         if self.is_local_mode and self.local_full_text:
-            if not flip:
-                return                      # 滚轮：滚到边就停，别悄悄换一屏文字
-            if px > 0 and sb.maximum() > 0 and sb.value() >= sb.maximum():
-                # 缓冲区到底：下一页从"当前视口顶部"衔接，已看的字不重不漏
-                cursor = self.text_edit.cursorForPosition(QPoint(0, 0))
-                new_start = min(self.local_start_index + cursor.position(),
-                                max(0, len(self.local_full_text) - 1))
-                if new_start > self.local_start_index:
-                    self.local_page_history.append(self.local_start_index)
-                    self.local_start_index = new_start
-                    self.render_local_page()
-                    moved = True
-            elif px < 0 and sb.value() <= 0:
-                # 缓冲区到顶：渲染更早的 5000 字并停在其底部，从这里继续往上滚
-                new_start = max(0, self.local_start_index - 5000)
-                if new_start < self.local_start_index:
-                    self.local_start_index = new_start
-                    self.render_local_page()
-                    self.text_edit.verticalScrollBar().setValue(
-                        self.text_edit.verticalScrollBar().maximum())
-                    moved = True
-            if moved and not self._book_veiled():
-                # 缓冲区换了位置才存档（每个滚轮刻度都写盘太浪费）
-                self.config["last_local_pos"] = self.local_start_index
-                self.save_config()
+            self._local_scroll_seamless(px)
             return
         if not self.current_book:
             return
         if not flip:
-            return                          # 滚轮：到头就停，别自动换下一章
+            return                          # 滚轮：到头就停，别自动换下一章（那是整页跳）
         if sb.value() == before:            # 网络书：滚不动了才换章
             if px > 0:
                 self.next_chapter()
@@ -4888,6 +4932,29 @@ class StealthReader(QWidget):
         src = self.feed_source()
         if src is None:
             return
+        if what == "scores":
+            # 只把列表里那些比赛的比分补一遍（不改列表本身、不动光标）
+            fn = getattr(src, "live_scores", None)
+            if fn is None or nav.view != "list" or not nav.posts:
+                return
+            gen, tag = self.feed_gen, getattr(src, "key", "")
+            snapshot = list(nav.posts)
+            self.feed_busy = True
+
+            def work_scores():
+                feed_net.set_fresh(True)
+                try:
+                    self.feed_data_signal.emit("scores", (fn(snapshot), gen, tag))
+                except Exception as e:
+                    try:
+                        self.feed_data_signal.emit("error", (str(e), gen, tag))
+                    except Exception:
+                        pass
+                finally:
+                    feed_net.set_fresh(False)
+
+            threading.Thread(target=work_scores, daemon=True).start()
+            return
         if what == "more" and not nav.more:
             return
         if what == "comments" and not nav.c_more:
@@ -5135,9 +5202,13 @@ class StealthReader(QWidget):
         if nav.view == "detail":
             p = nav.post
             roots = nav.roots or []
-            return ("detail", getattr(p, "id", ""),
-                    len(getattr(p, "body", None) or []),
-                    sum(len(b.text or "") for b in (getattr(p, "body", None) or [])),
+            body = getattr(p, "body", None) or []
+            # 正文按**内容**算签名，不是只数字数：同长度的变化（比分 72 → 74、剩2:41 → 剩2:28）
+            # 以前会被当成"没变"，屏幕上就一直是那一刻的比分，非要人按 R 才换
+            # （真人："点进去文字直播总是停留在某个时刻的比分"）。
+            digest = hashlib.sha1(
+                "\n".join(b.text or "" for b in body).encode("utf-8")).hexdigest()
+            return ("detail", getattr(p, "id", ""), len(body), digest,
                     len(roots), sum(c.total() for c in roots))
         posts = nav.posts or []
         return ("list", getattr(nav, "channel", ""), nav.view, len(posts),
@@ -5150,6 +5221,8 @@ class StealthReader(QWidget):
             posts, nxt, append, gen, tag = payload
         elif kind == "detail":
             post, cmts, cnxt, gen, tag = payload
+        elif kind == "scores":
+            mapping, gen, tag = payload
         elif kind == "comments":
             cmts, nxt, gen, tag = payload
         elif kind == "prefetch":
@@ -5229,7 +5302,21 @@ class StealthReader(QWidget):
             elif kind == "comments":
                 nav.add_comments(cmts, nxt)
                 self.feed_more_armed = True        # 新一页到了：重新武装"滚到底续页"
-            if self._feed_sig_now() != self._feed_sig:
+            elif kind == "scores":
+                # 比分变了就重画（列表签名只看条数，所以这里显式判一次）
+                changed = False
+                for _p in (nav.posts or []):
+                    new = (mapping or {}).get(str(_p.id))
+                    if new and new != (_p.excerpt or ""):
+                        _p.excerpt = new
+                        changed = True
+                self._feed_live_fail = 0
+                self._feed_live_retry_at = 0.0
+                if changed:
+                    self.render_feed()
+                    self.update_review_bar()
+                    return
+            if kind != "scores" and self._feed_sig_now() != self._feed_sig:
                 self.render_feed()
             if kind == "detail" and self.feed_detail_top:
                 # 正文/评论到齐、版面变高了：从顶部读起（不是停在第一条评论上）
@@ -5295,23 +5382,42 @@ class StealthReader(QWidget):
         if getattr(self, "feed_live_timer", None) is not None:
             self.feed_live_watch()
 
-    def _feed_live_watching(self):
-        """此刻是不是"正在看一场还没打完的球"（定时重取、失败退让都看这一条）。"""
+    def _feed_live_mode(self):
+        """此刻要不要自己重取：`detail` = 看一场没打完的球；`list` = 赛程列表里有进行中的；`""` = 不用。"""
         nav = self.feed_nav
-        post = nav.post if nav is not None else None
-        return bool(self.feed_mode and nav is not None and nav.view == "detail"
-                    and post is not None and "进行中" in (post.tags or []))
+        if not self.feed_mode or nav is None:
+            return ""
+        if nav.view == "detail":
+            post = nav.post
+            return "detail" if (post is not None and "进行中" in (post.tags or [])) else ""
+        if nav.view == "list" and getattr(self.feed_source(), "live_scores", None) is not None:
+            # 列表本身缓存 5 分钟，进行中的比分得自己补（真人："赛程的比分应该会刷新"）
+            if any("进行中" in (p.excerpt or "") for p in (nav.posts or [])):
+                return "list"
+        return ""
+
+    def _feed_live_watching(self):
+        """此刻是不是"还有活的东西在看"（定时重取、失败退让都看这一条）。"""
+        return bool(self._feed_live_mode())
 
     def feed_live_watch(self):
-        """按当前视图决定直播那张表要不要走：进行中的比赛详情 → 开；其它情况 → 停。"""
+        """按当前视图决定直播那张表要不要走，走多快：
+
+        详情（看一场没打完的球）**5 秒**；赛程列表只把比分补一遍，**20 秒**（一天一个请求）。
+        其它情况 → 停。"""
         timer = getattr(self, "feed_live_timer", None)
         if timer is None:
             return
-        if self._feed_live_watching():
-            if not timer.isActive():
-                timer.start()
-        elif timer.isActive():
-            timer.stop()
+        mode = self._feed_live_mode()
+        if not mode:
+            if timer.isActive():
+                timer.stop()
+            return
+        want = 5000 if mode == "detail" else 20000
+        if timer.interval() != want:
+            timer.setInterval(want)
+        if not timer.isActive():
+            timer.start()
 
     def feed_live_tick(self):
         """5 秒到点：还在看一场没结束的球，就静默重取这一条（位置由 render_feed 保）。
@@ -5326,7 +5432,8 @@ class StealthReader(QWidget):
         （`_feed_sig_now` 比签名，见 on_feed_data），真出现了新回合才重画，
         滚动位置仍由 render_feed 接着。
         """
-        if not self._feed_live_watching():
+        mode = self._feed_live_mode()
+        if not mode:
             self.feed_live_timer.stop()
             self._feed_live_fail = 0
             self._feed_live_retry_at = 0.0
@@ -5335,7 +5442,7 @@ class StealthReader(QWidget):
             return                    # 刚才连着失败：退让还没到点，这一拍不发请求
         if self.feed_busy:
             return                    # 上一次还没回来：这一拍跳过，下一拍再说
-        self.feed_load("detail", fresh=True)
+        self.feed_load("scores" if mode == "list" else "detail", fresh=True)
 
     def feed_toggle_view(self):
         """文字直播 ↔ 数据统计（只有这一场支持切换的来源才动）。

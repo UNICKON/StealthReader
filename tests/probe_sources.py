@@ -1162,6 +1162,14 @@ else:
         check("比分是「当天比分页」一次问来的（不是一场一个请求），还没开打的日子不问",
               len(_day_calls) == 1 and "/games/20" in _day_calls[0],
               _day_calls)
+        _calls1 = len(hp.http.calls)
+        _live_map = hp.live_scores(lv_posts)
+        _day_calls2 = [u for u in hp.http.calls[_calls1:] if "/games/20" in u]
+        check("列表补比分同样是一天一个请求，回来的是 id → 摘要",
+              _live_map.get("168864") == "74 - 67 · 进行中 第三节剩5:57"
+              and _live_map.get("168862") == "113 - 121 · 已结束"
+              and len(_day_calls2) == 1,
+              (_live_map, _day_calls2))
         lvd, _ = hp.detail(lv_posts[1])
         check("（真夹具）文字直播：先比分和状态，再一条条回合（最新的在上）",
               lvd.body[0].text == "76人 96 - 92 尼克斯（第四节剩5:22）"
