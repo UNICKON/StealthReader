@@ -1221,30 +1221,38 @@ else:
         check("'数据统计'是小标题，不是普通段落",
               bxd.body[3].kind == feed_mod.BLOCK_H and bxd.body[3].text == "数据统计",
               (bxd.body[3].kind, bxd.body[3].text))
+        check("球员表排在每队最前（要紧的先看人），'全队'汇总沉到后面",
+              bxd.body[5].text.split("\n")[0] == "球员\t得分\t篮板\t助攻\t时间"
+              and bxd.body[6].kind == feed_mod.BLOCK_H and bxd.body[6].text == "全队",
+              [(b.kind, b.text.split("\n")[0][:20]) for b in bxd.body[4:8]])
         check("（真夹具）全队两张表：投篮/三分/罚球（命中 + 命中率）与前后场篮板等",
-              bxd.body[5].kind == feed_mod.BLOCK_TABLE
-              and bxd.body[5].text.split("\n")[1] == "命中\t37-87\t11-39\t19-25"
-              and bxd.body[5].text.split("\n")[2] == "命中率\t42.5%\t28.2%\t76.0%"
-              and bxd.body[6].text.split("\n")[0] == "篮板\t前场\t后场\t助攻\t抢断\t失误\t封盖\t犯规"
-              and bxd.body[6].text.split("\n")[1] == "43\t5\t38\t28\t8\t9\t9\t22",
-              [b.text for b in bxd.body[5:7]])
-        _prows = [x for x in bxd.body[7].text.split("\n") if x]
-        check("（真夹具）球员表列全：球员/首发/位置/时间/投篮/三分/罚球/前场/后场/"
-              "篮板/助攻/犯规/抢断/失误/封盖/得分/+/-，按得分从高到低",
-              _prows[0] == ("球员\t首发\t位置\t时间\t投篮\t三分\t罚球\t前场\t后场"
-                            "\t篮板\t助攻\t犯规\t抢断\t失误\t封盖\t得分\t+/-")
-              and _prows[1] == ("泰雷斯-马克西\t首\tG\t38\t9-19\t2-9\t8-9\t1\t3\t4"
-                                "\t5\t2\t3\t2\t3\t28\t+11")
-              and [int(r.split("\t")[15]) for r in _prows[1:]]
-              == sorted([int(r.split("\t")[15]) for r in _prows[1:]], reverse=True),
+              bxd.body[7].kind == feed_mod.BLOCK_TABLE
+              and bxd.body[7].text.split("\n")[1] == "命中\t37-87\t11-39\t19-25"
+              and bxd.body[7].text.split("\n")[2] == "命中率\t42.5%\t28.2%\t76.0%"
+              and bxd.body[8].text.split("\n")[0] == "篮板\t前场\t后场\t助攻\t抢断\t失误\t封盖\t犯规"
+              and bxd.body[8].text.split("\n")[1] == "43\t5\t38\t28\t8\t9\t9\t22",
+              [b.text[:40] for b in bxd.body[7:9]])
+        _prows = [x for x in bxd.body[5].text.split("\n") if x]
+        _grid = [r for r in _prows[1:] if not r.startswith("~")]
+        _more = [r for r in _prows[1:] if r.startswith("~")]
+        check("（真夹具）球员表按重要程度排：球员/得分/篮板/助攻/时间，按得分从高到低",
+              _prows[0] == "球员\t得分\t篮板\t助攻\t时间"
+              and _grid[0] == "泰雷斯-马克西\t28\t4\t5\t38"
+              and [int(r.split("\t")[1]) for r in _grid]
+              == sorted([int(r.split("\t")[1]) for r in _grid], reverse=True),
               _prows[:2])
-        check("球员表每行都 17 格（列一个不少，不靠砍列去迁就窗口宽度）",
-              all(len(r.split("\t")) == 17 for r in _prows), [len(r.split("\t")) for r in _prows])
-        check("这张表标了 wide（屏幕横着滚，列不折行）",
-              getattr(bxd.body[7], "lang", "") == "wide", getattr(bxd.body[7], "lang", ""))
+        check("每人后面跟一行合并小字：投篮/三分/罚球/抢断/封盖/失误/犯规/前场/后场/±/位置/首发",
+              _more[0] == ("~投篮 9-19 · 三分 2-9 · 罚球 8-9 · 抢断 3 · 封盖 3 · 失误 2"
+                            " · 犯规 2 · 前场 1 · 后场 3 · ± +11 · 后卫 · 首发"),
+              _more[:1])
+        check("网格行都是 5 格、小字行都是一个 `~` 开头（一个字段都没丢）",
+              all(len(r.split("\t")) == 5 for r in _grid)
+              and len(_grid) == len(_more)
+              and all(r.count("\t") == 0 for r in _more),
+              [_prows[0], len(_grid), len(_more)])
         check("（真夹具）没上场的（时间 0）不进正文，省得摆一屏 0-0",
-              len(_prows) == 5 and not any(r.split("\t")[3] == "0" for r in _prows[1:]),
-              _prows[1:])
+              len(_grid) == 4 and not any(r.split("\t")[4] == "0" for r in _grid),
+              _grid)
         check("数据统计那一页同样打'进行中'（主窗口照样 20 秒一取），标签换成'数据统计'",
               "进行中" in bxd.tags and "数据统计" in bxd.tags, bxd.tags)
         check("再从数据统计切回文字直播：又回到回合表",

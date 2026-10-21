@@ -1054,22 +1054,23 @@ pump(lambda: cs.n_detail > _n_live, 12.0)
 check("5 秒到点真的会再问一次（不只是把表开起来）", cs.n_detail > _n_live,
       (cs.n_detail, _n_live))
 
-# 列全的技术统计：表格标 lang="wide" 就撑出去、屏幕横向能滚；不标就照旧折行。
-_wide_post = w.feed_nav.post
-_wide_body = list(_wide_post.body)
-_cols = ["球员", "首发", "位置", "时间", "投篮", "三分", "罚球", "前场", "后场",
-         "篮板", "助攻", "犯规", "抢断", "失误", "封盖", "得分", "+/-"]
-_tsv = ("\t".join(_cols) + "\n"
-        + "\n".join("\t".join(["泰雷斯-马克西", "首", "G", "38", "9-19", "2-9", "8-9",
-                                "1", "3", "4", "5", "2", "3", "2", "3", str(28 - i), "+11"])
-                    for i in range(3)))
-_wide_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE, text=_tsv, lang="wide")]
+# 技术统计那种"要紧的几列 + 每人一行小字"：`~` 开头的行要真并成一格，页面不能被撑宽。
+_table_post = w.feed_nav.post
+_table_body = list(_table_post.body)
+_tsv = ("球员\t得分\t篮板\t助攻\t时间\n"
+        "泰雷斯-马克西\t28\t4\t5\t38\n"
+        "~投篮 9-19 · 三分 2-9 · 罚球 8-9 · 后卫 · 首发\n"
+        "安芬尼-西蒙斯\t13\t2\t0\t25\n"
+        "~投篮 5-10 · 三分 3-8 · 后卫 · 替补")
+_table_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE, text=_tsv)]
 w.render_feed()
-_hmax = w.text_edit.horizontalScrollBar().maximum()
-check("列全的统计表：屏幕横向滚得动（列不折行）", _hmax > 0, _hmax)
-check("列多的页才把横向滚动条露出来（书页那边一直是关的）",
-      w.text_edit.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded,
-      w.text_edit.horizontalScrollBarPolicy())
+_tabs = [f for f in w.text_edit.document().rootFrame().childFrames() if hasattr(f, "columns")]
+check("表格里 `~` 开头的行并成一格（colspan 撑满），不是一格一个词",
+      bool(_tabs) and _tabs[0].rows() == 5 and _tabs[0].cellAt(2, 0).columnSpan() == 5,
+      (_tabs[0].rows(), _tabs[0].cellAt(2, 0).columnSpan()) if _tabs else None)
+check("这种表不把页面撑宽（横条不出现，整页不会跟着左右滑）",
+      w.text_edit.horizontalScrollBar().maximum() <= 16,
+      w.text_edit.horizontalScrollBar().maximum())
 
 
 class _WheelStub(object):
@@ -1089,25 +1090,26 @@ class _WheelStub(object):
         return self._m
 
 
-_h0 = w.text_edit.horizontalScrollBar().value()
-_r = w.eventFilter(w.text_edit.viewport(), _WheelStub(dy=-120, mods=Qt.ShiftModifier))
-_h1 = w.text_edit.horizontalScrollBar().value()
-check("Shift+滚轮在列多的页上左右滑（往右滑 → 看到右边的列）",
-      _r is True and _h1 > _h0, (_r, _h0, _h1))
-_wide_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE, text=_tsv)]
+# 真人反馈"调整了滚动行数没生效"：把这一页撑长，量一格滚轮到底走多少
+_table_post.body = _table_body * 12
 w.render_feed()
-# 页边距会让文档比视口宽几像素（Qt 的滚动条最大值因此是个位数），那不是"能横着滚"
-check("同一张表不标 wide：照旧折行，就没有横滚了",
-      w.text_edit.horizontalScrollBar().maximum() <= 16,
-      w.text_edit.horizontalScrollBar().maximum())
-check("没得横滚的页连横条都不挂（不占那几像素）",
-      w.text_edit.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff,
-      w.text_edit.horizontalScrollBarPolicy())
-_wide_post.body = _wide_body
+_sb = w.text_edit.verticalScrollBar()
+
+
+def _wheel_px(lines):
+    w.config["arrow_scroll_lines"] = lines
+    _sb.setValue(min(80, max(0, _sb.maximum() // 2)))
+    before = _sb.value()
+    w.eventFilter(w.text_edit.viewport(), _WheelStub(dy=-120))
+    return _sb.value() - before
+
+
+_px3 = _wheel_px(3)
+_px1 = _wheel_px(1)
+check("滚动行数真的管用：滚轮一格 = 那么多行（3 行是三倍，不是固定值）",
+      _px3 > 0 and _px1 > 0 and _px3 == 3 * _px1, (_px1, _px3))
+_table_post.body = _table_body
 w.render_feed()
-check("还原这一页之后横滚也收回去",
-      w.text_edit.horizontalScrollBar().maximum() <= 16,
-      w.text_edit.horizontalScrollBar().maximum())
 w.on_feed_key(Qt.Key_Backspace)
 pump(lambda: w.feed_nav.view == "list")
 check("退回列表就停表（不在列表页白跑请求）", not w.feed_live_timer.isActive())

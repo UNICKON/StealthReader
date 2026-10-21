@@ -4163,17 +4163,6 @@ class StealthReader(QWidget):
         if (event.type() == QEvent.Wheel
                 and (source is self.text_edit or source is self.text_edit.viewport())):
             delta = event.angleDelta().y()
-            hbar = self.text_edit.horizontalScrollBar()
-            if self.feed_mode and hbar.maximum() > 16:
-                # 社区页里有"列多到要横着看"的表（技术统计 17 列）：横向滚轮/触摸板左右滑，
-                # 以及 Shift+滚轮，都用来左右滑——不然滚轮只能上下，那些列永远看不到。
-                dx = int(event.angleDelta().x())
-                if dx:
-                    hbar.setValue(hbar.value() + dx)
-                    return True
-                if delta and (event.modifiers() & Qt.ShiftModifier):
-                    hbar.setValue(hbar.value() - int(delta))
-                    return True
             if not delta:
                 return super().eventFilter(source, event)     # 横向滚轮/倾斜轮：不抢
             if self.review_mode or self.feed_mode:
@@ -5250,23 +5239,8 @@ class StealthReader(QWidget):
             QTimer.singleShot(0, self._feed_apply_pending_scroll)
         else:
             self._feed_pending_scroll = None      # 这一次明确不要恢复，别让上一次的排单生效
-        self._feed_apply_hscroll()
         if getattr(self, "feed_live_timer", None) is not None:
             self.feed_live_watch()
-
-    def _feed_apply_hscroll(self):
-        """列多到摆不下的表（技术统计 17 列）要靠横向滚动看。
-
-        横条**只在真需要时才露头**：页边距会让文档比视口宽几像素（`maximum()` 是个位数），
-        那种假溢出不该在每个详情页底下挂一根用不上的横条。书页那边一直是
-        `AlwaysOff`（见构造 text_edit 的地方），这里只动社区页。"""
-        try:
-            sb = self.text_edit.horizontalScrollBar()
-            want = bool(self.feed_mode) and sb.maximum() > 16
-            self.text_edit.setHorizontalScrollBarPolicy(
-                Qt.ScrollBarAsNeeded if want else Qt.ScrollBarAlwaysOff)
-        except Exception:
-            pass
 
     def _feed_live_watching(self):
         """此刻是不是"正在看一场还没打完的球"（定时重取、失败退让都看这一条）。"""
@@ -6275,8 +6249,6 @@ class StealthReader(QWidget):
         # "退出 CAF 之后正文的字体变了"。配置是权威值，这里照它钉，不看上一刻控件里是什么。
         # 2026-10-19：钉的范围扩到**每个字符的 charFormat**（见 `_pin_book_font` 的说明）。
         self._pin_book_font("退出社区页")
-        # 社区页可能露着横向滚动条（技术统计那种宽表）：书页不要它，收回去
-        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.update_review_bar()
         self.update_tray_tooltip()
         log_event(f"社区统一流：已退出（{reason or '未说明'}）")
