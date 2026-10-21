@@ -1883,6 +1883,75 @@ check("贴进来（或自动找到）的 Cookie 只有点保存才写进 feed_au
 w.config.pop("feed_sources", None)      # 探针自己造的键不留在真配置里
 
 
+# ===== 热键叫不回来（锁屏后按老板键没反应）：两条自救路 =====
+# 真凶之一：锁屏那一下的松键事件进了安全桌面，库以为 Win 还按着 → ctrl+s 等全匹配不上。
+# 之二：WH_KEYBOARD_LL 被系统摘掉，库仍自报 listening=True，等看门狗重挂最多 90 秒。
+_p1 = w._parse_poll_key("ctrl+s")
+check("轮询认得出 ctrl+s（修饰键 = VK_CONTROL，主键 = S）",
+      _p1 is not None and _p1[0] == ((0x11,),) and _p1[1] == 0x53, _p1)
+check("轮询认不出乱写的键就返回 None（宁可不动，也不瞎按）",
+      w._parse_poll_key("ctrl+notakey") is None and w._parse_poll_key("ctrl+") is None)
+check("卡住的键写得成人话（左Win，不是十六进制）", w._scan_name(0x5B) == "左Win",
+      w._scan_name(0x5B))
+
+_kb = app_mod.keyboard
+_pe_bak = dict(getattr(_kb, "_pressed_events", {}) or {})
+_pd_bak = w._physically_down
+_rec_bak = w.recover_hotkeys
+_log_bak = app_mod.log_event
+_msgs = []
+app_mod.log_event = lambda _m: _msgs.append(str(_m))
+w.hotkey_poll_timer.stop()
+try:
+    _kb._pressed_events.clear()
+    _kb._pressed_events[0x5B] = object()        # 假装 Win 还按着（其实早松了）
+    w._physically_down = lambda vks: False      # 物理上全松开
+    _ret = w.hotkey_hook_probe(type("_Ev", (), {"scan_code": 0x1F, "name": "s"})())
+    check("按下时就把卡住的 Win 擦掉（解锁后第一下就管用）",
+          0x5B not in _kb._pressed_events and _ret is True,
+          sorted(_kb._pressed_events))
+    check("擦的时候日志里写人话（左Win）", any("左Win" in m for m in _msgs), _msgs)
+
+    _kb._pressed_events.clear()
+    _kb._pressed_events[0x5B] = object()
+    w.hotkey_hook_probe(type("_Ev", (), {"scan_code": 0x5B, "name": "windows"})())
+    check("这一下自己的键不动（不然松键时把自己擦了）",
+          0x5B in _kb._pressed_events, sorted(_kb._pressed_events))
+
+    _hit = []
+    w.hotkey_poll_keys = [("试", ((), 0x53), lambda: _hit.append(1))]
+    w.hotkey_poll_state = {}
+    w._physically_down = lambda vks: True
+    w._hook_seen_at = time.time()               # 钩子刚报过到 → 不判它瞎了
+    for _ in range(3):
+        w.poll_hotkeys()
+    check("按着不放只算一下（看上升沿）", len(_hit) == 1, len(_hit))
+    w._physically_down = lambda vks: False
+    w.poll_hotkeys()
+    w._physically_down = lambda vks: True
+    w.poll_hotkeys()
+    check("松开再按 = 新的一下", len(_hit) == 2, len(_hit))
+
+    _reasons = []
+    w.recover_hotkeys = lambda reason="": _reasons.append(reason)
+    w.hotkey_poll_keys = [("试2", ((), 0x53), lambda: None)]
+    w.hotkey_poll_state = {}
+    w._physically_down = lambda vks: True
+    w._hook_seen_at = time.time() - 30.0        # 钩子半分钟没报到了
+    w.poll_hotkeys()
+    pump(lambda: bool(_reasons), seconds=2.0)
+    check("钩子半分钟没动静却看到按下 → 自己重挂一遍",
+          any("钩子" in str(r) for r in _reasons), _reasons)
+finally:
+    app_mod.log_event = _log_bak
+    w._physically_down = _pd_bak
+    w.recover_hotkeys = _rec_bak
+    _kb._pressed_events.clear()
+    _kb._pressed_events.update(_pe_bak)
+    w.hotkey_poll_state = {}
+    w.refresh_hotkeys()                          # 轮询表/钩子恢复成配置里那套
+    w.hotkey_poll_timer.start()
+
 w.exit_feed_mode(reason="probe")
 try:
     w.hide()

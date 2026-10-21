@@ -2987,6 +2987,15 @@ class StealthReader(QWidget):
 
         # 老板键看门狗：keyboard 库的监听线程偶尔会静默死亡（锁屏/睡眠/钩子被系统强拆），
         # 每 45 秒查一次，死了就重新注册
+        # 物理轮询兜底（见 poll_hotkeys）：低级钩子被系统悄悄摘掉后，重挂最多要等 90 秒，
+        # 真人在这 90 秒里按老板键就是"叫不回来"。这条路查物理键位，跟钩子死活无关。
+        self.hotkey_poll_state = {}
+        self.hotkey_poll_keys = []
+        self._hook_seen_at = 0.0
+        self.hotkey_poll_timer = QTimer(self)
+        self.hotkey_poll_timer.setInterval(180)
+        self.hotkey_poll_timer.timeout.connect(self.poll_hotkeys)
+        self.hotkey_poll_timer.start()
         self.hotkey_watchdog = QTimer(self)
         self.hotkey_watchdog.setInterval(45000)
         self.hotkey_watchdog.timeout.connect(self.check_hotkeys_alive)
@@ -3750,7 +3759,10 @@ class StealthReader(QWidget):
             # 单个字母不能挂全局钩子（那样在任何程序里打出它都会翻一次图），也不建 QShortcut
             # （那会把输入框里的字母吃掉）；交给社区页自己的按键处理，见 on_feed_key。
             g_lowkey = False
-            log_event("无图键是单个字母（%s）：只在窗口里有焦点、且在社区页时生效" % lowkey_key_str)
+            if getattr(self, "_lowkey_note", None) != lowkey_key_str:
+                self._lowkey_note = lowkey_key_str
+                log_event("无图键是单个字母（%s）：只在窗口里有焦点、且在社区页时生效"
+                          % lowkey_key_str)
         else:
             g_lowkey = _reg_global(lowkey_key_str, self.on_lowkey_hotkey_triggered, "无图")
         # 松键回调也重挂一遍（unhook_all 会把它一起拆掉）：热键"同一下只认第一次"靠它复位。
@@ -3758,6 +3770,33 @@ class StealthReader(QWidget):
             keyboard.on_release(self.on_hotkey_release)
         except Exception as e:
             log_event(f"松键监听注册失败: {e}")
+        # 每一下按键的探活 + 擦卡键（见 hotkey_hook_probe）。用 suppress=True 才是**在匹配热键
+        # 之前**执行的那一批：擦掉卡住的 Win 之后，这同一按键就能正常匹配上。
+        try:
+            keyboard.hook(self.hotkey_hook_probe, suppress=True)
+        except Exception as e:
+            log_event(f"按键探活钩子注册失败: {e}")
+        # 物理兜底表：钩子被摘掉时由 poll_hotkeys 顶上。单个字母的无图键不进表——
+        # 那会让"在任何地方打一个 e"都翻一次图，它本来就只该在窗口里生效。
+        _poll_pairs = [("老板键", hotkey_str, self.on_global_hotkey_triggered),
+                       ("偷瞄", peek_key_str, self.on_peek_hotkey_triggered),
+                       ("安全文档", safe_key_str, self.on_safe_hotkey_triggered),
+                       ("背诵", review_key_str, self.on_review_hotkey_triggered),
+                       ("社区", feed_key_str, self.on_feed_hotkey_triggered)]
+        if not _lowkey_bare:
+            _poll_pairs.append(("无图", lowkey_key_str, self.on_lowkey_hotkey_triggered))
+        _poll = []
+        for _tag, _kstr, _cb in _poll_pairs:
+            _parsed = self._parse_poll_key(_kstr)
+            if _parsed:
+                _poll.append((_tag, _parsed, _cb))
+        self.hotkey_poll_keys = _poll
+        self.hotkey_poll_state = {}
+        _note = "、".join("%s %s" % (_tag, _kstr) for _tag, _kstr, _cb in _poll_pairs
+                          if self._parse_poll_key(_kstr))
+        if _note and getattr(self, "_poll_note", None) != _note:
+            self._poll_note = _note
+            log_event("钩子掉了也能叫回来（物理兜底盯着）: " + _note)
         # 说明：全局热键和 QShortcut 只能留一条路。两条都留的话，窗口是前台时同一个键会被
         # 触发两次（老板键收起又立刻弹出），所以下面只在"全局注册失败"时才建 QShortcut。
         try:
@@ -3980,7 +4019,8 @@ class StealthReader(QWidget):
             state = getattr(keyboard, name, None)
             if not isinstance(state, dict) or not state:
                 continue
-            cleared.append(f"{name}={sorted(state)}")
+            names = "、".join(self._scan_name(sc) for sc in sorted(state))
+            cleared.append(f"{names}（{name}）")
             try:
                 if lock is not None:
                     with lock:
@@ -3991,6 +4031,136 @@ class StealthReader(QWidget):
                 pass
         if cleared:
             log_event("清掉卡住的按键状态（锁屏时松开的键没收到事件）: " + ", ".join(cleared))
+
+    # 扫描码 → 人看得懂的名字（常见的那个几个；其余显示 16 进制，够定位）
+    _SCAN_NAMES = {
+        0x2A: "左Shift", 0x36: "右Shift", 0x1D: "Ctrl", 0x38: "Alt",
+        0x5B: "左Win", 0x5C: "右Win", 0x3A: "CapsLock", 0x39: "空格",
+        0x1C: "回车", 0x0E: "退格", 0x0F: "Tab", 0x01: "Esc",
+    }
+    # 修饰键的扫描码 → 要查的虚拟键（Ctrl/Shift/Alt 用"左右合并"的 VK，Win 要分左右）
+    _SCAN_TO_VK = {
+        0x2A: (0x10,), 0x36: (0x10,),                      # Shift
+        0x1D: (0x11,),                                     # Ctrl
+        0x38: (0x12,),                                     # Alt
+        0x5B: (0x5B,), 0x5C: (0x5C,),                      # Win
+    }
+
+    def _scan_name(self, scan_code):
+        try:
+            return self._SCAN_NAMES.get(int(scan_code) & 0xFF, "0x%02X" % (int(scan_code) & 0xFF))
+        except Exception:
+            return str(scan_code)
+
+    _POLL_MODS = {
+        "ctrl": (0x11,), "control": (0x11,),          # VK_CONTROL：左右合起来算
+        "shift": (0x10,),                             # VK_SHIFT
+        "alt": (0x12,), "menu": (0x12,),              # VK_MENU
+        "win": (0x5B, 0x5C), "windows": (0x5B, 0x5C), "cmd": (0x5B, 0x5C),
+        "super": (0x5B, 0x5C),
+    }
+
+    def _vk_of_key(self, name):
+        """键名 → 虚拟键码。借库自己的扫描码表，再问 Windows 换算，不手写一整张键表。"""
+        try:
+            scans = keyboard.key_to_scan_codes(name, False) or ()
+        except Exception:
+            return None
+        for sc in scans:
+            try:
+                vk = int(ctypes.windll.user32.MapVirtualKeyW(int(sc), 1))   # 扫描码 → VK
+            except Exception:
+                vk = 0
+            if vk:
+                return vk
+        return None
+
+    def _parse_poll_key(self, key_str):
+        """'ctrl+s' → (修饰键 VK 组, 主键 VK)；认不出返回 None（宁可不轮询，也不瞎按）。"""
+        parts = [p.strip().lower() for p in (key_str or "").split("+") if p.strip()]
+        if not parts:
+            return None
+        mods = []
+        main = None
+        for p in parts:
+            if p in self._POLL_MODS:
+                mods.append(self._POLL_MODS[p])
+            else:
+                main = p
+        if main is None:
+            return None
+        vk = self._vk_of_key(main)
+        if not vk:
+            return None
+        return (tuple(mods), vk)
+
+    def _physically_down(self, vks):
+        """这几个虚拟键现在是不是真按着（硬件状态，跟钩子无关）。"""
+        u = ctypes.windll.user32
+        return any(u.GetAsyncKeyState(int(v)) & 0x8000 for v in vks)
+
+    def hotkey_hook_probe(self, event=None):
+        """每一下按键都走一遍（注册成库的 blocking hook，回调线程里执行）。
+
+        干两件事：
+        1. 记时间——`poll_hotkeys` 靠它判断钩子还活没活着；
+        2. **顺手擦掉卡住的修饰键**：锁屏那一刻 Win 的松键事件进了安全桌面，库以为 Win 还按着，
+           于是 ctrl+s / ctrl+e / ctrl+alt+d 全匹配不上。以前只能等看门狗（最多 90 秒）或解锁
+           通知；现在每一下按键都对照物理状态核一遍，**解锁后第一下就能用**。
+        必须返回 True：返回假值等于把这个按键从系统里吞掉，全系统的键盘都会失灵。
+        """
+        try:
+            self._hook_seen_at = time.time()
+            scan = getattr(event, "scan_code", None)
+            state = getattr(keyboard, "_pressed_events", None)
+            if isinstance(state, dict) and state:
+                stale = [k for k in list(state.keys())
+                         if k != scan and (int(k) & 0xFF) in self._SCAN_TO_VK
+                         and not self._physically_down(self._SCAN_TO_VK[int(k) & 0xFF])]
+                if stale:
+                    lock = getattr(keyboard, "_pressed_events_lock", None)
+                    for k in stale:
+                        try:
+                            if lock is not None:
+                                with lock:
+                                    state.pop(k, None)
+                            else:
+                                state.pop(k, None)
+                        except Exception:
+                            pass
+                    log_event("按下时发现卡住的修饰键，已擦掉: "
+                              + "、".join(self._scan_name(k) for k in stale))
+        except Exception:
+            pass
+        return True
+
+    def poll_hotkeys(self):
+        """物理轮询兜底：钩子被摘掉了，老板键也得能把窗口叫回来。
+
+        WH_KEYBOARD_LL 一旦被 Windows 在回调超时后摘掉，keyboard 库毫不知情；等看门狗重挂
+        最多 90 秒，这段时间按老板键就是"叫不回来"。GetAsyncKeyState 查的是物理键位，钩子没了
+        它照样准。钩子活着时两条路会看到同一下，靠 hotkey_is_repeat 与 0.3 秒去抖只走一次；
+        "按着不放"靠上升沿只算一下。
+        顺带自检：轮询都看到按下了、钩子却一秒内没收到任何键 → 钩子瞎了，立刻重挂。
+        """
+        if not self.hotkey_poll_keys:
+            return
+        try:
+            for tag, parsed, callback in self.hotkey_poll_keys:
+                mods, vk = parsed
+                down = self._physically_down((vk,)) and all(
+                    self._physically_down(m) for m in mods)
+                was = self.hotkey_poll_state.get(tag, False)
+                self.hotkey_poll_state[tag] = down
+                if not (down and not was):
+                    continue
+                if time.time() - self._hook_seen_at > 1.0:
+                    # 钩子本该在按下的那一刻记时间；过去一秒还没记 = 它瞎了
+                    log_event("热键钩子没反应，改用物理轮询（%s）" % tag)
+                    QTimer.singleShot(60, lambda: self.recover_hotkeys("钩子没响应"))
+                callback()
+        except Exception:
+            pass
 
     def recover_hotkeys(self, reason=""):
         """把全局热键整套重挂一遍。
@@ -4067,6 +4237,10 @@ class StealthReader(QWidget):
         try:
             if eventType == b"windows_generic_MSG":
                 msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
+                if msg.message == WM_WTSSESSION_CHANGE and msg.wParam == WTS_SESSION_LOCK:
+                    # 锁屏那一下按的键（Win+L 里的 Win 和 L）永远收不到松键事件，趁早擦掉，
+                    # 免得到解锁时热键已经整套失灵（真凶见 clear_stuck_keys）
+                    self.clear_stuck_keys()
                 if msg.message == WM_WTSSESSION_CHANGE and msg.wParam in (WTS_SESSION_UNLOCK, WTS_SESSION_LOGON):
                     log_event("检测到解锁/登录，稍后重挂全局热键")
                     QTimer.singleShot(800, lambda: self.recover_hotkeys("解锁/登录后"))
