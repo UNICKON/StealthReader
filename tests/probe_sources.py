@@ -1184,6 +1184,11 @@ else:
         check("比分是「当天比分页」一次问来的（不是一场一个请求），还没开打的日子不问",
               len(_day_calls) == 1 and "/games/20" in _day_calls[0],
               _day_calls)
+        # 夹具里的钟点是录制那天的时间；live_scores 只看“今天前后 8 小时的比赛”，
+        # 所以这里把 ts 钉成此刻，否则这条检查的成败取决于你几点跑探针（晚上跑必挂）。
+        _now_ts = int(time.time())
+        for _p in lv_posts:
+            _p.ts = _now_ts
         _calls1 = len(hp.http.calls)
         _live_map = hp.live_scores(lv_posts)
         _day_calls2 = [u for u in hp.http.calls[_calls1:] if "/games/20" in u]
@@ -1201,6 +1206,15 @@ else:
               and _live_map.get("168862") == "113 - 121 · 已结束"
               and len(_day_calls2) == 1,
               (_live_map, _day_calls2))
+        _calls3 = len(hp.http.calls)
+        for _p in lv_posts:
+            _p.ts = _now_ts - 9 * 3600
+        check("八小时以前的比赛不去追问（历史比分不会再变，省一个请求）",
+              hp.live_scores(lv_posts) == {}
+              and not [u for u in hp.http.calls[_calls3:] if "/games/20" in u],
+              hp.http.calls[_calls3:])
+        for _p in lv_posts:
+            _p.ts = _now_ts
         lvd, _ = hp.detail(lv_posts[1])
         check("（真夹具）文字直播：先比分和状态，再一条条回合（最新的在上）",
               lvd.body[0].text == "76人 96 - 92 尼克斯（第四节剩5:22）"

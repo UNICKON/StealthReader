@@ -1098,6 +1098,8 @@ WM_MBUTTONDBLCLK = 0x0209
 
 # 会话通知（锁屏 / 解锁）：解锁后 WH_KEYBOARD_LL 往往已经被系统悄悄摘掉，
 # 见 check_hotkeys_alive() 的说明——所以把"解锁"当成重挂热键的明确触发点。
+WM_DISPLAYCHANGE = 0x007E
+WM_DPICHANGED = 0x02E0
 WM_WTSSESSION_CHANGE = 0x02B1
 WTS_SESSION_LOGON = 0x5
 WTS_SESSION_LOCK = 0x7
@@ -2997,6 +2999,8 @@ class StealthReader(QWidget):
         self.hotkey_poll_timer.timeout.connect(self.poll_hotkeys)
         self.hotkey_poll_timer.start()
         # 窗口"Windows 说可见、人屏幕上却没有"的定时复核（见 guard_window_visible）
+        self._place_cooldown_until = 0.0    # 摆完先安静 30 秒，别在屏幕上抽
+        self._place_fail_streak = 0         # 连续摆不好就闭嘴（不然就是一闪一闪）
         self.screen_guard_timer = QTimer(self)
         self.screen_guard_timer.setInterval(5000)
         self.screen_guard_timer.timeout.connect(self.guard_window_visible)
@@ -4242,6 +4246,11 @@ class StealthReader(QWidget):
         try:
             if eventType == b"windows_generic_MSG":
                 msg = ctypes.cast(int(message), ctypes.POINTER(_MSG)).contents
+                if msg.message in (WM_DISPLAYCHANGE, WM_DPICHANGED):
+                    # 插拔显示器 / 改分辨率 / 改排列 / 改缩放：窗口八成已经被丢到看不见的地方了。
+                    # 等桌面切完（0.9 秒）再摆，那时 Qt 的屏幕表也更新过来了。
+                    log_event("显示配置变了（0x%04X），稍后重新摆放窗口" % msg.message)
+                    QTimer.singleShot(900, self.guard_window_visible)
                 if msg.message == WM_WTSSESSION_CHANGE and msg.wParam == WTS_SESSION_LOCK:
                     # 锁屏那一下按的键（Win+L 里的 Win 和 L）永远收不到松键事件，趁早擦掉，
                     # 免得到解锁时热键已经整套失灵（真凶见 clear_stuck_keys）
@@ -4544,31 +4553,124 @@ class StealthReader(QWidget):
         except Exception as e:
             log_event(f"屏幕校验异常: {e}")
 
+    def _window_off_screen(self):
+        """窗口现在是不是谁也看不见。返回 (看不清, 依据)。
+
+        两个信号都问，任一为真就算"可能看不见"，但**摆的时候只用 Qt 的坐标**（见
+        recover_window_placement）：以前用 Win32 的 SetWindowPos 挪、再把物理像素除以 dpr
+        同步回 Qt，两套坐标一打架，窗口就在"屏幕外"和"拉回来"之间来回跳——人看到的就是一闪一闪。
+
+        - Qt 侧：`_rect_usable` 和某块屏幕有足够重叠（和 move/setGeometry 同一套逻辑像素）。
+        - Win32 侧：`MonitorFromWindow(MONITOR_DEFAULTTONULL)` 不为 0（它不带 Qt 的缓存，
+          拔过显示器 / 改过排列之后，Qt 的屏幕表可能是旧的）。
+        """
+        try:
+            geo = self.frameGeometry()
+        except Exception:
+            geo = QRect()
+        qt_ok = self._rect_usable(geo)
+        try:
+            win_ok = window_on_real_screen(int(self.winId()))
+        except Exception:
+            win_ok = True
+        if qt_ok and win_ok:
+            return (False, "")
+        if not qt_ok and not win_ok:
+            return (True, "Qt 与 Win32 都说不屏幕上")
+        return (True, "Qt 说看不见" if not qt_ok else "Win32 说不屏幕上")
+
+    def recover_window_placement(self, reason=""):
+        """把窗口摆回人看得见的地方。**全程只用 Qt 的 setGeometry**，摆完再复核一遍。
+
+        候选位置：记住的位置 → 主屏工作区左上角 +60 → 主屏左上角 +20。摆不好就记一笔并
+        安静五分钟，绝不在屏幕上反复试。
+        """
+        try:
+            w = self.width() or int(self.config.get("window_width", 360) or 360)
+            h = self.height() or int(self.config.get("window_height", 480) or 480)
+            cands = []
+            sx, sy = self.config.get("win_x"), self.config.get("win_y")
+            if isinstance(sx, int) and isinstance(sy, int):
+                cands.append((sx, sy, "记住的位置"))
+            try:
+                avail = QApplication.primaryScreen().availableGeometry()
+                cands.append((avail.left() + 60, avail.top() + 60, "主屏左上角+60"))
+                cands.append((avail.left() + 20, avail.top() + 20, "主屏左上角+20"))
+            except Exception:
+                pass
+            for x, y, label in cands:
+                if not self._rect_usable(QRect(x, y, w, h)):
+                    continue
+                self.setGeometry(QRect(x, y, w, h))
+                try:
+                    self.config["win_x"], self.config["win_y"] = x, y
+                    self.save_config()
+                except Exception:
+                    pass
+                self._place_cooldown_until = time.time() + 30.0
+                self._place_fail_streak = 0
+                log_event("窗口搬到%s (%d,%d)%s" % (label, x, y, ("：" + reason) if reason else ""))
+                # Qt 的 move 要下一轮事件循环才真的落到窗口上，所以别当场判死：260 毫秒后复核
+                QTimer.singleShot(260, self._verify_placement)
+                return True
+            self._place_fail_streak += 1
+            self._place_cooldown_until = time.time() + 300.0
+            log_event("没有可用的摆放位置（Qt 屏幕表 %s），改用 Win32"
+                      % [str(sc.geometry()) for sc in (QApplication.instance().screens() or [])])
+            self._win32_last_resort()
+        except Exception as e:
+            log_event(f"摆窗口异常: {e}")
+        return False
+
+    def _verify_placement(self):
+        """摆完 260 毫秒复核一次：真在屏幕上就收工，还在外面就用 Win32 兜一次然后安静五分钟。"""
+        try:
+            hwnd = int(self.winId())
+            if self._rect_usable(self.frameGeometry()) and window_on_real_screen(hwnd):
+                return
+            log_event("摆完复核仍看不清（Qt %s，Win32 %s），改用 Win32 兜底"
+                      % (self.frameGeometry(), window_rect(hwnd)))
+            self._win32_last_resort()
+            self._place_cooldown_until = time.time() + 300.0
+        except Exception as e:
+            log_event(f"摆放复核异常: {e}")
+
+    def _win32_last_resort(self):
+        """Qt 摆不动的时候用 Win32 硬挪一次（多半是 Qt 的屏幕表过期）。
+
+        只在摆放失败时走这一条，走完安静五分钟——以前正是"每 5 秒挪一次、每次都被判回来"
+        那个循环，把窗口抽成了一闪一闪的。
+        """
+        try:
+            hwnd = int(self.winId())
+            if not force_window_to_primary(hwnd):
+                log_event("Win32 也没挪动")
+                return False
+            self.sync_qt_pos_from_win32(hwnd)
+            self.save_window_pos()
+            log_event("Win32 挪到主屏：%s" % (window_rect(hwnd),))
+            return True
+        except Exception as e:
+            log_event(f"Win32 兜底失败: {e}")
+            return False
+
     def guard_window_visible(self):
-        """窗口"看着可见、其实不在任何显示器上"时拉回来。
+        """定时复核：窗口看着可见、其实不在任何屏幕上，就摆回来。
 
-        实测过这么一幕：Windows 说窗口可见，坐标是 (-1455,434)——一整屏宽之外（换过显示器
-        布局之后，Qt 的屏幕表还是旧的，于是 `_rect_usable` 判"看得见"，`ensure_on_screen`
-        一个像素都不动）。人看到的就是"按老板键没反应、进程叫不回来"。
-
-        这里用 Win32 的 `MonitorFromWindow(MONITOR_DEFAULTTONULL)` 复核，它不带缓存；
-        但**只有窗口已经显示超过一秒才认它的答案**——刚 show 的那一瞬它会误报"不在任何屏幕上"
-        （`_rect_usable` 的注释记着这个坑，以前每次唤出都白挪一下就是它害的）。
+        只在**已经露脸超过一秒**（`_shown_at`）之后才判——刚 show 那一瞬 Win32 常答"不在任何
+        屏幕上"，那时动它就是每次唤出都白挪一下。摆完有 30 秒冷却、连续两次摆不好就安静五分钟，
+        所以最坏情况下人也只会看到窗口跳一次，不会来回闪。
         """
         try:
             if not self.isVisible():
                 return
             if time.time() - getattr(self, "_shown_at", 0.0) < 1.0:
-                return                      # 刚露脸，先别信 Win32
-            hwnd = int(self.winId())
-            if window_on_real_screen(hwnd):
                 return
-            log_event("窗口其实在屏幕外（Windows 仍说可见），拉回主屏")
-            if force_window_to_primary(hwnd):
-                self.sync_qt_pos_from_win32(hwnd)
-                self.save_window_pos()
-            else:
-                log_event("窗口在屏幕外，拉回主屏失败")
+            if time.time() < getattr(self, "_place_cooldown_until", 0.0):
+                return
+            bad, why = self._window_off_screen()
+            if bad:
+                self.recover_window_placement(why)
         except Exception as e:
             log_event(f"屏幕复核异常: {e}")
 
@@ -4667,7 +4769,7 @@ class StealthReader(QWidget):
             self.apply_style()
             self.activateWindow()
             self.ensure_on_screen()
-            QTimer.singleShot(1200, self.guard_window_visible)   # 看完 Qt 再看 Win32
+            QTimer.singleShot(1200, self.guard_window_visible)   # 露脸一秒后复核位置
             if self.config.get("auto_mode", False):
                 self.chameleon_timer.start()
                 self.adjust_color_to_background()

@@ -1883,26 +1883,58 @@ check("贴进来（或自动找到）的 Cookie 只有点保存才写进 feed_au
 w.config.pop("feed_sources", None)      # 探针自己造的键不留在真配置里
 
 
-# 窗口"Windows 说可见、屏幕上却没有"：Win32 复核 + 定时拉回（实测见过 x = -1455）
+# 窗口摆放（"按了老板键，日志说显示了，屏幕上什么都没有，然后一闪一闪"）：
+# 两个信号任一为真就摆一次，**摆只用 Qt 的坐标**（Win32 挪 + 除以 dpr 同步回来，两套坐标一打架
+# 窗口就在屏幕内外来回跳 = 人看到的闪烁），摆完冷却 30 秒、摆不好安静五分钟。
 _ors_bak = app_mod.window_on_real_screen
-_fp_bak = app_mod.force_window_to_primary
-_moves = []
-app_mod.window_on_real_screen = lambda hwnd: False
-app_mod.force_window_to_primary = lambda hwnd: (_moves.append(hwnd), True)[1]
+_usable_bak = w._rect_usable
+_save_bak = w.save_config
+_wx, _wy = w.config.get("win_x"), w.config.get("win_y")
+w.save_config = lambda *a, **k: None
 try:
+    app_mod.window_on_real_screen = lambda hwnd: False
+    app_mod.window_on_real_screen = lambda hwnd: True
+    _b1, _w1 = w._window_off_screen()
+    app_mod.window_on_real_screen = lambda hwnd: False
+    _b2, _w2 = w._window_off_screen()
+    check("Win32 说不在任何屏幕上就算有问题（Qt 说可见也不放过）",
+          _b2 is True and "Win32" in _w2, (_b2, _w2))
+
+    w._rect_usable = lambda rect: False
+    app_mod.window_on_real_screen = lambda hwnd: True
+    _b3, _w3 = w._window_off_screen()
+    w._rect_usable = _usable_bak
+    check("Qt 说看不见也算有问题（Win32 说可见也不放过）",
+          _b3 is True and "Qt" in _w3, (_b3, _w3))
+
     w.show()
     qapp.processEvents()
-    w._shown_at = time.time() - 5.0          # 已经露脸五秒了，可以信 Win32
+    w.move(900, 900)                          # 屏幕外
+    w.config["win_x"], w.config["win_y"] = 12, 34
+    w._shown_at = time.time() - 5.0
+    w._place_cooldown_until = 0.0
+    w._place_fail_streak = 0
+    app_mod.window_on_real_screen = lambda hwnd: False
     w.guard_window_visible()
-    check("Windows 说可见、Win32 说不在任何屏幕上 → 拉回主屏", len(_moves) == 1, _moves)
+    qapp.processEvents()
+    check("摆到记住的位置（只用 Qt 的 setGeometry）", (w.x(), w.y()) == (12, 34), (w.x(), w.y()))
+    check("摆完先安静 30 秒（不在屏幕上抽）",
+          w._place_cooldown_until > time.time() + 20,
+          round(w._place_cooldown_until - time.time(), 1))
 
-    w._shown_at = time.time()                 # 刚露脸
+    w.move(900, 900)
     w.guard_window_visible()
-    check("刚唤出那一秒不认 Win32 的答案（不然每次唤出都白挪一下）",
-          len(_moves) == 1, _moves)
+    qapp.processEvents()
+    check("冷却期里再复核也不动它（这就是\"不闪\"的保证）", (w.x(), w.y()) == (900, 900),
+          (w.x(), w.y()))
 finally:
     app_mod.window_on_real_screen = _ors_bak
-    app_mod.force_window_to_primary = _fp_bak
+    w._rect_usable = _usable_bak
+    w.save_config = _save_bak
+    w.config["win_x"], w.config["win_y"] = _wx, _wy
+    w._place_cooldown_until = 0.0
+    w.move(465, 434)
+    qapp.processEvents()
 
 # ===== 热键叫不回来（锁屏后按老板键没反应）：两条自救路 =====
 # 真凶之一：锁屏那一下的松键事件进了安全桌面，库以为 Win 还按着 → ctrl+s 等全匹配不上。
