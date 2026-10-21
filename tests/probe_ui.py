@@ -497,7 +497,7 @@ qapp.processEvents()
 # 8.3 真按键（走 Qt 事件，不是直接调 on_feed_key——以前探针只验了后者）
 from PyQt5.QtGui import QKeyEvent                                          # noqa: E402
 from PyQt5.QtCore import QEvent, QPoint                                       # noqa: E402
-from PyQt5.QtGui import QTextCursor                                         # noqa: E402
+from PyQt5.QtGui import QKeyEvent, QTextCursor                                         # noqa: E402
 use_sources(ORIG_SOURCES)                  # 得有不止一个来源，否则"切过去了"看不出来
 w.feed_load("list")
 pump(lambda: w.feed_nav.posts and not w.feed_busy)
@@ -587,6 +587,52 @@ for _ in range(3):
 check("已经在全文开头：再往上滚只是停住（不绕到结尾）",
       w.local_start_index == 0 and w.text_edit.verticalScrollBar().value() == 0,
       (w.local_start_index, w.text_edit.verticalScrollBar().value()))
+# 滚轮和方向键必须一模一样，而且"设 2 行就滚 2 行"——真人报过"方向键 3 行、滚轮 5 行"，
+# 还有"拉伸页面之后又变了"：以前拿光标那一行的高度当行高，光标停在标题/空行上就换数。
+_keep_lines2 = w.config.get("arrow_scroll_lines")
+w.config["arrow_scroll_lines"] = 2
+w.local_full_text = ("这一行只是把正文撑长，好让滚动条有得滚。" * 900)
+w.local_start_index = 6000
+w.render_local_page()
+qapp.processEvents()
+
+
+def _book_delta(fn):
+    """从同一处往下滚一下，量实际走了多少像素。"""
+    sb = w.text_edit.verticalScrollBar()
+    sb.setValue(2000)
+    before = sb.value()
+    fn()
+    qapp.processEvents()
+    return sb.value() - before
+
+
+_unit = w._line_unit_px()
+
+_px_wheel = _book_delta(lambda: w.eventFilter(w.text_edit.viewport(), _BookWheel(-120)))
+_px_arrow = _book_delta(lambda: w.scroll_lines(1))
+check("滚轮一格和方向键一下走的是同一段距离（行为一模一样）",
+      _px_wheel == _px_arrow and _px_wheel > 0, (_px_wheel, _px_arrow))
+check("设 2 行就真的是 2 行（一格 = 2 × 版面行高，不是按字号猜出来的 3 行）",
+      abs(_px_wheel - int(round(2 * _unit))) <= 2, (_px_wheel, _unit))
+_px_key = _book_delta(lambda: w.keyPressEvent(
+    QKeyEvent(QEvent.KeyPress, Qt.Key_Down, Qt.NoModifier)))
+check("按一下下箭头（真的按键事件，不是直接调函数）也走 2 行，和滚轮一格一模一样",
+      _px_key == _px_wheel, (_px_key, _px_wheel))
+_px_fast = _book_delta(lambda: w.eventFilter(w.text_edit.viewport(), _BookWheel(-480)))
+check("一次发来 480 的'快滚轮'也只按一格算（不会变成一格 5 行）",
+      _px_fast == _px_wheel, (_px_fast, _px_wheel))
+_geo = w.text_edit.size()
+w.text_edit.resize(max(360, _geo.width() - 160), max(260, _geo.height() - 120))
+qapp.processEvents()
+_unit2 = w._line_unit_px()
+_px_resized = _book_delta(lambda: w.eventFilter(w.text_edit.viewport(), _BookWheel(-120)))
+check("拉伸窗口之后还是 2 行（行高按版面实测，不跟着窗口走）",
+      abs(_px_resized - int(round(2 * _unit2))) <= 2 and abs(_unit2 - _unit) <= 1.5,
+      (_px_resized, _unit2, _unit))
+w.text_edit.resize(_geo)
+qapp.processEvents()
+w.config["arrow_scroll_lines"] = _keep_lines2
 w.local_start_index, w.local_full_text = _keep_local
 w.render_local_page()
 qapp.processEvents()
@@ -1187,6 +1233,17 @@ class _WheelStub(object):
         return self._m
 
 
+# 社区页的竖直滚轮和书页走同一个 _local_wheel_step（只是 scroll_px 里滚的是自己那根条），
+# 这一页正文不够长、滚不动，所以只钉换算：一格请求的还是设置里那几行那么多像素。
+_rec_px = []
+_real_scroll = w.scroll_px
+w.scroll_px = lambda px, flip=True: (_rec_px.append(px), None)
+w._local_wheel_step(-120)
+w.scroll_px = _real_scroll
+check("社区页一格滚轮请求的也是设置里那几行（和书页同一套换算）",
+      _rec_px == [w._lines_to_px(w.config.get("arrow_scroll_lines") or 3)],
+      (_rec_px, w._lines_to_px(w.config.get("arrow_scroll_lines") or 3)))
+
 _hbar.setValue(0)
 _r = w.eventFilter(w.text_edit.viewport(), _WheelStub(dy=-120, mods=Qt.ShiftModifier))
 check("Shift+滚轮往右滑一格 = 滚动行数那么高（不是固定 120px）",
@@ -1203,7 +1260,9 @@ _s1 = w._feed_hstep()
 w.config["arrow_scroll_lines"] = 3
 _s3 = w._feed_hstep()
 w.config["arrow_scroll_lines"] = _keep_lines
-check("滚动行数也管横滑：3 行是 1 行的三倍", _s1 > 0 and _s3 == 3 * _s1, (_s1, _s3))
+# 行高是按版面实测的浮点数，乘完再取整，所以 3 倍允许 2px 的取整差
+check("滚动行数也管横滑：3 行是 1 行的三倍", _s1 > 0 and abs(_s3 - 3 * _s1) <= 2,
+      (_s1, _s3))
 
 # 窄页：左右键不该被吞掉（还得留给别的用途）
 _table_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE,

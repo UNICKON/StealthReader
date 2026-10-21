@@ -3651,7 +3651,7 @@ class StealthReader(QWidget):
         """
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
-        self.scroll_px(int(direction) * lines * self._line_height_px(), flip=False)
+        self.scroll_px(int(direction) * self._lines_to_px(lines), flip=False)
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -4168,6 +4168,10 @@ class StealthReader(QWidget):
         if (event.type() == QEvent.Wheel
                 and (source is self.text_edit or source is self.text_edit.viewport())):
             delta = event.angleDelta().y()
+            try:
+                pixel_dy = int(event.pixelDelta().y())
+            except Exception:
+                pixel_dy = 0
             if self.feed_mode:
                 # 横着看：触摸板左右滑（dx）和 Shift+滚轮都用来左右滑，
                 # 一次走"滚动行数"那么多行的高度；这一页没有横向溢出就照旧上下滚。
@@ -4179,13 +4183,13 @@ class StealthReader(QWidget):
                     step = self._feed_hstep()
                     if self._feed_hslide(-step if delta > 0 else step):
                         return True
-            if not delta:
+            if not delta and not pixel_dy:
                 return super().eventFilter(source, event)     # 横向滚轮/倾斜轮：不抢
             if self.review_mode or self.feed_mode:
                 # 卡片页、社区页：滚它们自己（同样是设置里那几行），不接页、不碰书页进度。
                 # **这条要排在"没选书就拦住"前面**：社区页跟书没关系，没选书也得能滚
                 # （以前排在后面，没选书时托盘里进社区页滚轮是死的）。
-                self._local_wheel_step(delta)
+                self._local_wheel_step(delta, pixel_dy)
                 return True
             # 【关键保护】如果既没选书，也不是本地模式，直接拦截滚轮不处理
             if not self.is_local_mode and not self.current_book:
@@ -4193,7 +4197,7 @@ class StealthReader(QWidget):
 
             # 本地书页（到缓冲区边沿自动衔接）和网络书（滚不动才换章）都走这一条，
             # 一格滚多少行由设置决定
-            self._local_wheel_step(delta)
+            self._local_wheel_step(delta, pixel_dy)
             return True
         return super().eventFilter(source, event)
 
@@ -4499,7 +4503,7 @@ class StealthReader(QWidget):
         self._local_wheel_step(delta)
 
     def _line_height_px(self):
-        """一行字在文档里实际占多少像素（跟着字号、行距走）。"""
+        """光标那一行的高度（只在量不出版面时兜底；正路是 `_line_unit_px`）。"""
         try:
             h = int(round(self.text_edit.cursorRect(self.text_edit.textCursor()).height()))
         except Exception:
@@ -4507,6 +4511,38 @@ class StealthReader(QWidget):
         if 6 <= h <= 400:
             return h
         return max(6, int(self.text_edit.fontMetrics().height()))
+
+    def _line_unit_px(self):
+        """一行字在**当前版面**上到底多少像素：从视口顶端往下量 3 行再除。
+
+        以前拿"光标那一行"的高度当行高：光标停在标题、空行或者大字号的行上时数就变了，
+        拉伸窗口重排之后同一个设置滚出来的距离也不一样（真人："拉伸页面后滚动行为好像又变了"）。
+        从视口顶端量、按排版实测，拉窗、换字号、光标在哪都不影响"滚 2 行 = 2 行"。
+        """
+        te = self.text_edit
+        for n in (3, 2, 1):
+            try:
+                cur0 = te.cursorForPosition(QPoint(2, 1))
+                cur1 = QTextCursor(cur0)
+                cur1.movePosition(QTextCursor.Down, QTextCursor.MoveAnchor, n)
+                span = te.cursorRect(cur1).top() - te.cursorRect(cur0).top()
+            except Exception:
+                span = 0
+            if span >= 6:
+                unit = float(span) / n
+                if 8.0 <= unit <= 80.0:
+                    return unit
+        return float(max(8, self._line_height_px()))
+
+    def _lines_to_px(self, n):
+        """n 行（可以是小数）= 多少像素。滚轮和方向键都只走这一条，行为才一致。"""
+        try:
+            n = float(n)
+        except Exception:
+            return 0
+        if not n:
+            return 0
+        return int(round(n * self._line_unit_px()))
 
     LOCAL_PAGE_CHARS = 5000
 
@@ -4583,16 +4619,19 @@ class StealthReader(QWidget):
         翻整章/整页仍然只留给明确的翻页键（空格 / PageUp / PageDown）。"""
         if not px:
             return
+        if self.feed_mode or (self.review_mode and not self.safe_mode):
+            # 社区/卡片：滚它们自己，不接页、不碰书页进度
+            sb = self.text_edit.verticalScrollBar()
+            sb.setValue(int(round(sb.value() + px)))
+            return
+        if self.is_local_mode and self.local_full_text:
+            # 书页整段交给衔接逻辑（**连"先滚一下"也在里面**：以前这里先滚一次、
+            # 里面又滚一次，于是"设 2 行滚了 4 行"）
+            self._local_scroll_seamless(px)
+            return
         sb = self.text_edit.verticalScrollBar()
         before = sb.value()
         sb.setValue(int(round(before + px)))
-        moved = False
-
-        if self.feed_mode or (self.review_mode and not self.safe_mode):
-            return                          # 社区/卡片：滚它们自己，不接页、不碰书页进度
-        if self.is_local_mode and self.local_full_text:
-            self._local_scroll_seamless(px)
-            return
         if not self.current_book:
             return
         if not flip:
@@ -4603,20 +4642,35 @@ class StealthReader(QWidget):
             else:
                 self.prev_chapter()
 
-    def _local_wheel_step(self, delta):
+    def _local_wheel_step(self, delta, pixel_dy=0):
         """滚轮一格（120）= 设置里的行数，和方向键同一套手感。
 
         以前本地书页的滚轮交给 Qt 默认（固定约 3 行），方向键却整页翻；
-        现在两边都走 `scroll_px`，行数在设置里一起调。"""
+        现在两边都走 `scroll_px`、都按 `_lines_to_px` 算，行数在设置里一起调。
+        触摸板那条路（只有 `pixelDelta`、没有 `angleDelta`）按真实像素滚。"""
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
-        self.scroll_px((float(-delta) / 120.0) * lines * self._line_height_px(), flip=False)
+        # 一格（±120）= 设置里那几行。有的鼠标/驱动一次发来 240、480（"快滚轮"），
+        # 以前按比例算，于是"设 2 行却滚了 5 行"；现在一格永远一格，快滚靠事件密度赚回来。
+        # 触摸板另算：Qt 直接给 pixelDelta（真实滑动的像素），按像素滚手感才对。
+        px = self._lines_to_px(lines)
+        try:
+            pixel_dy = int(pixel_dy or 0)
+        except Exception:
+            pixel_dy = 0
+        if pixel_dy and not delta:
+            self.scroll_px(-pixel_dy, flip=False)
+            return
+        notches = min(1.0, abs(float(delta)) / 120.0)
+        if notches <= 0:
+            return
+        self.scroll_px((-1 if delta > 0 else 1) * int(round(px * notches)), flip=False)
 
     def _feed_hstep(self):
         """左右滑一格走多少像素：和竖直同一套——"滚动行数 × 一行高"。"""
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
-        return max(8, int(round(lines * self._line_height_px())))
+        return max(8, self._lines_to_px(lines))
 
     def _feed_hslide(self, step):
         """列多的表（技术统计 17 列）靠左右滑看右边的列。
