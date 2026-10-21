@@ -5256,6 +5256,43 @@ class StealthReader(QWidget):
             return                    # 上一次还没回来：这一拍跳过，下一拍再说
         self.feed_load("detail", fresh=True)
 
+    def feed_toggle_view(self):
+        """文字直播 ↔ 数据统计（只有这一场支持切换的来源才动）。
+
+        切完必须把内存里那份旧详情**扔掉**：`feed_load` 的快路径按 (detail, 来源, id) 取，
+        不扔的话按下 T 只是把刚看过的那份又画一遍，看起来像"没反应"。"""
+        nav = self.feed_nav
+        if not self.feed_mode or nav is None or nav.view != "detail" or nav.post is None:
+            return False
+        src = self.feed_source()
+        fn = getattr(src, "toggle_detail_view", None)
+        if fn is None:
+            return False
+        try:
+            view = fn(nav.post)
+        except Exception as exc:
+            log_event("切换文字直播/数据统计失败：%s" % exc)
+            return False
+        self._feed_memo.pop(("detail", getattr(src, "key", ""), nav.post.id), None)
+        self.feed_load("detail")
+        log_event("这一场切到：%s" % ("数据统计" if view == "stats" else "文字直播"))
+        return True
+
+    def feed_view_label(self):
+        """菜单上写"现在能切到哪儿"。返回空串 = 这一页没有可切的。"""
+        nav = self.feed_nav
+        if not self.feed_mode or nav is None or nav.view != "detail" or nav.post is None:
+            return ""
+        src = self.feed_source()
+        ask = getattr(src, "detail_view", None)
+        if ask is None or getattr(src, "toggle_detail_view", None) is None:
+            return ""
+        try:
+            view = ask(nav.post)
+        except Exception:
+            return ""
+        return "📝 看文字直播（T）" if view == "stats" else "📊 看数据统计（T）"
+
     def apply_feed_style(self):
         """社区页排版：左对齐、不首行缩进、行距沿用阅读设置；卡片间距和评论缩进由 HTML 自带。
 
@@ -5843,6 +5880,15 @@ class StealthReader(QWidget):
             if callable(check):
                 try:
                     if check(remembered):
+                        # 来源可以把老名字归一化成现在的栏目（虎扑把"文字直播/数据统计"
+                        # 两栏合成了一栏「NBA 赛程」）——直接返回旧名字，页脚会写着旧栏目
+                        # 却显示另一栏的帖子。
+                        norm = getattr(src, "normalize_channel", None)
+                        if callable(norm):
+                            try:
+                                return norm(remembered)
+                            except Exception:
+                                pass
                         return remembered
                 except Exception:
                     pass
@@ -6094,6 +6140,10 @@ class StealthReader(QWidget):
         if key == Qt.Key_O:
             self.feed_open_original()
             return True
+        if key == Qt.Key_T:
+            # T：这一场在文字直播和数据统计之间切（只有赛程那种页面才有）
+            if self.feed_toggle_view():
+                return True
         if key == Qt.Key_C:
             # C = **直接**切到下一个社区（不弹窗、不用确认）；Z 撤回。
             # 想挑某一个再走右键菜单里的"选择社区…"（见 build_feed_menu）
@@ -7955,6 +8005,9 @@ class StealthReader(QWidget):
         cmenu.addSeparator()
         cmenu.addAction("🔄 重新拉取（R）").triggered.connect(self.feed_reload)
         if nav is not None and nav.view == "detail":
+            _view_label = self.feed_view_label()
+            if _view_label:
+                cmenu.addAction(_view_label).triggered.connect(self.feed_toggle_view)
             cmenu.addAction("⬅️ 返回列表（退格）").triggered.connect(self.feed_back)
         cmenu.addAction("↗️ 用浏览器打开原帖（O）").triggered.connect(self.feed_open_original)
         cmenu.addSeparator()

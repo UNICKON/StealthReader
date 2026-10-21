@@ -1027,11 +1027,10 @@ else:
                                "nba.hupu.com/games/playbyplay/": raw_pb,
                                "nba.hupu.com/games/boxscore/": raw_bx},
                  cache=MemCache()))
-    check("虎扑的栏目 = 三栏 NBA + 精选 + 全量目录（名字不重复，步行街排在它们后面）",
+    check("虎扑的栏目 = 两栏 NBA + 精选 + 全量目录（名字不重复，步行街排在它们后面）",
           len(hp.channels()) > 200 and len(set(hp.channels())) == len(hp.channels())
-          and hp.channels()[:4] == ["NBA 战绩", "NBA 文字直播", "NBA 数据统计",
-                                    "步行街主干道"],
-          hp.channels()[:4])
+          and hp.channels()[:3] == ["NBA 战绩", "NBA 赛程", "步行街主干道"],
+          hp.channels()[:3])
     check("板块表是静态的：boards() 不发网络请求，label/slug 双向翻译都对，认不出退回步行街",
           hp.http.calls == [] and hp.board_fid("篮球场") == "nba"
           and hp.board_label("nba") == "篮球场" and hp.board_fid("不认识的") == "bxj",
@@ -1109,13 +1108,18 @@ else:
           and feed_sources._hupu_time("") == 0
           and feed_sources._hupu_time("刚刚") == 0,
           (feed_sources._hupu_time("10-19 11:10"), feed_sources._hupu_time("刚刚")))
-    # ---- NBA：战绩表 + 文字直播（都是 nba.hupu.com 服务端渲染的页面，免登录）----
-    if raw_st is None or raw_sc is None or raw_pb is None:
-        skip("虎扑 NBA", "缺 hupu_standings/schedule/playbyplay 夹具")
+    # ---- NBA：战绩 + 赛程（一场一条，详情里 T 切文字直播/数据统计）----
+    if raw_st is None or raw_sc is None or raw_pb is None or raw_bx is None:
+        skip("虎扑 NBA", "缺 hupu_standings/schedule/playbyplay/boxscore 夹具")
     else:
         check("两栏 NBA 能选中，也不是 bbs 的板（认得、但不发到 bbs）",
-              hp.accepts_channel("NBA 战绩") and hp.accepts_channel("NBA 文字直播"),
-              (hp.accepts_channel("NBA 战绩"), hp.accepts_channel("NBA 文字直播")))
+              hp.accepts_channel("NBA 战绩") and hp.accepts_channel("NBA 赛程"),
+              (hp.accepts_channel("NBA 战绩"), hp.accepts_channel("NBA 赛程")))
+        check("上一版的两栏名（文字直播/数据统计）还认得，落到合并后的「NBA 赛程」",
+              hp.normalize_channel("NBA 文字直播") == "NBA 赛程"
+              and hp.normalize_channel("NBA 数据统计") == "NBA 赛程"
+              and hp.accepts_channel("NBA 文字直播") and hp.accepts_channel("NBA 数据统计"),
+              (hp.normalize_channel("NBA 文字直播"), hp.normalize_channel("NBA 数据统计")))
         st_posts, st_nxt = hp.list("NBA 战绩")
         check("战绩栏 = 东/西两条，摘要里就是前几队的胜-负",
               [p.id for p in st_posts] == ["standings-east", "standings-west"]
@@ -1129,9 +1133,10 @@ else:
               [b.text for b in std.body[:2]])
         stw, _ = hp.detail(st_posts[1])
         check("西部那条读的是西部的表（不是把东部的又摆一遍）",
-              stw.body and stw.body[0].text.startswith("1. 独行侠"), stw.body[0].text if stw.body else "")
-        lv_posts, lv_nxt = hp.list("NBA 文字直播")
-        check("直播栏 = 赛程上的每一场（表头那行'客队 vs 主队'挡掉，只剩真比赛）",
+              stw.body and stw.body[0].text.startswith("1. 独行侠"),
+              stw.body[0].text if stw.body else "")
+        lv_posts, lv_nxt = hp.list("NBA 赛程")
+        check("赛程栏 = 赛程上的每一场（表头那行'客队 vs 主队'挡掉，只剩真比赛）",
               len(lv_posts) == 14 and lv_nxt is None
               and all(p.id.isdigit() for p in lv_posts)
               and lv_posts[0].title == "凯尔特人 vs 活塞"
@@ -1146,11 +1151,31 @@ else:
               and lvd.body[1].text.startswith("开赛：")
               and any("布伦森两分突破漂移跳投命中" in b.text for b in lvd.body),
               [b.text[:40] for b in lvd.body[:3]])
+        # 夹具砍掉了分节表（真页面上有），分节这件事用手写形状验，别拿砍过的页面断真事
+        _pbp_q = feed_sources.parse_hupu_pbp(
+            '<div class="team_vs"><div class="team_a"><div class="message"><h2>96</h2>'
+            '<p><a href="https://nba.hupu.com/teams/76ers">76人</a></p></div></div>'
+            '<div class="team_num">第四节剩5:22</div>'
+            '<div class="team_b"><div class="message"><h2>92</h2>'
+            '<p><a href="https://nba.hupu.com/teams/knicks">尼克斯</a></p></div></div></div>'
+            '<div class="yuece_num"><table class="itinerary_table">'
+            '<tr class="title"><td></td><td>一</td><td>二</td><td>三</td><td>四</td>'
+            '<td class="total">总分</td></tr>'
+            '<tr class="away_score"><td>76人</td><td>23</td><td>31</td><td>29</td><td>13</td>'
+            '<td>96</td></tr>'
+            '<tr class="home_score"><td>尼克斯</td><td>25</td><td>33</td><td>18</td><td>16</td>'
+            '<td>92</td></tr></table></div>'
+            '<div class="table_list_live playbyplay_td table_overflow"><table>'
+            '<tr><td>5:22</td><td>尼克斯</td><td>换人</td><td>96-92</td></tr></table></div>')
+        check("直播详情也带分节比分（分节表就在同一张页面上，不多发请求）",
+              feed_sources._hupu_quarter_line(_pbp_q["quarters"])
+              == "分节（客-主）：一 23-25 · 二 31-33 · 三 29-18 · 四 13-16",
+              _pbp_q["quarters"])
         check("节与节之间那条'第一节结束。'是标题块，不是普通回合",
               any(b.kind == feed_mod.BLOCK_H and b.text == "第一节结束。" for b in lvd.body),
               [(b.kind, b.text[:12]) for b in lvd.body[2:5]])
-        check("进行中的比赛打了'进行中'标记（主窗口据此每 20 秒自己再问一次）",
-              "进行中" in lvd.tags, lvd.tags)
+        check("进行中的比赛打了'进行中'标记，标签里也写明现在看的是哪一页",
+              "进行中" in lvd.tags and "文字直播" in lvd.tags, lvd.tags)
         over = (
             '<div class="team_vs"><div class="team_a"><div class="message"><h2>110</h2>'
             '<p><a href="https://nba.hupu.com/teams/celtics">凯尔特人</a></p></div></div>'
@@ -1164,15 +1189,14 @@ else:
         ob = feed_sources.parse_hupu_pbp(over)
         check("打完的比赛不算'进行中'（不然会一直空转重取）",
               ob["live"] is False and ob["status"] == "比赛结束", (ob["live"], ob["status"]))
-        check("这两栏没有'回复'这一层，评论如实为空", hp.comments(lv_posts[0]) == ([], None))
+        check("赛程这两页没有'回复'这一层，评论如实为空", hp.comments(lv_posts[0]) == ([], None))
 
-        bx_posts, bx_nxt = hp.list("NBA 数据统计")
-        check("数据统计栏跟直播共用同一张赛程（每场都有，栏目名分开记）",
-              len(bx_posts) == 14 and bx_nxt is None
-              and all(p.channel == "NBA 数据统计" for p in bx_posts)
-              and [p.id for p in bx_posts] == [p.id for p in lv_posts],
-              (len(bx_posts), bx_posts[0].channel))
-        bxd, _ = hp.detail(bx_posts[1])
+        # 同一场按 T 换一页：文字直播 → 数据统计 → 再切回来
+        match = lv_posts[1]
+        check("默认停在文字直播", hp.detail_view(match) == "live", hp.detail_view(match))
+        check("按 T 切到数据统计", hp.toggle_detail_view(match) == "stats"
+              and hp.detail_view(match) == "stats", hp.detail_view(match))
+        bxd, _ = hp.detail(match)
         check("（真夹具）数据统计：先比分和状态，再开赛时间、分节比分",
               bxd.body[0].text == "76人 104 - 98 尼克斯（第四节剩1:07）"
               and bxd.body[1].text.startswith("开赛：")
@@ -1195,8 +1219,14 @@ else:
               _pl[0][:60])
         check("（真夹具）没上场的（时间 0）不进正文，省得摆一屏 0-0",
               not any("0分钟" in x or " · 0板" in x for x in _pl), _pl[-1][:40])
-        check("数据统计里的比赛也是'进行中'（主窗口照样 20 秒一取）",
-              "进行中" in bxd.tags, bxd.tags)
+        check("数据统计那一页同样打'进行中'（主窗口照样 20 秒一取），标签换成'数据统计'",
+              "进行中" in bxd.tags and "数据统计" in bxd.tags, bxd.tags)
+        check("再从数据统计切回文字直播：又回到回合表",
+              hp.toggle_detail_view(match) == "live"
+              and hp.detail(match)[0].body[0].text.startswith("76人 96 - 92 尼克斯"),
+              hp.detail(match)[0].tags)
+        check("切视图只影响这一场（别把别的比赛也带过去）",
+              hp.detail_view(lv_posts[3]) == "live", hp.detail_view(lv_posts[3]))
 
 print("\n=== 17. 小红书的 x-s 签名（照摸鱼插件那份纯 JS 实现搬的，逐字节比对过）===")
 # 这 6 项是**固定的比对标量**：同一组输入在 JS 版（TouchFish 的 XhsClient）里算出来的

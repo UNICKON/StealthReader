@@ -2652,9 +2652,13 @@ class HupuSource(RealSource):
     needs_auth = False               # 免登录
     # 两栏 NBA：不是 bbs 的板，走 nba.hupu.com 的页面（战绩表 / 赛程 + 文字直播）
     NBA_STANDINGS = "NBA 战绩"
-    NBA_LIVE = "NBA 文字直播"
-    NBA_STATS = "NBA 数据统计"
-    NBA_CHANNELS = (NBA_STANDINGS, NBA_LIVE, NBA_STATS)
+    NBA_LIVE = "NBA 赛程"             # 一场比赛 = 一条：点进去是文字直播，可按 T 切到数据统计
+    NBA_VIEW_LIVE = "文字直播"
+    NBA_VIEW_STATS = "数据统计"
+    # 上一版把这两页拆成了两栏，现在合成一栏：老配置里记的那两个名字照样认得，
+    # 落到同一栏上（不然人一进来会被扔回"NBA 战绩"）。
+    CHANNEL_ALIAS = {"NBA 文字直播": NBA_LIVE, "NBA 数据统计": NBA_LIVE}
+    NBA_CHANNELS = (NBA_STANDINGS, NBA_LIVE)
     CHANNELS = tuple(label for label, _slug in HUPU_BOARDS)
     SLUG = dict(HUPU_BOARDS)
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -2699,9 +2703,14 @@ class HupuSource(RealSource):
         hit = HUPU_BY_SLUG.get(s)
         return hit[1] if hit else s
 
+    def normalize_channel(self, channel):
+        """老名字 → 现在这一栏（认不出来的原样返回）。"""
+        s = str(channel or "").strip()
+        return self.CHANNEL_ALIAS.get(s, s)
+
     def accepts_channel(self, channel):
         """这个来源认不认这一栏（选择器里手填的名字/slug 靠它把关）。"""
-        s = str(channel or "").strip()
+        s = self.normalize_channel(channel)
         if not s:
             return False
         if s in self.NBA_CHANNELS:
@@ -2827,8 +2836,35 @@ class HupuSource(RealSource):
                 body.append(Block(kind=BLOCK_P, text="%s %s %s  %s" % (
                     it["time"], it["team"], it["text"], it["score"])))
         out.body = body
+        out.url = HUPU_PBP_URL % mid
         self._tag_live(out, data["live"], data["status"])
+        self._tag_view(out, "live")
         return out
+
+    def _views(self):
+        """这一场现在停在文字直播还是数据统计（按 matchId 记，切回来还在原处）。"""
+        m = getattr(self, "_match_view", None)
+        if m is None:
+            m = self._match_view = {}
+        return m
+
+    def detail_view(self, post):
+        """`live`（文字直播）/ `stats`（数据统计）。"""
+        return self._views().get(str(getattr(post, "id", "") or "").strip(), "live")
+
+    def toggle_detail_view(self, post):
+        """文字直播 ↔ 数据统计。返回切过去之后的那一页。"""
+        mid = str(getattr(post, "id", "") or "").strip()
+        nxt = "stats" if self.detail_view(post) == "live" else "live"
+        self._views()[mid] = nxt
+        return nxt
+
+    def _tag_view(self, out, view):
+        """把"现在看的是哪一页"打进标签里——界面上看得见，也不靠说明句。"""
+        keep = [t for t in (out.tags or [])
+                if t not in (self.NBA_VIEW_LIVE, self.NBA_VIEW_STATS)]
+        keep.append(self.NBA_VIEW_STATS if view == "stats" else self.NBA_VIEW_LIVE)
+        out.tags = keep
 
     def _tag_live(self, out, live, status):
         """进行中/已结束：主窗口据此决定"要不要每 20 秒自己再问一次"。"""
@@ -2877,7 +2913,9 @@ class HupuSource(RealSource):
             for p in players:
                 body.append(Block(kind=BLOCK_P, text=_hupu_player_line(p)))
         out.body = body
+        out.url = HUPU_BOX_URL % mid
         self._tag_live(out, head["live"], head["status"])
+        self._tag_view(out, "stats")
         return out
 
     def _headers(self):
@@ -2906,7 +2944,7 @@ class HupuSource(RealSource):
         ch = str(channel or "").strip()
         if ch == self.NBA_STANDINGS:
             return self._standings_posts(), None
-        if ch in (self.NBA_LIVE, self.NBA_STATS):
+        if ch == self.NBA_LIVE:
             return self._schedule_posts(ch), None
         label = self.board_label(self.board_fid(channel))
         slug = self.board_fid(channel)
@@ -2936,9 +2974,9 @@ class HupuSource(RealSource):
         if ch == self.NBA_STANDINGS:
             return self._standings_detail(post), None
         if ch == self.NBA_LIVE:
+            if self.detail_view(post) == "stats":
+                return self._box_detail(post), None
             return self._match_detail(post), None
-        if ch == self.NBA_STATS:
-            return self._box_detail(post), None
         out = Post.from_dict(post.to_dict())
         detail = self._detail_json(post.id)
         th = detail.get("thread") or {}

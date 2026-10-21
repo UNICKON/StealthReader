@@ -1039,6 +1039,9 @@ _live_post.tags = _keep_tags
 w.render_feed()
 check("没有'进行中'的详情不开表（打完的比赛不会空转重取）",
       not w.feed_live_timer.isActive())
+check("这一页没有'文字直播/数据统计'可切：T 不硬切、菜单里也不写这一项",
+      w.feed_view_label() == "" and w.on_feed_key(Qt.Key_T) is False,
+      (w.feed_view_label(), w.on_feed_key(Qt.Key_T)))
 
 # 内容没变就不重排（不然每次刷新都抖一下、滚动条归位）
 _renders = []
