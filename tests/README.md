@@ -76,6 +76,9 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 | `chiphell_567.html` | Chiphell 的非标准 567 防爬占位页 |
 | `zhihu_unauth_answers.json` | 知乎正文接口**没登录时**的真响应（`code 40362` 风控） |
 | `hupu_list.html` | 虎扑版面页 `bbs.hupu.com/bxj`（**免登录**），**裁过**：只留前 12 条 `<li class="bbs-sl-web-post-body">`，外壳换成最小 HTML |
+| `hupu_standings.html` | 虎扑 NBA `nba.hupu.com/standings`，**裁过**：整张 `players_table` 结构照旧，东西部各留前 4 行 |
+| `hupu_schedule.html` | 虎扑 NBA `nba.hupu.com/schedule/2026-10-20`，**裁过**：保留头两个日期分组（14 场）与表头行 |
+| `hupu_playbyplay.html` | 虎扑 NBA `nba.hupu.com/games/playbyplay/168863`（76人 vs 尼克斯，第四节进行中），**裁过**：比分面板 + 从"第一节结束。"起的 10 行（含一条 `colspan` 分隔行） |
 | `hupu_thread.html` | 虎扑帖子页，**裁过**：`__NEXT_DATA__` 只留 `detail.thread`（正文去掉 `data-origin`）和前 6 条回复；挑的是**有文字正文**的那篇（列表里很多是纯图/视频帖，正文一个字都没有） |
 | `weread_unauth_shelf.json` | 微信读书书架接口**没登录时**的真响应（`errCode -2010`） |
 | `weread_shelf.json` | 微信读书书架，**裁过**：只留 3 本 + 适配器用到的字段（书名/作者/封面/`deepLink`/进度） |

@@ -2941,6 +2941,11 @@ class StealthReader(QWidget):
         self._feed_warm_timer.setSingleShot(True)
         self._feed_warm_timer.setInterval(150)
         self._feed_warm_timer.timeout.connect(self._feed_warm_now)
+        # 文字直播：详情页是一条"进行中"的比赛就每 20 秒静默再问一次（人不用一直按 R）。
+        # 只在**详情页且比赛没结束**时开着：别让它在列表页或已结束的比赛上白跑请求。
+        self.feed_live_timer = QTimer(self)
+        self.feed_live_timer.setInterval(20000)
+        self.feed_live_timer.timeout.connect(self.feed_live_tick)
         if FEED_OK:
             try:
                 self.feed_sources = feed_mod.build_sources(
@@ -5221,6 +5226,35 @@ class StealthReader(QWidget):
             QTimer.singleShot(0, self._feed_apply_pending_scroll)
         else:
             self._feed_pending_scroll = None      # 这一次明确不要恢复，别让上一次的排单生效
+        if getattr(self, "feed_live_timer", None) is not None:
+            self.feed_live_watch()
+
+    def feed_live_watch(self):
+        """按当前视图决定直播那张表要不要走：进行中的比赛详情 → 开；其它情况 → 停。"""
+        nav = self.feed_nav
+        post = nav.post if nav is not None else None
+        timer = getattr(self, "feed_live_timer", None)
+        if timer is None:
+            return
+        live = (bool(self.feed_mode) and nav is not None and nav.view == "detail"
+                and post is not None and "进行中" in (post.tags or []))
+        if live:
+            if not timer.isActive():
+                timer.start()
+        elif timer.isActive():
+            timer.stop()
+
+    def feed_live_tick(self):
+        """20 秒到点：还在看一场没结束的球，就静默重取这一条（位置由 render_feed 保）。"""
+        nav = self.feed_nav
+        post = nav.post if nav is not None else None
+        if (not self.feed_mode or nav is None or nav.view != "detail" or post is None
+                or "进行中" not in (post.tags or [])):
+            self.feed_live_timer.stop()
+            return
+        if self.feed_busy:
+            return                    # 上一次还没回来：这一拍跳过，下一拍再说
+        self.feed_load("detail", fresh=True)
 
     def apply_feed_style(self):
         """社区页排版：左对齐、不首行缩进、行距沿用阅读设置；卡片间距和评论缩进由 HTML 自带。
@@ -5646,6 +5680,8 @@ class StealthReader(QWidget):
             return False
         self.feed_gen += 1                  # 退回列表了，还在飞的详情结果不许把视图又弹回详情
         self.feed_restore_pos = 0           # 换了一层：从顶上读（列表会再 ensure 到刚才那条）
+        if getattr(self, "feed_live_timer", None) is not None:
+            self.feed_live_timer.stop()     # 回到列表就没有"进行中"这回事了
         self.render_feed()
         cur = self.feed_current_block()
         if cur is not None:
@@ -6120,6 +6156,8 @@ class StealthReader(QWidget):
             return
         self._feed_save_pos()           # 下次进来还坐在这儿
         self.feed_mode = False
+        if getattr(self, "feed_live_timer", None) is not None:
+            self.feed_live_timer.stop()     # 出了社区页就别再问直播了
         snap = self.feed_snapshot
         self.feed_snapshot = None
         self.text_edit.setExtraSelections([])

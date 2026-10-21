@@ -1021,6 +1021,25 @@ check("退回再进同一条：仍然一次请求都没多发", (cs.n_detail, cs
 w.on_feed_key(Qt.Key_Backspace)
 pump(lambda: w.feed_nav.view == "list")
 
+# 文字直播：详情这条标了"进行中"就把 20 秒那张表开起来；回到列表就停。
+w.feed_nav.index = 0
+w.feed_open()
+pump(lambda: w.feed_nav.view == "detail" and w.feed_nav.detail_loaded and not w.feed_busy, 10.0)
+_live_post = w.feed_nav.post
+_keep_tags = list(_live_post.tags or [])
+_live_post.tags = _keep_tags + ["进行中"]
+w.render_feed()
+check("进行中的比赛：详情页把'每 20 秒自己再问一次'开起来",
+      w.feed_live_timer.isActive() and w.feed_live_timer.interval() == 20000,
+      (w.feed_live_timer.isActive(), w.feed_live_timer.interval()))
+w.on_feed_key(Qt.Key_Backspace)
+pump(lambda: w.feed_nav.view == "list")
+check("退回列表就停表（不在列表页白跑请求）", not w.feed_live_timer.isActive())
+_live_post.tags = _keep_tags
+w.render_feed()
+check("没有'进行中'的详情不开表（打完的比赛不会空转重取）",
+      not w.feed_live_timer.isActive())
+
 # 内容没变就不重排（不然每次刷新都抖一下、滚动条归位）
 _renders = []
 _orig_render = w.render_feed

@@ -27,12 +27,13 @@ import re
 import sys
 import threading
 import time
-from html import escape as html_escape
+from html import escape as html_escape, unescape as html_unescape
 from urllib.parse import quote, unquote
 
 import feed as feed_mod
 import hupu_boards
-from feed import Block, Comment, Post, SourceAdapter, BLOCK_IMG, BLOCK_P, BLOCK_QUOTE
+from feed import (Block, Comment, Post, SourceAdapter, BLOCK_H, BLOCK_IMG, BLOCK_P,
+                    BLOCK_QUOTE)
 import feed_net
 import xhs_sign
 from feed_net import FeedNetError, Http, TTL_LIST, TTL_DETAIL, TTL_FOREVER
@@ -2335,6 +2336,144 @@ def _hupu_time(text):
     return 0
 
 
+# ---- 虎扑 NBA（战绩 / 赛程 / 文字直播）----------------------------------------
+# 2026-10-20 实测（本机网络，不带 Cookie，三张都是**服务端渲染**的 HTML）：
+#   - `nba.hupu.com/standings`：一张 `table.players_table`，`<tr class="linglei">` 是"东部/西部"，
+#     每行 14 列（排名/队名/胜/负/胜率/胜场差/主场/客场/赛区/东部/得分/失分/净胜/连胜负）；
+#   - `nba.hupu.com/schedule[/<日期>]`：同一张表，`<tr class="left linglei">` 是"10月21日 星期三"，
+#     普通行是 `时间 | 客队 vs 主队 | 数据统计`（链接就是 `/games/boxscore/<matchId>`）；
+#   - `nba.hupu.com/games/playbyplay/<matchId>`：头部比分面板（`team_vs` 里 `<h2>` 两队总分、
+#     `team_num` 写"第四节剩5:22"）+ 文字直播表（每行 `时间 | 球队 | 事件 | 比分`，
+#     另有 `colspan="4"` 的分隔行"第一节结束。"）。
+# 移动端 `games.mobileapi.hupu.com` 那套要签名（回 `102 签名验证不正确`），不碰。
+
+HUPU_STANDINGS_URL = "https://nba.hupu.com/standings"
+HUPU_SCHEDULE_URL = "https://nba.hupu.com/schedule"
+HUPU_PBP_URL = "https://nba.hupu.com/games/playbyplay/%s"
+HUPU_LIVE_TTL = 20          # 文字直播的缓存寿命：比列表短得多，按 R 就是真去问一次
+
+
+def _hupu_cells(row):
+    """`<tr>` 里的每个 `<td>` → 一行文字（去标签、收空白、`&nbsp;` 变空格）。"""
+    out = []
+    for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S):
+        txt = html_unescape(re.sub(r"<[^>]+>", " ", c)).replace("\xa0", " ")
+        out.append(re.sub(r"\s+", " ", txt).strip())
+    return out
+
+
+def parse_hupu_standings(html):
+    """战绩表 → `{"东部": [...], "西部": [...]}`，每行是 dict（rank/team/win/loss/pct/...）。"""
+    out = {}
+    table = re.search(r'<table class="players_table".*?</table>', html or "", re.S)
+    body = table.group(0) if table else (html or "")
+    zone = ""
+    for row in re.findall(r"<tr\b.*?</tr>", body, re.S):
+        if 'class="linglei"' in row:
+            cells = _hupu_cells(row)
+            name = cells[0] if cells else ""
+            if name in ("东部", "西部"):
+                zone = name
+                out.setdefault(zone, [])
+            continue
+        if not zone:
+            continue
+        cells = _hupu_cells(row)
+        if len(cells) < 14 or cells[0] == "排名":
+            continue
+        slug = re.search(r"/teams/([A-Za-z0-9\-]+)", row)
+        out[zone].append({
+            "rank": cells[0], "team": cells[1], "slug": slug.group(1) if slug else "",
+            "win": cells[2], "loss": cells[3], "pct": cells[4], "gb": cells[5],
+            "home": cells[6], "away": cells[7], "div": cells[8], "conf": cells[9],
+            "pf": cells[10], "pa": cells[11], "diff": cells[12], "streak": cells[13],
+        })
+    return out
+
+
+def parse_hupu_schedule(html):
+    """赛程表 → `[{"date","time","away","home","match_id","stage","url"}]`（按页面顺序）。"""
+    out, day = [], ""
+    for row in re.findall(r"<tr\b.*?</tr>", html or "", re.S):
+        cells = _hupu_cells(row)
+        if not cells:
+            continue
+        if 'linglei' in row[:40] or (len(cells) == 1 and "月" in cells[0]):
+            day = cells[0]                     # "10月21日 星期三"
+            continue
+        if len(cells) < 2 or "vs" not in cells[1]:
+            continue
+        vs = re.split(r"\s*vs\s*", cells[1])
+        if len(vs) != 2:
+            continue
+        mid = re.search(r"boxscore/(\d+)", row)
+        # 表头那行也写着"客队 vs 主队"：它没有 matchId，按这条挡掉（别的都是真比赛）
+        if not mid or cells[0] == "北京时间" or cells[1].startswith("客队"):
+            continue
+        out.append({
+            "date": day, "time": cells[0],
+            "away": vs[0].strip(), "home": vs[1].strip(),
+            "match_id": mid.group(1) if mid else "",
+            "stage": cells[2] if len(cells) > 2 else "",
+            "url": (HUPU_PBP_URL % mid.group(1)) if mid else "",
+        })
+    return out
+
+
+def _hupu_match_ts(day, hhmm):
+    """`10月21日 星期三` + `03:00` → epoch（今年；认不出来给 0）。"""
+    d = re.search(r"(\d{1,2})月(\d{1,2})日", day or "")
+    t = re.match(r"(\d{1,2}):(\d{2})", str(hhmm or "").strip())
+    if not d or not t:
+        return 0
+    now = time.localtime()
+    try:
+        return time.mktime((now.tm_year, int(d.group(1)), int(d.group(2)),
+                            int(t.group(1)), int(t.group(2)), 0, 0, 0, -1))
+    except (OverflowError, ValueError):
+        return 0
+
+
+def parse_hupu_pbp(html):
+    """文字直播页 → 比分/状态/事件行。
+
+    返回 `{"away","home","away_score","home_score","status","live","start","rows"}`；
+    `rows` 里 `kind == "mark"` 是"第一节结束。"这种分隔行，`kind == "play"` 是一条事件。
+    """
+    h = html or ""
+    m = re.search(r'<div class="team_vs">(.*?)<div class="yuece_num">', h, re.S)
+    panel = m.group(1) if m else h
+    names = re.findall(r'<p>\s*<a[^>]*teams/[^"]*"[^>]*>([^<]+)</a>', panel)
+    scores = re.findall(r"<h2>(\d+)</h2>", panel)
+    st = re.search(r'<div class="team_num">([^<]*)</div>', panel)
+    start = re.search(r'<p class="time_f">开赛：([^<]*)</p>', panel)
+    status = re.sub(r"\s+", " ", st.group(1)).strip() if st else ""
+    rows = []
+    table = re.search(
+        r'<div class="table_list_live playbyplay_td table_overflow">(.*?)</table>', h, re.S)
+    for row in re.findall(r"<tr\b.*?</tr>", table.group(1) if table else "", re.S):
+        cells = _hupu_cells(row)
+        if not cells:
+            continue
+        if "colspan" in row or len(cells) == 1:
+            if cells[0]:
+                rows.append({"kind": "mark", "text": cells[0]})
+            continue
+        if len(cells) >= 4 and cells[0] and cells[0] != "时间":
+            rows.append({"kind": "play", "time": cells[0], "team": cells[1],
+                         "text": cells[2], "score": cells[3]})
+    return {
+        "away": names[0].strip() if names else "",
+        "home": names[1].strip() if len(names) > 1 else "",
+        "away_score": scores[0] if scores else "",
+        "home_score": scores[1] if len(scores) > 1 else "",
+        "status": status,
+        "live": bool(status) and not any(k in status for k in ("结束", "未开始", "取消")),
+        "start": re.sub(r"\s+", " ", start.group(1)).strip() if start else "",
+        "rows": rows,
+    }
+
+
 class HupuSource(RealSource):
     """虎扑（bbs.hupu.com）。**整站免登录**：版面列表、帖子正文、回复都能直接拿。
 
@@ -2357,6 +2496,10 @@ class HupuSource(RealSource):
     label = "虎扑"
     base_url = "https://bbs.hupu.com"
     needs_auth = False               # 免登录
+    # 两栏 NBA：不是 bbs 的板，走 nba.hupu.com 的页面（战绩表 / 赛程 + 文字直播）
+    NBA_STANDINGS = "NBA 战绩"
+    NBA_LIVE = "NBA 文字直播"
+    NBA_CHANNELS = (NBA_STANDINGS, NBA_LIVE)
     CHANNELS = tuple(label for label, _slug in HUPU_BOARDS)
     SLUG = dict(HUPU_BOARDS)
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -2369,7 +2512,7 @@ class HupuSource(RealSource):
         精选打头是为了"第一次进虎扑落在步行街主干道"、`[`/`]` 之后按 `.` 也是熟悉的那几栏；
         后面接全量目录，真人按 `C` 就能一路往下跳（空板自动跳过，见 main.py 的
         `feed_cycle_channel_skip`），按 `V` 能打字搜任何一个板。"""
-        out = list(self.CHANNELS)
+        out = list(self.NBA_CHANNELS) + list(self.CHANNELS)
         seen = set(out)
         for _group, name, _slug, _count, _heat in hupu_boards.CATALOG:
             if name not in seen:
@@ -2406,6 +2549,8 @@ class HupuSource(RealSource):
         s = str(channel or "").strip()
         if not s:
             return False
+        if s in self.NBA_CHANNELS:
+            return True
         return (s in HUPU_SLUG_OF or s in HUPU_BY_SLUG
                 or bool(re.match(r"^[A-Za-z0-9][A-Za-z0-9\-]{1,24}$", s)))
 
@@ -2415,7 +2560,10 @@ class HupuSource(RealSource):
         `heat` 是虎扑首页给的"帖子总数"文本（如 `18.7w`）；`count` 是同一个数的整数形态。
         `count == 0` 的板子是真的没内容（目录里有 15 个），按 `C` 跳的时候直接跳过。"""
         out = []
-        have_label, have_slug = set(), set()
+        for label in self.NBA_CHANNELS:
+            out.append({"label": label, "fid": "", "group": "NBA",
+                        "count": 0, "heat": ""})
+        have_label, have_slug = set(self.NBA_CHANNELS), set()
         for label, slug in HUPU_BOARDS:          # 精选那几栏排最前面（名字和 slug 都不重复）
             # 目录里也有这个板（湿乎乎 /vote、篮球场 /nba …）就用目录里的真分类和热度，
             # 别看它是"精选"就当成没有热度——那会让选择器里显示成 `精选 · 湿乎乎的话题`。
@@ -2438,6 +2586,95 @@ class HupuSource(RealSource):
                         "count": count, "heat": heat})
             have_label.add(name)
             have_slug.add(slug)
+        return out
+
+    def _standings_posts(self):
+        """战绩栏：东部、西部各一条（详情就是那张表，一屏看完）。"""
+        zones = parse_hupu_standings(self._html(HUPU_STANDINGS_URL, TTL_LIST))
+        now = time.time()
+        posts = []
+        for zone, pid in (("东部", "standings-east"), ("西部", "standings-west")):
+            rows = zones.get(zone) or []
+            if not rows:
+                continue
+            top = "、".join("%s %s-%s" % (r["team"], r["win"], r["loss"]) for r in rows[:4])
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=self.NBA_STANDINGS,
+                pid=pid, title="%s战绩" % zone, author="NBA",
+                created="%d 队" % len(rows), ts=now,
+                score=0, n_comments=0, excerpt=top, url=HUPU_STANDINGS_URL,
+                tags=["战绩"],
+            ))
+        if not posts:
+            raise FeedNetError("虎扑战绩页没解析出表格（可能改版了）")
+        return posts
+
+    def _schedule_posts(self):
+        """文字直播栏：赛程表上的每一场（时间 + 客 vs 主 + 到哪一步了）。"""
+        rows = parse_hupu_schedule(self._html(HUPU_SCHEDULE_URL, TTL_LIST))
+        posts = []
+        for it in rows:
+            stage = it.get("stage") or ""
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=self.NBA_LIVE,
+                pid=it["match_id"] or ("%s-%s" % (it["away"], it["home"])),
+                title="%s vs %s" % (it["away"], it["home"]),
+                author="NBA", created="%s %s" % (it["date"], it["time"]),
+                ts=_hupu_match_ts(it["date"], it["time"]),
+                score=0, n_comments=0, excerpt=stage,
+                url=it["url"] or HUPU_SCHEDULE_URL,
+                tags=[stage] if stage else [],
+            ))
+        if not posts:
+            raise FeedNetError("虎扑赛程页没解析出比赛（可能改版了）")
+        return posts
+
+    def _standings_detail(self, post):
+        """一条战绩贴 = 一整张榜（东/西按 pid 分）。"""
+        out = Post.from_dict(post.to_dict())
+        zone = "西部" if str(post.id).endswith("west") else "东部"
+        rows = parse_hupu_standings(self._html(HUPU_STANDINGS_URL, TTL_LIST)).get(zone) or []
+        if not rows:
+            raise FeedNetError("虎扑战绩页没解析出表格（可能改版了）")
+        # 用 ` · ` 分隔：连续空格在 HTML 里会被压成一个，光靠空格看不出层次
+        out.body = [Block(kind=BLOCK_P, text=(
+            "%s. %s · %s-%s · 胜率 %s · 净胜 %s · %s"
+            % (r["rank"], r["team"], r["win"], r["loss"], r["pct"], r["diff"], r["streak"])))
+            for r in rows]
+        return out
+
+    def _match_detail(self, post):
+        """一场比赛的文字直播：头部比分 + 状态，然后最新的回合在上、越往下越早。"""
+        out = Post.from_dict(post.to_dict())
+        mid = str(post.id or "").strip()
+        if not mid.isdigit():
+            raise FeedNetError("这场比赛没有 id（%s）" % mid)
+        data = parse_hupu_pbp(self._html(HUPU_PBP_URL % mid, HUPU_LIVE_TTL))
+        if not data["rows"]:
+            raise FeedNetError("这场还没有文字直播（可能没开赛）")
+        body = []
+        if data["away"] or data["home"]:
+            head = "%s %s - %s %s" % (data["away"], data["away_score"],
+                                      data["home_score"], data["home"])
+            if data["status"]:
+                head += "（%s）" % data["status"]
+            body.append(Block(kind=BLOCK_P, text=head))
+        if data["start"]:
+            body.append(Block(kind=BLOCK_P, text="开赛：%s" % data["start"]))
+        for it in data["rows"][:150]:
+            if it["kind"] == "mark":
+                body.append(Block(kind=BLOCK_H, text=it["text"]))
+            else:
+                body.append(Block(kind=BLOCK_P, text="%s %s %s  %s" % (
+                    it["time"], it["team"], it["text"], it["score"])))
+        out.body = body
+        # 进行中/已结束：主窗口据此决定"要不要每 20 秒自己再问一次"
+        keep = [t for t in (out.tags or []) if t not in ("进行中", "已结束")]
+        if data["live"]:
+            keep.append("进行中")
+        elif data["status"]:
+            keep.append("已结束")
+        out.tags = keep
         return out
 
     def _headers(self):
@@ -2463,6 +2700,11 @@ class HupuSource(RealSource):
         return ((data.get("props") or {}).get("pageProps") or {}).get("detail") or {}
 
     def list(self, channel=None, cursor=None):
+        ch = str(channel or "").strip()
+        if ch == self.NBA_STANDINGS:
+            return self._standings_posts(), None
+        if ch == self.NBA_LIVE:
+            return self._schedule_posts(), None
         label = self.board_label(self.board_fid(channel))
         slug = self.board_fid(channel)
         try:
@@ -2487,6 +2729,11 @@ class HupuSource(RealSource):
         return posts, nxt
 
     def detail(self, post, cursor=None):
+        ch = str(getattr(post, "channel", "") or "").strip()
+        if ch == self.NBA_STANDINGS:
+            return self._standings_detail(post), None
+        if ch == self.NBA_LIVE:
+            return self._match_detail(post), None
         out = Post.from_dict(post.to_dict())
         detail = self._detail_json(post.id)
         th = detail.get("thread") or {}
@@ -2502,6 +2749,8 @@ class HupuSource(RealSource):
 
     def comments(self, post, cursor=None):
         """回复（虎扑的回复没有真正的层级，引用写在正文里，所以按平铺给）。"""
+        if str(getattr(post, "channel", "") or "").strip() in self.NBA_CHANNELS:
+            return [], None          # 战绩/文字直播这两栏本身就是内容，没有"回复"这一层
         detail = self._detail_json(post.id)
         rows = ((detail.get("replies") or {}).get("list")) or []
         out = []
