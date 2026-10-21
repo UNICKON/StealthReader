@@ -823,11 +823,14 @@ _low_before = bool(w.config.get("feed_lowkey", False))
 _set_dlg2 = app_mod.SettingsDialog(w.config, w)
 _set_dlg2.feed_lowkey_check.setChecked(not _low_before)
 _saved_ok = True
+_save_before = w.save_config
+w.save_config = lambda *a, **k: None          # 探针不落盘：别把真配置改成无图模式
 try:
     _set_dlg2.accept()
 except Exception as _e:                     # 真机上就是这里抛的
     _saved_ok = False
     print("        accept() 抛了：%s: %s" % (type(_e).__name__, _e))
+w.save_config = _save_before
 qapp.processEvents()
 check("设置窗口点「确定」不抛异常，值真的存进 config",
       _saved_ok and bool(w.config.get("feed_lowkey")) == (not _low_before),
