@@ -1883,6 +1883,67 @@ check("贴进来（或自动找到）的 Cookie 只有点保存才写进 feed_au
 w.config.pop("feed_sources", None)      # 探针自己造的键不留在真配置里
 
 
+# 托盘右键 → 重新启动（双开有害：两个进程同时响应老板键、互相覆盖进度）
+check("命令行里认得出 --restart-wait 的 pid",
+      app_mod.parse_restart_wait(["main.py", "--restart-wait", "1234"]) == 1234
+      and app_mod.parse_restart_wait(["main.py"]) is None
+      and app_mod.parse_restart_wait(["--restart-wait", "abc"]) is None,
+      app_mod.parse_restart_wait(["main.py", "--restart-wait", "1234"]))
+check("探活：自己的 pid 活着，0 是死的",
+      app_mod._pid_alive(os.getpid()) is True and app_mod._pid_alive(0) is False,
+      (app_mod._pid_alive(os.getpid()), app_mod._pid_alive(0)))
+
+_tray_menu = w.tray_icon.contextMenu()
+_tray_texts = [a.text() for a in _tray_menu.actions() if not a.isSeparator()]
+check("托盘右键里有「重新启动」，就在「退出」上一行",
+      "重新启动" in _tray_texts
+      and _tray_texts.index("重新启动") == _tray_texts.index("退出") - 1,
+      _tray_texts[-3:])
+
+_spawned, _quits = [], []
+_popen_bak = app_mod.subprocess.Popen
+_pid_alive_bak = app_mod._pid_alive
+_quit_bak = w.quit_app
+_save_bak = w.save_before_restart
+
+
+class _FakeProc(object):
+    pid = 424242
+
+
+app_mod.subprocess.Popen = lambda args, **kw: (_spawned.append((list(args), dict(kw))),
+                                               _FakeProc())[1]
+app_mod._pid_alive = lambda pid: True
+w.quit_app = lambda: _quits.append(1)
+w.save_before_restart = lambda: None
+try:
+    w.restart_app()
+    _args, _kw = _spawned[0]
+    check("重新启动：pythonw 起 main.py，并把本进程 pid 传过去让它先等",
+          _args[0].lower().endswith("pythonw.exe")
+          and _args[1].replace("\\", "/").endswith("main.py")
+          and _args[2] == "--restart-wait" and _args[3] == str(os.getpid()),
+          _args)
+    check("新进程带 DETACHED_PROCESS（不跟着老进程被收走）",
+          bool(_kw.get("creationflags", 0) & 0x00000008), _kw.get("creationflags"))
+    for _ in range(40):
+        qapp.processEvents()
+        time.sleep(0.05)
+    check("新进程起来了才退出自己", _quits == [1], _quits)
+
+    _quits[:] = []
+    app_mod._pid_alive = lambda pid: False          # 新进程起不来
+    w.restart_app()
+    for _ in range(40):
+        qapp.processEvents()
+        time.sleep(0.05)
+    check("新进程没起来就不退出（别把程序弄没了）", _quits == [], _quits)
+finally:
+    app_mod.subprocess.Popen = _popen_bak
+    app_mod._pid_alive = _pid_alive_bak
+    w.quit_app = _quit_bak
+    w.save_before_restart = _save_bak
+
 # 窗口摆放（"按了老板键，日志说显示了，屏幕上什么都没有，然后一闪一闪"）：
 # 两个信号任一为真就摆一次，**摆只用 Qt 的坐标**（Win32 挪 + 除以 dpr 同步回来，两套坐标一打架
 # 窗口就在屏幕内外来回跳 = 人看到的闪烁），摆完冷却 30 秒、摆不好安静五分钟。

@@ -14,6 +14,7 @@ import posixpath
 import queue
 import zipfile
 import threading
+import subprocess
 import time
 import keyboard
 import ctypes
@@ -765,6 +766,59 @@ def force_window_to_primary(hwnd, margin=60):
         SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
         user32.SetWindowPos(ctypes.c_void_p(hwnd), None, x, y, 0, 0,
                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+        return True
+    except Exception:
+        return False
+
+
+# ================= 重新启动要用到的三小块 =================
+SINGLE_INSTANCE_MUTEX = "StealthReader_SingleInstance"
+
+
+def parse_restart_wait(argv):
+    """命令行里 `--restart-wait <pid>` 的那个 pid（没有就 None）。
+
+    重新启动时由老进程把**自己的 pid** 塞进来：新进程先等它真的退出，再去抢单实例互斥体，
+    否则就会撞上"StealthReader 已经在运行了"的弹窗（老进程退出前还要拆钩子、等 Anki 收盘）。
+    """
+    try:
+        args = list(argv or [])
+        for i, arg in enumerate(args[:-1]):
+            if arg == "--restart-wait":
+                return int(args[i + 1])
+    except Exception:
+        pass
+    return None
+
+
+def _pid_alive(pid):
+    """这个 pid 还在跑吗（Win32 问，不依赖第三方库）。"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        h = kernel32.OpenProcess(0x1000, False, int(pid))   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong(0)
+        ok = kernel32.GetExitCodeProcess(ctypes.c_void_p(h), ctypes.byref(code))
+        kernel32.CloseHandle(ctypes.c_void_p(h))
+        return bool(ok) and code.value == 259               # STILL_ACTIVE
+    except Exception:
+        return False
+
+
+def release_single_instance_mutex():
+    """放下单实例互斥体（重新启动前用：先放手，新进程才敢起来）。
+
+    互斥体只在 `__main__` 里创建过；被探针 import 时没有这个全局量，直接说"没有"。
+    """
+    global _mutex
+    try:
+        h = globals().get("_mutex")
+        if not h:
+            return False
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(h))
+        _mutex = None
         return True
     except Exception:
         return False
@@ -4703,6 +4757,7 @@ class StealthReader(QWidget):
         tray_menu.addAction("打开本地书籍…").triggered.connect(self.open_local_file_dialog)
         tray_menu.addAction("设置…").triggered.connect(self.open_settings)
         tray_menu.addSeparator()
+        tray_menu.addAction("重新启动").triggered.connect(self.restart_app)
         tray_menu.addAction("退出").triggered.connect(self.quit_app)
         modernize_menu(tray_menu)
         self.tray_icon.setContextMenu(tray_menu)
@@ -8915,6 +8970,72 @@ class StealthReader(QWidget):
             self.save_config()
         super().closeEvent(event)
 
+    def save_before_restart(self):
+        """重新启动前把"人看得见的状态"钉住：进度、窗口位置、当前模式。
+
+        和 `quit_app` 里那几行是同一套，只是不退出——老进程紧接着就退出，写两遍没有副作用。
+        """
+        try:
+            if self.feed_mode:
+                self.exit_feed_mode(reason="restart")
+            if self.is_local_mode and not self._book_veiled():
+                self.config["last_local_pos"] = self.current_top_offset()
+            self.save_window_pos()
+            self.save_config()
+        except Exception as e:
+            log_event(f"重新启动前保存失败: {e}")
+
+    def restart_app(self):
+        """托盘 → 重新启动：起一个新进程，等它接上后自己退出。
+
+        双开是有害的（两个进程同时响应老板键、互相覆盖阅读进度），所以顺序是：
+        存状态 → 放下单实例互斥体 → 起新进程（把本 pid 传过去让它先等我死）→ 自己退出。
+        新进程用 `pythonw.exe` 起，不留黑框；`DETACHED_PROCESS` 让它不跟着这个进程一起被收走。
+        """
+        try:
+            log_event("重新启动（托盘）")
+            self.save_before_restart()
+            exe = sys.executable
+            pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+            if not getattr(sys, "frozen", False) and os.path.exists(pyw):
+                exe = pyw
+            args = [exe]
+            if getattr(sys, "frozen", False):
+                args.append("--restart-wait")
+            else:
+                args.append(os.path.join(APP_DIR, "main.py"))
+                args.append("--restart-wait")
+            args.append(str(os.getpid()))
+            release_single_instance_mutex()
+            proc = subprocess.Popen(args, cwd=APP_DIR, close_fds=True,
+                                    creationflags=0x00000008)      # DETACHED_PROCESS
+            self._restart_pid = int(getattr(proc, "pid", 0) or 0)
+            log_event("新进程已拉起：%s" % " ".join(args[1:]))
+        except Exception as e:
+            log_event(f"重新启动失败: {e}")
+            try:
+                # 起不来就重新把互斥体抓回来，别把"只许一个"的保险丢掉
+                globals()["_mutex"] = ctypes.windll.kernel32.CreateMutexW(
+                    None, False, SINGLE_INSTANCE_MUTEX)
+            except Exception:
+                pass
+            QMessageBox.warning(self, "提示", "重新启动失败：%s" % e)
+            return
+        QTimer.singleShot(1200, self._finish_restart)
+
+    def _finish_restart(self):
+        """新进程活着才退出自己——它要是起不来（改坏了之类），就留在这儿，别把程序弄没了。"""
+        pid = int(getattr(self, "_restart_pid", 0) or 0)
+        if pid and not _pid_alive(pid):
+            log_event("新进程没起来（pid %d），取消这次重新启动" % pid)
+            try:
+                globals()["_mutex"] = ctypes.windll.kernel32.CreateMutexW(
+                    None, False, SINGLE_INSTANCE_MUTEX)
+            except Exception:
+                pass
+            return
+        self.quit_app()
+
     def quit_app(self):
         # 退出前强制保存本地进度（安全文档/背诵/社区模式下不存：那些坐标不是书的进度）
         if self.feed_mode:
@@ -8937,7 +9058,16 @@ class StealthReader(QWidget):
 if __name__ == '__main__':
     # 单实例：双开会导致两个进程同时响应老板键（看起来像"唤醒不了"），并且互相覆盖
     # config 里的阅读进度（看起来像"进度跳位"）。用命名互斥体挡住第二个进程。
-    _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "StealthReader_SingleInstance")
+    # 重新启动：老进程可能还要几百毫秒拆钩子、等 Anki 收盘。等它真的走了再抢互斥体，
+    # 否则新进程会一头撞在"已经在运行了"的弹窗上。
+    _wait_for = parse_restart_wait(sys.argv)
+    if _wait_for:
+        for _ in range(150):                       # 最多等 15 秒
+            if not _pid_alive(_wait_for):
+                break
+            time.sleep(0.1)
+
+    _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         ctypes.windll.user32.MessageBoxW(None, "StealthReader 已经在运行了（托盘里）", "提示", 0x40)
         sys.exit(0)
