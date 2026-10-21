@@ -1111,6 +1111,16 @@ else:
           and feed_sources._hupu_time("") == 0
           and feed_sources._hupu_time("刚刚") == 0,
           (feed_sources._hupu_time("10-19 11:10"), feed_sources._hupu_time("刚刚")))
+    # 节间/中场还在打：状态文字里有"结束"两个字，不能当成"打完了"
+    _mk_vs = ('<div class="team_vs"><p><a href="/teams/a">甲</a></p>'
+              '<p><a href="/teams/b">乙</a></p><h2>88</h2><h2>80</h2>'
+              '<div class="team_num">%s</div></div><div class="yuece_num"></div>')
+    _lives = [feed_sources.parse_hupu_header(_mk_vs % _t)["live"]
+              for _t in ("第三节结束", "中场休息", "第四节剩5:22", "已结束", "未开始", "")]
+    check("节间/中场照样算'还在打'（不然回合一停表，屏幕上就定在那一刻的比分）",
+          _lives[:3] == [True, True, True] and _lives[3:] == [False, False, False],
+          _lives)
+
     # ---- NBA：战绩 + 赛程（一场一条，详情里 T 切文字直播/数据统计）----
     if raw_st is None or raw_sc is None or raw_pb is None or raw_bx is None:
         skip("虎扑 NBA", "缺 hupu_standings/schedule/playbyplay/boxscore 夹具")

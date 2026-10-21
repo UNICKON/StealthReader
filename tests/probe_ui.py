@@ -1138,6 +1138,21 @@ pump(lambda: cs.n_detail > _n_live, 12.0)
 check("5 秒到点真的会再问一次（不只是把表开起来）", cs.n_detail > _n_live,
       (cs.n_detail, _n_live))
 
+# 打完就停表，但停之前要再问最后一次：不然屏幕停在倒数第二拍的比分
+w.feed_live_timer.stop()
+w._feed_live_fail = 0
+w._feed_live_retry_at = 0.0
+pump(lambda: not w.feed_busy, 10.0)
+_n0_settle = cs.n_detail
+_live_post.tags = _keep_tags
+w.feed_live_watch()
+pump(lambda: cs.n_detail > _n0_settle, 10.0)
+check("刚打完停表之前补最后一次（不把终场比分丢在倒数第二拍）",
+      cs.n_detail == _n0_settle + 1 and not w.feed_live_timer.isActive(),
+      (cs.n_detail, _n0_settle, w.feed_live_timer.isActive()))
+_live_post.tags = _keep_tags + ["进行中"]
+w.render_feed()
+
 # 技术统计那种 17 列：表格按自然宽度撑出去，靠左右滑看右边的列；横条**不显示**。
 _table_post = w.feed_nav.post
 _table_body = list(_table_post.body)

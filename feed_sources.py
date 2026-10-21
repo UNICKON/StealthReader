@@ -2574,7 +2574,12 @@ def parse_hupu_header(html):
         "away_score": scores[0] if scores else "",
         "home_score": scores[1] if len(scores) > 1 else "",
         "status": status,
-        "live": bool(status) and not any(k in status for k in ("结束", "未开始", "取消")),
+        # 「第三节结束」「中场休息」都还在打，只是这一节完了——以前一律当"打完了"，
+        # 于是节间一停表，屏幕上就定在那一刻的比分（真人报的"总是停留在某个时刻的比分"）。
+        # 真正打完的页面 status 是空的；真有文字也是"已结束/比赛结束"这种。
+        "live": bool(status) and status.strip() != "结束" and not any(
+            k in status for k in ("已结束", "比赛结束", "全场结束", "完场",
+                                  "未开始", "取消", "延期", "推迟", "腰斩")),
         "start": re.sub(r"\s+", " ", start.group(1)).strip() if start else "",
     }
 

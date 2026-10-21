@@ -2953,6 +2953,7 @@ class StealthReader(QWidget):
         # 5 秒一拍这么密，失败必须自己退让（见 feed_live_tick / on_feed_data）
         self._feed_live_fail = 0                     # 连着失败了几拍
         self._feed_live_retry_at = 0.0               # 退让到什么时候之前不发请求
+        self._feed_live_mode_was = ""                 # 上一帧在盯什么（""/detail/list）
         if FEED_OK:
             try:
                 self.feed_sources = feed_mod.build_sources(
@@ -5412,7 +5413,13 @@ class StealthReader(QWidget):
         if not mode:
             if timer.isActive():
                 timer.stop()
+            if (self._feed_live_mode_was == "detail"
+                    and self.feed_nav is not None and self.feed_nav.view == "detail"):
+                # 刚打完：最后再问一次，把终场比分/技术统计落到屏幕上（不然停在倒数第二拍）
+                self.feed_load("detail", fresh=True)
+            self._feed_live_mode_was = ""
             return
+        self._feed_live_mode_was = mode
         want = 5000 if mode == "detail" else 20000
         if timer.interval() != want:
             timer.setInterval(want)
