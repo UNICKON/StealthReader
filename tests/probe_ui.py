@@ -1054,23 +1054,21 @@ pump(lambda: cs.n_detail > _n_live, 12.0)
 check("5 秒到点真的会再问一次（不只是把表开起来）", cs.n_detail > _n_live,
       (cs.n_detail, _n_live))
 
-# 技术统计那种"要紧的几列 + 每人一行小字"：`~` 开头的行要真并成一格，页面不能被撑宽。
+# 技术统计那种 17 列：表格按自然宽度撑出去，靠左右滑看右边的列；横条**不显示**。
 _table_post = w.feed_nav.post
 _table_body = list(_table_post.body)
-_tsv = ("球员\t得分\t篮板\t助攻\t时间\n"
-        "泰雷斯-马克西\t28\t4\t5\t38\n"
-        "~投篮 9-19 · 三分 2-9 · 罚球 8-9 · 后卫 · 首发\n"
-        "安芬尼-西蒙斯\t13\t2\t0\t25\n"
-        "~投篮 5-10 · 三分 3-8 · 后卫 · 替补")
-_table_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE, text=_tsv)]
+_cols = ["球员", "得分", "篮板", "助攻", "时间", "投篮", "三分", "罚球", "抢断",
+         "封盖", "失误", "犯规", "前场", "后场", "±", "首发", "位置"]
+_tsv = ("\t".join(_cols) + "\n"
+        + "\n".join("\t".join(["泰雷斯-马克西"] + [str(28 - i) for _ in range(16)])
+                    for i in range(3)))
+_table_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE, text=_tsv, lang="wide")]
 w.render_feed()
-_tabs = [f for f in w.text_edit.document().rootFrame().childFrames() if hasattr(f, "columns")]
-check("表格里 `~` 开头的行并成一格（colspan 撑满），不是一格一个词",
-      bool(_tabs) and _tabs[0].rows() == 5 and _tabs[0].cellAt(2, 0).columnSpan() == 5,
-      (_tabs[0].rows(), _tabs[0].cellAt(2, 0).columnSpan()) if _tabs else None)
-check("这种表不把页面撑宽（横条不出现，整页不会跟着左右滑）",
-      w.text_edit.horizontalScrollBar().maximum() <= 16,
-      w.text_edit.horizontalScrollBar().maximum())
+_hbar = w.text_edit.horizontalScrollBar()
+check("17 列的表撑出去：有横向行程，但横条是关着的（不显示进度条）",
+      _hbar.maximum() > 100
+      and w.text_edit.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff,
+      (_hbar.maximum(), w.text_edit.horizontalScrollBarPolicy()))
 
 
 class _WheelStub(object):
@@ -1090,24 +1088,32 @@ class _WheelStub(object):
         return self._m
 
 
-# 真人反馈"调整了滚动行数没生效"：把这一页撑长，量一格滚轮到底走多少
-_table_post.body = _table_body * 12
+_hbar.setValue(0)
+_r = w.eventFilter(w.text_edit.viewport(), _WheelStub(dy=-120, mods=Qt.ShiftModifier))
+check("Shift+滚轮往右滑一格 = 滚动行数那么高（不是固定 120px）",
+      _r is True and _hbar.value() == w._feed_hstep(), (_r, _hbar.value(), w._feed_hstep()))
+_hbar.setValue(0)
+w.on_feed_key(Qt.Key_Right)
+check("右箭头也能左右滑", _hbar.value() == w._feed_hstep(), _hbar.value())
+w.on_feed_key(Qt.Key_Left)
+check("已经最左边了，再往左滑不会变成负数", _hbar.value() == 0, _hbar.value())
+
+_keep_lines = w.config.get("arrow_scroll_lines")
+w.config["arrow_scroll_lines"] = 1
+_s1 = w._feed_hstep()
+w.config["arrow_scroll_lines"] = 3
+_s3 = w._feed_hstep()
+w.config["arrow_scroll_lines"] = _keep_lines
+check("滚动行数也管横滑：3 行是 1 行的三倍", _s1 > 0 and _s3 == 3 * _s1, (_s1, _s3))
+
+# 窄页：左右键不该被吞掉（还得留给别的用途）
+_table_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE,
+                                       text="球员\t得分\n马克西\t28")]
 w.render_feed()
-_sb = w.text_edit.verticalScrollBar()
-
-
-def _wheel_px(lines):
-    w.config["arrow_scroll_lines"] = lines
-    _sb.setValue(min(80, max(0, _sb.maximum() // 2)))
-    before = _sb.value()
-    w.eventFilter(w.text_edit.viewport(), _WheelStub(dy=-120))
-    return _sb.value() - before
-
-
-_px3 = _wheel_px(3)
-_px1 = _wheel_px(1)
-check("滚动行数真的管用：滚轮一格 = 那么多行（3 行是三倍，不是固定值）",
-      _px3 > 0 and _px1 > 0 and _px3 == 3 * _px1, (_px1, _px3))
+check("没有横向溢出的页：横行程只有页边距那几像素，左右键照旧不管（不吞按键）",
+      w.text_edit.horizontalScrollBar().maximum() <= 16
+      and w.on_feed_key(Qt.Key_Right) is False,
+      (w.text_edit.horizontalScrollBar().maximum(), w.on_feed_key(Qt.Key_Right)))
 _table_post.body = _table_body
 w.render_feed()
 w.on_feed_key(Qt.Key_Backspace)

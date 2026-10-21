@@ -4163,6 +4163,17 @@ class StealthReader(QWidget):
         if (event.type() == QEvent.Wheel
                 and (source is self.text_edit or source is self.text_edit.viewport())):
             delta = event.angleDelta().y()
+            if self.feed_mode:
+                # 横着看：触摸板左右滑（dx）和 Shift+滚轮都用来左右滑，
+                # 一次走"滚动行数"那么多行的高度；这一页没有横向溢出就照旧上下滚。
+                dx = int(event.angleDelta().x())
+                if dx:
+                    if self._feed_hslide(dx):
+                        return True
+                elif delta and (event.modifiers() & Qt.ShiftModifier):
+                    step = self._feed_hstep()
+                    if self._feed_hslide(-step if delta > 0 else step):
+                        return True
             if not delta:
                 return super().eventFilter(source, event)     # 横向滚轮/倾斜轮：不抢
             if self.review_mode or self.feed_mode:
@@ -4547,6 +4558,32 @@ class StealthReader(QWidget):
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
         self.scroll_px((float(-delta) / 120.0) * lines * self._line_height_px())
+
+    def _feed_hstep(self):
+        """左右滑一格走多少像素：和竖直同一套——"滚动行数 × 一行高"。"""
+        lines = clamp_config_int(self.config, "arrow_scroll_lines",
+                                 ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
+        return max(8, int(round(lines * self._line_height_px())))
+
+    def _feed_hslide(self, step):
+        """列多的表（技术统计 17 列）靠左右滑看右边的列。
+
+        **横条不显示**（真人："左右滑不要显示进度条"）：`ScrollBarAlwaysOff`，但范围还在，
+        `setValue` 照样有效——所以靠滚轮和左右箭头滑，没有那根可以拖的条。
+        Qt 富文本的滚动是整页一个，不会只滑一张表。"""
+        if not step:
+            return False
+        try:
+            hbar = self.text_edit.horizontalScrollBar()
+            # 页边距会让文档比视口宽几像素（行程是个位数），那不是"能横着滑"：
+            # 这种假溢出不抢滚轮、也不抢左右键。
+            if hbar.maximum() <= 16:
+                return False
+            hbar.setValue(max(hbar.minimum(),
+                              min(hbar.maximum(), hbar.value() + int(step))))
+            return True
+        except Exception:
+            return False
 
     def on_peek_exit(self, reason):
         self.exit_peek(reason)
@@ -5212,6 +5249,10 @@ class StealthReader(QWidget):
             before = int(self.text_edit.verticalScrollBar().value())
         except Exception:
             before = None
+        try:
+            h_before = int(self.text_edit.horizontalScrollBar().value())
+        except Exception:
+            h_before = 0
         doc = self.text_edit.document()
         doc.setDefaultStyleSheet("")
         base = self.feed_image_dir()
@@ -5226,13 +5267,17 @@ class StealthReader(QWidget):
         self._feed_sig = self._feed_sig_now()
         want = self.feed_restore_pos
         self.feed_restore_pos = None
+        same_screen = want is None
         if want is None:
             # 同一屏重画（到底续了一页、追加评论、摊开子回复）：位置**不能动**。
             # `setHtml` 一律把滚动条打回 0，以前只在列表里补这一下，详情里就没人管——
             # 于是读评论时往下翻一页，屏幕直接跳回顶上（人报的"下翻加载评论会跳屏到
             # 评论区第一条"）。要"从头读"的地方都显式给了 `feed_restore_pos = 0`。
             want = before
-        if want:
+        # 横向只在"同一屏重画"时保留：换了帖子/切了视图就回最左边。
+        # （不保留的话，比赛进行中每 5 秒静默重画一次，正在看的右边那几列会被拉回最左）
+        self._feed_h_before = h_before if same_screen else 0
+        if want or self._feed_h_before:
             # 文档刚换完，高度还没算出来，得等这一轮事件走完再滚；期间要是又有人
             # 明确要求"回顶部"（feed_scroll_top），这次恢复就作废，别把它拽回去。
             self._feed_pending_scroll = want
@@ -5586,6 +5631,13 @@ class StealthReader(QWidget):
         self._feed_pending_scroll = None
         if want:
             self._feed_set_scroll(want)
+        h = getattr(self, "_feed_h_before", 0)
+        if h:
+            try:
+                hbar = self.text_edit.horizontalScrollBar()
+                hbar.setValue(max(hbar.minimum(), min(hbar.maximum(), int(h))))
+            except Exception:
+                pass
 
     def _feed_set_scroll(self, value):
         try:
@@ -6179,6 +6231,11 @@ class StealthReader(QWidget):
         if key == Qt.Key_V:
             # V = 直接切到下一个板块（来源内的栏目），Z 撤回
             return self.feed_cycle_channel(1)
+        if key in (Qt.Key_Left, Qt.Key_Right):
+            # 列多的表：左右箭头左右滑（横条不显示，只有这两个键和滚轮）
+            step = self._feed_hstep()
+            if self._feed_hslide(-step if key == Qt.Key_Left else step):
+                return True
         sb = self.text_edit.verticalScrollBar()
         page = max(1, self.text_edit.viewport().height())
         if key in (Qt.Key_Space, Qt.Key_PageDown):

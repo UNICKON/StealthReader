@@ -2481,30 +2481,34 @@ def _hupu_misc_table(tot):
     return "\n".join(["\t".join(head), "\t".join(vals)])
 
 
-# 技术统计按**重要程度**排：网格里只留读球时先看的那几列（得分/篮板/助攻/时间），
-# 其余字段一个不丢，压成每人下面那行小字（`~` 合并行，见 feed._table_html）。
-# 17 列硬塞进 400px 的浮层就得横着滑，而 Qt 富文本的横滑是整页一起动——所以改成
-# "要紧的对齐在网格里，次要的压小跟在本人下面"。
+# 技术统计 17 列，一个字段都不砍，**按重要程度从左往右排**：读球时先看的那几列
+# （得分/篮板/助攻/时间）落在最左边一屏内，投篮/防守/前后场/±/位置/首发往右排。
+# 摆不下的部分靠左右滑看（表格块标 lang="wide"，横条不显示，见 main._feed_hslide）。
 HUPU_PLAYER_COLS = (("name", "球员"), ("pts", "得分"), ("reb", "篮板"),
-                    ("ast", "助攻"), ("min", "时间"))
-HUPU_PLAYER_MORE = (("fg", "投篮"), ("p3", "三分"), ("ft", "罚球"),
-                    ("stl", "抢断"), ("blk", "封盖"), ("to", "失误"),
-                    ("pf", "犯规"), ("oreb", "前场"), ("dreb", "后场"), ("pm", "±"))
+                    ("ast", "助攻"), ("min", "时间"), ("fg", "投篮"),
+                    ("p3", "三分"), ("ft", "罚球"), ("stl", "抢断"),
+                    ("blk", "封盖"), ("to", "失误"), ("pf", "犯规"),
+                    ("oreb", "前场"), ("dreb", "后场"), ("pm", "±"),
+                    ("group", "首发"), ("pos", "位置"))
 HUPU_POS_CN = {"G": "后卫", "F": "前锋", "C": "中锋"}
 
 
 def _hupu_players_table(players):
-    """每人两行：网格行（要紧的）+ 小字合并行（其余）。`players` 是 [(数据, "首"/"替"), …]。"""
+    """每人一行、列全（顺序按重要程度）。`players` 是 [(数据, "首"/"替"), …]。"""
     if not players:
         return ""
     lines = ["\t".join([label for _k, label in HUPU_PLAYER_COLS])]
     for p, group in players:
-        lines.append("\t".join([str(p.get(k) or "") for k, _l in HUPU_PLAYER_COLS]))
-        more = ["%s %s" % (label, str(p.get(k) or "-")) for k, label in HUPU_PLAYER_MORE]
-        pos = str(p.get("pos") or "").strip()
-        pos = HUPU_POS_CN.get(pos.upper(), pos)
-        tail = [x for x in (pos, "首发" if group == "首" else "替补") if x]
-        lines.append("~" + " · ".join(more + tail))
+        cells = []
+        for key, _label in HUPU_PLAYER_COLS:
+            if key == "group":
+                cells.append(group)
+            elif key == "pos":
+                pos = str(p.get("pos") or "").strip()
+                cells.append(HUPU_POS_CN.get(pos.upper(), pos))
+            else:
+                cells.append(str(p.get(key) or ""))
+        lines.append("\t".join(cells))
     return "\n".join(lines)
 
 
@@ -2901,10 +2905,10 @@ class HupuSource(RealSource):
         out.tags = keep
 
     def _box_detail(self, post):
-        """数据统计：比分 / 开赛 / 分节，然后每队"球员表（按得分排）→ 全队汇总"。
+        """数据统计：比分 / 开赛 / 分节，然后每队"全队汇总 → 球员表（每人一行、按得分排）"。
 
-        顺序是**重要程度**：得分、篮板、助攻对齐在网格里，投篮/三分/罚球那些压成每人
-        下面一行小字（`~` 合并行）；全队汇总沉到每队最后。
+        球员表 17 列**按重要程度排**（得分/篮板/助攻/时间在最左边），摆不下的靠左右滑；
+        全队那两张汇总表在每队最前面。
         """
         out = Post.from_dict(post.to_dict())
         mid = str(post.id or "").strip()
@@ -2937,6 +2941,13 @@ class HupuSource(RealSource):
             tot = t.get("total") or {}
             if name:
                 body.append(Block(kind=BLOCK_H, text=name))
+            # 全队汇总在最前面（真人："全队汇总还是翻最前面"）
+            shoot = _hupu_shooting_table(tot, pct)
+            misc = _hupu_misc_table(tot)
+            if shoot:
+                body.append(Block(kind=BLOCK_TABLE, text=shoot))
+            if misc:
+                body.append(Block(kind=BLOCK_TABLE, text=misc))
             players = ([(p, "首") for p in (t.get("starters") or [])]
                        + [(p, "替") for p in (t.get("bench") or [])])
             players = [(p, g) for (p, g) in players
@@ -2944,16 +2955,8 @@ class HupuSource(RealSource):
             players.sort(key=lambda pg: -int(re.sub(r"\D", "", pg[0].get("pts") or "0") or 0))
             ptable = _hupu_players_table(players)
             if ptable:
-                body.append(Block(kind=BLOCK_TABLE, text=ptable))
-            # 汇总放在球员后面：先看人，再看全队（重要程度往下走）
-            shoot = _hupu_shooting_table(tot, pct)
-            misc = _hupu_misc_table(tot)
-            if shoot or misc:
-                body.append(Block(kind=BLOCK_H, text="全队"))
-            if shoot:
-                body.append(Block(kind=BLOCK_TABLE, text=shoot))
-            if misc:
-                body.append(Block(kind=BLOCK_TABLE, text=misc))
+                # lang="wide"：17 列不折行，屏幕左右滑（横条不显示）
+                body.append(Block(kind=BLOCK_TABLE, text=ptable, lang="wide"))
         out.body = body
         out.url = HUPU_BOX_URL % mid
         self._tag_live(out, head["live"], head["status"])

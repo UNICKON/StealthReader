@@ -941,7 +941,7 @@ def _is_number(cell):
     return bool(re.match(r"^[+-]?\d[\d.:%+\-/]*$", (cell or "").strip()))
 
 
-def _table_html(text, theme, f):
+def _table_html(text, theme, f, nowrap=False):
     """TSV → 表格。第一行是表头（弱化 + 加粗），数字列右对齐。
 
     为什么要真表格：战绩、技术统计、一行行回合，本来就是"列对齐了才读得下去"的东西；
@@ -950,14 +950,10 @@ def _table_html(text, theme, f):
     `align/font-*/color` 是稳的，`border-collapse`、每格边框、半透明底色都不稳，
     所以这里不画线，靠留白和列对齐分层。
 
-    以 `~` 开头的行是**合并行**：整行并成一格小字（`colspan` 撑满表宽）。技术统计里
-    要紧的四列（得分/篮板/助攻/时间）对齐在网格里，投篮/三分/罚球那些压成一行小字跟在
-    本人下面——一页不用横着滑也能全看到。
-
-    为什么不做"只有这张表能左右滑"：Qt 富文本的滚动条是**整页**一个，不是每个元素一个；
-    给表格 `white-space:nowrap` 撑出去，整页都会跟着横滑（真人做出来就是这个效果：
-    "不是整个页面左右滑动，而是哪个列表左右滑"）。要做逐表横滑就得把表格换成独立控件，
-    那套在 400px 的浮层里代价太大——所以宁可按重要程度重排。
+    `nowrap=True`（表格块带 `lang="wide"`）：单元格加 `white-space:nowrap`，Qt 让表格
+    按**自然宽度**撑出文档宽，于是能靠左右滑看到右边的列（17 列的技术统计自然宽 ~920px）。
+    注意 Qt 富文本的滚动条是**整页一个**，不是每张表一个：所以横滑时整页一起动，
+    并且横条**不显示**（真人要的："左右滑不要显示进度条"，见 `main._feed_hslide`）。
     """
     rows = []
     for line in (text or "").split("\n"):
@@ -969,37 +965,28 @@ def _table_html(text, theme, f):
     pad = max(2, int(round(cells_font * 0.22)))
     # 每一列的朝向由**数据**决定：整列都是数字就右对齐。表头跟着列走——
     # 表头右对齐、数据左对齐（或者反过来）最难看，看起来像没对齐的表格。
-    # 合并行（`~`）不参与：它一格撑满，算进去会把整列带歪。
     cols = max(len(r) for r in rows)
-    data_rows = [r for r in rows[1:] if not r[0].lstrip().startswith("~")]
     aligns = []
     for j in range(cols):
-        vals = [(r[j].strip() if j < len(r) else "") for r in data_rows]
+        vals = [(r[j].strip() if j < len(r) else "") for r in rows[1:]]
         vals = [v for v in vals if v]
         numeric = bool(vals) and all(_is_number(v) for v in vals)
         aligns.append("right" if numeric and j > 0 else "left")
     parts = ['<table width="100%" cellspacing="0" cellpadding="' + str(pad)
              + '" style="margin:10px 0 2px 0;">']
     for i, cells in enumerate(rows):
-        if i > 0 and cells[0].lstrip().startswith("~"):
-            # 合并行：一格小字，撑满表宽（次要数据不跟要紧的数字抢列）
-            merged = " ".join(c.strip() for c in cells if c.strip()).lstrip("~").strip()
-            parts.append('<tr><td colspan="%d" align="left" style="font-size:%dpx; color:%s;">'
-                         '%s</td></tr>'
-                         % (cols, max(10, cells_font - 1), theme["faint"],
-                            html.escape(merged) if merged else "&nbsp;"))
-            continue
         parts.append("<tr>")
         for j, raw in enumerate(cells):
             cell = (raw or "").strip()
             text_html = html.escape(cell) if cell else "&nbsp;"
+            nowrap_css = "white-space:nowrap;" if nowrap else ""
             if i == 0:
                 # 表头：比正文弱一档，加粗，别抢正文的注意力
                 style = ('font-size:%dpx; color:%s; font-weight:bold;' %
-                         (max(10, cells_font - 1), theme["faint"]))
+                         (max(10, cells_font - 1), theme["faint"])) + nowrap_css
             else:
                 color = theme["text"] if j else theme["mark"]
-                style = 'font-size:%dpx; color:%s;' % (cells_font, color)
+                style = ('font-size:%dpx; color:%s;' % (cells_font, color)) + nowrap_css
             align = aligns[j] if j < len(aligns) else "left"
             parts.append('<td align="%s" style="%s">%s</td>' % (align, style, text_html))
         parts.append("</tr>")
@@ -1476,7 +1463,9 @@ def _block_paragraphs(blocks, theme):
                            f'{_img_tag(b.url or b.text, theme, 460)}</p>')
             continue
         if b.kind == BLOCK_TABLE:
-            out.append(_table_html(b.text, theme, f))
+            # `lang` 在表格块上表示"这行要横着看"：`wide` = 列多，不许折行，让表格按
+            # 自然宽度撑出去，靠左右滑看右边的列（横条不显示，见 main.feed_hscroll_*）。
+            out.append(_table_html(b.text, theme, f, nowrap=(b.lang or "") == "wide"))
             continue
         if b.kind == BLOCK_H:
             style = (f'margin:17px 0 0 0; font-size:{f["head"]}px; line-height:150%;'
