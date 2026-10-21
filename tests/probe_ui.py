@@ -1883,6 +1883,27 @@ check("贴进来（或自动找到）的 Cookie 只有点保存才写进 feed_au
 w.config.pop("feed_sources", None)      # 探针自己造的键不留在真配置里
 
 
+# 窗口"Windows 说可见、屏幕上却没有"：Win32 复核 + 定时拉回（实测见过 x = -1455）
+_ors_bak = app_mod.window_on_real_screen
+_fp_bak = app_mod.force_window_to_primary
+_moves = []
+app_mod.window_on_real_screen = lambda hwnd: False
+app_mod.force_window_to_primary = lambda hwnd: (_moves.append(hwnd), True)[1]
+try:
+    w.show()
+    qapp.processEvents()
+    w._shown_at = time.time() - 5.0          # 已经露脸五秒了，可以信 Win32
+    w.guard_window_visible()
+    check("Windows 说可见、Win32 说不在任何屏幕上 → 拉回主屏", len(_moves) == 1, _moves)
+
+    w._shown_at = time.time()                 # 刚露脸
+    w.guard_window_visible()
+    check("刚唤出那一秒不认 Win32 的答案（不然每次唤出都白挪一下）",
+          len(_moves) == 1, _moves)
+finally:
+    app_mod.window_on_real_screen = _ors_bak
+    app_mod.force_window_to_primary = _fp_bak
+
 # ===== 热键叫不回来（锁屏后按老板键没反应）：两条自救路 =====
 # 真凶之一：锁屏那一下的松键事件进了安全桌面，库以为 Win 还按着 → ctrl+s 等全匹配不上。
 # 之二：WH_KEYBOARD_LL 被系统摘掉，库仍自报 listening=True，等看门狗重挂最多 90 秒。

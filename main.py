@@ -2996,6 +2996,11 @@ class StealthReader(QWidget):
         self.hotkey_poll_timer.setInterval(180)
         self.hotkey_poll_timer.timeout.connect(self.poll_hotkeys)
         self.hotkey_poll_timer.start()
+        # 窗口"Windows 说可见、人屏幕上却没有"的定时复核（见 guard_window_visible）
+        self.screen_guard_timer = QTimer(self)
+        self.screen_guard_timer.setInterval(5000)
+        self.screen_guard_timer.timeout.connect(self.guard_window_visible)
+        self.screen_guard_timer.start()
         self.hotkey_watchdog = QTimer(self)
         self.hotkey_watchdog.setInterval(45000)
         self.hotkey_watchdog.timeout.connect(self.check_hotkeys_alive)
@@ -4247,6 +4252,7 @@ class StealthReader(QWidget):
                     # 解锁时 Windows 可能已经把窗口挪到桌面外（锁屏期间显示器断电/分辨率抖动），
                     # 窗口当时若还开着，顺手拉回它该在的位置；藏着的话等下次 show 自动处理
                     QTimer.singleShot(900, self.ensure_on_screen)
+                    QTimer.singleShot(1600, self.guard_window_visible)
         except Exception:
             pass
         return super().nativeEvent(eventType, message)
@@ -4538,6 +4544,34 @@ class StealthReader(QWidget):
         except Exception as e:
             log_event(f"屏幕校验异常: {e}")
 
+    def guard_window_visible(self):
+        """窗口"看着可见、其实不在任何显示器上"时拉回来。
+
+        实测过这么一幕：Windows 说窗口可见，坐标是 (-1455,434)——一整屏宽之外（换过显示器
+        布局之后，Qt 的屏幕表还是旧的，于是 `_rect_usable` 判"看得见"，`ensure_on_screen`
+        一个像素都不动）。人看到的就是"按老板键没反应、进程叫不回来"。
+
+        这里用 Win32 的 `MonitorFromWindow(MONITOR_DEFAULTTONULL)` 复核，它不带缓存；
+        但**只有窗口已经显示超过一秒才认它的答案**——刚 show 的那一瞬它会误报"不在任何屏幕上"
+        （`_rect_usable` 的注释记着这个坑，以前每次唤出都白挪一下就是它害的）。
+        """
+        try:
+            if not self.isVisible():
+                return
+            if time.time() - getattr(self, "_shown_at", 0.0) < 1.0:
+                return                      # 刚露脸，先别信 Win32
+            hwnd = int(self.winId())
+            if window_on_real_screen(hwnd):
+                return
+            log_event("窗口其实在屏幕外（Windows 仍说可见），拉回主屏")
+            if force_window_to_primary(hwnd):
+                self.sync_qt_pos_from_win32(hwnd)
+                self.save_window_pos()
+            else:
+                log_event("窗口在屏幕外，拉回主屏失败")
+        except Exception as e:
+            log_event(f"屏幕复核异常: {e}")
+
     def initTray(self):
         self.tray_icon = QSystemTrayIcon(self)
         # 极简图标：一枚白色书签（圆角条 + 底部三角缺口），透明底，别再放字和色块
@@ -4633,6 +4667,7 @@ class StealthReader(QWidget):
             self.apply_style()
             self.activateWindow()
             self.ensure_on_screen()
+            QTimer.singleShot(1200, self.guard_window_visible)   # 看完 Qt 再看 Win32
             if self.config.get("auto_mode", False):
                 self.chameleon_timer.start()
                 self.adjust_color_to_background()
