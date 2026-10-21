@@ -1229,14 +1229,21 @@ else:
               and bxd.body[6].text.split("\n")[1] == "43\t5\t38\t28\t8\t9\t9\t22",
               [b.text for b in bxd.body[5:7]])
         _prows = [x for x in bxd.body[7].text.split("\n") if x]
-        check("（真夹具）球员一张表：球员/时间/投篮/板/助/分，按得分从高到低",
-              _prows[0] == "球员\t时间\t投篮\t板\t助\t分"
-              and _prows[1] == "泰雷斯-马克西\t38\t9-19\t4\t5\t28"
-              and [int(r.split("\t")[5]) for r in _prows[1:]]
-              == sorted([int(r.split("\t")[5]) for r in _prows[1:]], reverse=True),
-              _prows[:3])
+        check("（真夹具）球员表列全：球员/首发/位置/时间/投篮/三分/罚球/前场/后场/"
+              "篮板/助攻/犯规/抢断/失误/封盖/得分/+/-，按得分从高到低",
+              _prows[0] == ("球员\t首发\t位置\t时间\t投篮\t三分\t罚球\t前场\t后场"
+                            "\t篮板\t助攻\t犯规\t抢断\t失误\t封盖\t得分\t+/-")
+              and _prows[1] == ("泰雷斯-马克西\t首\tG\t38\t9-19\t2-9\t8-9\t1\t3\t4"
+                                "\t5\t2\t3\t2\t3\t28\t+11")
+              and [int(r.split("\t")[15]) for r in _prows[1:]]
+              == sorted([int(r.split("\t")[15]) for r in _prows[1:]], reverse=True),
+              _prows[:2])
+        check("球员表每行都 17 格（列一个不少，不靠砍列去迁就窗口宽度）",
+              all(len(r.split("\t")) == 17 for r in _prows), [len(r.split("\t")) for r in _prows])
+        check("这张表标了 wide（屏幕横着滚，列不折行）",
+              getattr(bxd.body[7], "lang", "") == "wide", getattr(bxd.body[7], "lang", ""))
         check("（真夹具）没上场的（时间 0）不进正文，省得摆一屏 0-0",
-              len(_prows) == 5 and not any(r.split("\t")[1] == "0" for r in _prows[1:]),
+              len(_prows) == 5 and not any(r.split("\t")[3] == "0" for r in _prows[1:]),
               _prows[1:])
         check("数据统计那一页同样打'进行中'（主窗口照样 20 秒一取），标签换成'数据统计'",
               "进行中" in bxd.tags and "数据统计" in bxd.tags, bxd.tags)

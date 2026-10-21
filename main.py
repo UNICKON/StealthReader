@@ -2944,9 +2944,9 @@ class StealthReader(QWidget):
         # 文字直播：详情页是一条"进行中"的比赛就每 20 秒静默再问一次（人不用一直按 R）。
         # 只在**详情页且比赛没结束**时开着：别让它在列表页或已结束的比赛上白跑请求。
         self.feed_live_timer = QTimer(self)
-        self.feed_live_timer.setInterval(2000)      # 真人要的"每 2 秒刷一次"
+        self.feed_live_timer.setInterval(5000)      # 真人要的"每 5 秒刷一次"
         self.feed_live_timer.timeout.connect(self.feed_live_tick)
-        # 2 秒一拍这么密，失败必须自己退让（见 feed_live_tick / on_feed_data）
+        # 5 秒一拍这么密，失败必须自己退让（见 feed_live_tick / on_feed_data）
         self._feed_live_fail = 0                     # 连着失败了几拍
         self._feed_live_retry_at = 0.0               # 退让到什么时候之前不发请求
         if FEED_OK:
@@ -4163,6 +4163,17 @@ class StealthReader(QWidget):
         if (event.type() == QEvent.Wheel
                 and (source is self.text_edit or source is self.text_edit.viewport())):
             delta = event.angleDelta().y()
+            hbar = self.text_edit.horizontalScrollBar()
+            if self.feed_mode and hbar.maximum() > 16:
+                # 社区页里有"列多到要横着看"的表（技术统计 17 列）：横向滚轮/触摸板左右滑，
+                # 以及 Shift+滚轮，都用来左右滑——不然滚轮只能上下，那些列永远看不到。
+                dx = int(event.angleDelta().x())
+                if dx:
+                    hbar.setValue(hbar.value() + dx)
+                    return True
+                if delta and (event.modifiers() & Qt.ShiftModifier):
+                    hbar.setValue(hbar.value() - int(delta))
+                    return True
             if not delta:
                 return super().eventFilter(source, event)     # 横向滚轮/倾斜轮：不抢
             if self.review_mode or self.feed_mode:
@@ -5153,7 +5164,7 @@ class StealthReader(QWidget):
             self.feed_error = str(msg)
             log_event(f"社区取数失败: {msg}")
             if self._feed_live_watching():
-                # 2 秒一拍的重取失败了：退让，别每 2 秒撞一次站点。
+                # 5 秒一拍的重取失败了：退让，别每 5 秒撞一次站点。
                 # 成功的那一拍会把它清零（见下面的 detail 分支）。
                 self._feed_live_fail = min(4, int(self._feed_live_fail) + 1)
                 _gap = min(30, 2 ** (self._feed_live_fail + 1))
@@ -5239,8 +5250,23 @@ class StealthReader(QWidget):
             QTimer.singleShot(0, self._feed_apply_pending_scroll)
         else:
             self._feed_pending_scroll = None      # 这一次明确不要恢复，别让上一次的排单生效
+        self._feed_apply_hscroll()
         if getattr(self, "feed_live_timer", None) is not None:
             self.feed_live_watch()
+
+    def _feed_apply_hscroll(self):
+        """列多到摆不下的表（技术统计 17 列）要靠横向滚动看。
+
+        横条**只在真需要时才露头**：页边距会让文档比视口宽几像素（`maximum()` 是个位数），
+        那种假溢出不该在每个详情页底下挂一根用不上的横条。书页那边一直是
+        `AlwaysOff`（见构造 text_edit 的地方），这里只动社区页。"""
+        try:
+            sb = self.text_edit.horizontalScrollBar()
+            want = bool(self.feed_mode) and sb.maximum() > 16
+            self.text_edit.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarAsNeeded if want else Qt.ScrollBarAlwaysOff)
+        except Exception:
+            pass
 
     def _feed_live_watching(self):
         """此刻是不是"正在看一场还没打完的球"（定时重取、失败退让都看这一条）。"""
@@ -5261,15 +5287,15 @@ class StealthReader(QWidget):
             timer.stop()
 
     def feed_live_tick(self):
-        """2 秒到点：还在看一场没结束的球，就静默重取这一条（位置由 render_feed 保）。
+        """5 秒到点：还在看一场没结束的球，就静默重取这一条（位置由 render_feed 保）。
 
-        2 秒一拍是真人要的（"直播每2秒刷新一次"）。这么密就得自己兜住两件事：
+        5 秒一拍是真人定的（先说 2 秒，看下来觉得太密，改成 5 秒）。这么密得自己兜住两件事：
 
         1. 上一拍还没回来（`feed_busy`）就**跳过**这一拍——绝不把请求排队堆起来；
         2. 连着失败就退让（2→4→8→16→30 秒封顶，成功一拍立刻清零），
            否则站点一限流，就是每 2 秒撞一次，屏幕上还尽是"取数失败"。
 
-        "每 2 秒"不等于"每 2 秒抖一下"：内容没变时连重排都不会发生
+        "每 5 秒"不等于"每 5 秒抖一下"：内容没变时连重排都不会发生
         （`_feed_sig_now` 比签名，见 on_feed_data），真出现了新回合才重画，
         滚动位置仍由 render_feed 接着。
         """
@@ -6249,6 +6275,8 @@ class StealthReader(QWidget):
         # "退出 CAF 之后正文的字体变了"。配置是权威值，这里照它钉，不看上一刻控件里是什么。
         # 2026-10-19：钉的范围扩到**每个字符的 charFormat**（见 `_pin_book_font` 的说明）。
         self._pin_book_font("退出社区页")
+        # 社区页可能露着横向滚动条（技术统计那种宽表）：书页不要它，收回去
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.update_review_bar()
         self.update_tray_tooltip()
         log_event(f"社区统一流：已退出（{reason or '未说明'}）")

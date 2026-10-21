@@ -941,7 +941,7 @@ def _is_number(cell):
     return bool(re.match(r"^[+-]?\d[\d.:%+\-/]*$", (cell or "").strip()))
 
 
-def _table_html(text, theme, f):
+def _table_html(text, theme, f, nowrap=False):
     """TSV → 表格。第一行是表头（弱化 + 加粗），数字列右对齐。
 
     为什么要真表格：战绩、技术统计、一行行回合，本来就是"列对齐了才读得下去"的东西；
@@ -949,6 +949,12 @@ def _table_html(text, theme, f):
     Qt 的富文本只认一部分 CSS：`cellspacing/cellpadding/width` 和 `td` 上的
     `align/font-*/color` 是稳的，`border-collapse`、每格边框、半透明底色都不稳，
     所以这里不画线，靠留白和列对齐分层。
+
+    `nowrap=True`（表格块带 `lang="wide"`）：单元格加 `white-space:nowrap`，
+    Qt 会让表格按**自然宽度**撑出文档宽，QTextEdit 于是给出横向滚动条——
+    实测 17 列的技术统计自然宽 920px、横行程 502px，正文段落仍然按视口宽折行
+    （文档的文字宽度没变，只有这张表溢出去）。**列挤成两行比要横着滑更难看**，
+    所以列一多就宁可横向滚。
     """
     rows = []
     for line in (text or "").split("\n"):
@@ -974,13 +980,14 @@ def _table_html(text, theme, f):
         for j, raw in enumerate(cells):
             cell = (raw or "").strip()
             text_html = html.escape(cell) if cell else "&nbsp;"
+            nowrap_css = "white-space:nowrap;" if nowrap else ""
             if i == 0:
                 # 表头：比正文弱一档，加粗，别抢正文的注意力
                 style = ('font-size:%dpx; color:%s; font-weight:bold;' %
-                         (max(10, cells_font - 1), theme["faint"]))
+                         (max(10, cells_font - 1), theme["faint"])) + nowrap_css
             else:
                 color = theme["text"] if j else theme["mark"]
-                style = 'font-size:%dpx; color:%s;' % (cells_font, color)
+                style = ('font-size:%dpx; color:%s;' % (cells_font, color)) + nowrap_css
             align = aligns[j] if j < len(aligns) else "left"
             parts.append('<td align="%s" style="%s">%s</td>' % (align, style, text_html))
         parts.append("</tr>")
@@ -1457,7 +1464,9 @@ def _block_paragraphs(blocks, theme):
                            f'{_img_tag(b.url or b.text, theme, 460)}</p>')
             continue
         if b.kind == BLOCK_TABLE:
-            out.append(_table_html(b.text, theme, f))
+            # `lang` 在表格块上表示"这行要不要横着看"：`wide` = 列多，不许折行，
+            # 让表格按自然宽度撑出去，屏幕上用横向滚动条看（技术统计 17 列）。
+            out.append(_table_html(b.text, theme, f, nowrap=(b.lang or "") == "wide"))
             continue
         if b.kind == BLOCK_H:
             style = (f'margin:17px 0 0 0; font-size:{f["head"]}px; line-height:150%;'

@@ -2481,17 +2481,29 @@ def _hupu_misc_table(tot):
     return "\n".join(["\t".join(head), "\t".join(vals)])
 
 
+# 技术统计的列顺序：虎扑那张表本来就按这个次序给数据（一个人一行，字段一个不少）。
+# 列多到 17 个，400 出头的浮层摆不下——**不砍列**，改成横向滚（表格块标 lang="wide"，
+# 见 feed._table_html）。砍掉的东西再想看得重新去网页翻，那才是真的不好用。
+HUPU_PLAYER_COLS = (("name", "球员"), ("group", "首发"), ("pos", "位置"), ("min", "时间"),
+                    ("fg", "投篮"), ("p3", "三分"), ("ft", "罚球"),
+                    ("oreb", "前场"), ("dreb", "后场"), ("reb", "篮板"),
+                    ("ast", "助攻"), ("pf", "犯规"), ("stl", "抢断"),
+                    ("to", "失误"), ("blk", "封盖"), ("pts", "得分"), ("pm", "+/-"))
+
+
 def _hupu_players_table(players):
-    """每人一行：球员 / 时间 / 投篮 / 三分 / 罚球 / 板 / 助 / 分。"""
+    """每人一行、列全。`players` 是 [(数据, "首"/"替"), …]。"""
     if not players:
         return ""
-    # 只放六列：浮层宽度就 400 出头，八列（再加三分/罚球）会把名字挤成两行，反而更难看；
-    # 三分和罚球在队那张"命中/命中率"表里已经有了。
-    lines = ["\t".join(["球员", "时间", "投篮", "板", "助", "分"])]
-    for p in players:
-        lines.append("\t".join([p.get("name") or "", p.get("min") or "",
-                                 p.get("fg") or "", p.get("reb") or "",
-                                 p.get("ast") or "", p.get("pts") or ""]))
+    lines = ["\t".join([label for _k, label in HUPU_PLAYER_COLS])]
+    for p, group in players:
+        cells = []
+        for key, _label in HUPU_PLAYER_COLS:
+            if key == "group":
+                cells.append(group)
+            else:
+                cells.append(str(p.get(key) or ""))
+        lines.append("\t".join(cells))
     return "\n".join(lines)
 
 
@@ -2926,12 +2938,15 @@ class HupuSource(RealSource):
             misc = _hupu_misc_table(tot)
             if misc:
                 body.append(Block(kind=BLOCK_TABLE, text=misc))
-            players = [p for p in (t.get("starters") or []) + (t.get("bench") or [])
+            players = ([(p, "首") for p in (t.get("starters") or [])]
+                       + [(p, "替") for p in (t.get("bench") or [])])
+            players = [(p, g) for (p, g) in players
                        if str(p.get("min") or "").strip() not in ("", "0", "-")]
-            players.sort(key=lambda p: -int(re.sub(r"\D", "", p.get("pts") or "0") or 0))
+            players.sort(key=lambda pg: -int(re.sub(r"\D", "", pg[0].get("pts") or "0") or 0))
             ptable = _hupu_players_table(players)
             if ptable:
-                body.append(Block(kind=BLOCK_TABLE, text=ptable))
+                # lang="wide"：列多，别折行，屏幕横向滚（见 feed._table_html）
+                body.append(Block(kind=BLOCK_TABLE, text=ptable, lang="wide"))
         out.body = body
         out.url = HUPU_BOX_URL % mid
         self._tag_live(out, head["live"], head["status"])

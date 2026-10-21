@@ -496,7 +496,7 @@ qapp.processEvents()
 
 # 8.3 真按键（走 Qt 事件，不是直接调 on_feed_key——以前探针只验了后者）
 from PyQt5.QtGui import QKeyEvent                                          # noqa: E402
-from PyQt5.QtCore import QEvent                                            # noqa: E402
+from PyQt5.QtCore import QEvent, QPoint                                       # noqa: E402
 use_sources(ORIG_SOURCES)                  # 得有不止一个来源，否则"切过去了"看不出来
 w.feed_load("list")
 pump(lambda: w.feed_nav.posts and not w.feed_busy)
@@ -1021,7 +1021,7 @@ check("退回再进同一条：仍然一次请求都没多发", (cs.n_detail, cs
 w.on_feed_key(Qt.Key_Backspace)
 pump(lambda: w.feed_nav.view == "list")
 
-# 文字直播：详情这条标了"进行中"就把 2 秒那张表开起来；回到列表就停。
+# 文字直播：详情这条标了"进行中"就把 5 秒那张表开起来；回到列表就停。
 w.feed_nav.index = 0
 w.feed_open()
 pump(lambda: w.feed_nav.view == "detail" and w.feed_nav.detail_loaded and not w.feed_busy, 10.0)
@@ -1029,8 +1029,8 @@ _live_post = w.feed_nav.post
 _keep_tags = list(_live_post.tags or [])
 _live_post.tags = _keep_tags + ["进行中"]
 w.render_feed()
-check("进行中的比赛：详情页把'每 2 秒自己再问一次'开起来",
-      w.feed_live_timer.isActive() and w.feed_live_timer.interval() == 2000,
+check("进行中的比赛：详情页把'每 5 秒自己再问一次'开起来",
+      w.feed_live_timer.isActive() and w.feed_live_timer.interval() == 5000,
       (w.feed_live_timer.isActive(), w.feed_live_timer.interval()))
 # 2 秒一拍这么密，失败必须退让：翻倍、封顶 30 秒；退让没到点就不发请求。
 _tag0 = getattr(w.feed_source(), "key", "")
@@ -1050,9 +1050,64 @@ check("退让还没到点：这一拍不发请求（不上去硬撞站点）",
       cs.n_detail == _n_live, (cs.n_detail, _n_live))
 w._feed_live_fail = 0
 w._feed_live_retry_at = 0.0
-pump(lambda: cs.n_detail > _n_live, 8.0)
-check("2 秒到点真的会再问一次（不只是把表开起来）", cs.n_detail > _n_live,
+pump(lambda: cs.n_detail > _n_live, 12.0)
+check("5 秒到点真的会再问一次（不只是把表开起来）", cs.n_detail > _n_live,
       (cs.n_detail, _n_live))
+
+# 列全的技术统计：表格标 lang="wide" 就撑出去、屏幕横向能滚；不标就照旧折行。
+_wide_post = w.feed_nav.post
+_wide_body = list(_wide_post.body)
+_cols = ["球员", "首发", "位置", "时间", "投篮", "三分", "罚球", "前场", "后场",
+         "篮板", "助攻", "犯规", "抢断", "失误", "封盖", "得分", "+/-"]
+_tsv = ("\t".join(_cols) + "\n"
+        + "\n".join("\t".join(["泰雷斯-马克西", "首", "G", "38", "9-19", "2-9", "8-9",
+                                "1", "3", "4", "5", "2", "3", "2", "3", str(28 - i), "+11"])
+                    for i in range(3)))
+_wide_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE, text=_tsv, lang="wide")]
+w.render_feed()
+_hmax = w.text_edit.horizontalScrollBar().maximum()
+check("列全的统计表：屏幕横向滚得动（列不折行）", _hmax > 0, _hmax)
+check("列多的页才把横向滚动条露出来（书页那边一直是关的）",
+      w.text_edit.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded,
+      w.text_edit.horizontalScrollBarPolicy())
+
+
+class _WheelStub(object):
+    """只为走一遍 eventFilter 里那条滚轮分支（真 QWheelEvent 要凑一堆参数）。"""
+
+    def __init__(self, dx=0, dy=0, mods=Qt.NoModifier):
+        self._d = QPoint(dx, dy)
+        self._m = mods
+
+    def type(self):
+        return QEvent.Wheel
+
+    def angleDelta(self):
+        return self._d
+
+    def modifiers(self):
+        return self._m
+
+
+_h0 = w.text_edit.horizontalScrollBar().value()
+_r = w.eventFilter(w.text_edit.viewport(), _WheelStub(dy=-120, mods=Qt.ShiftModifier))
+_h1 = w.text_edit.horizontalScrollBar().value()
+check("Shift+滚轮在列多的页上左右滑（往右滑 → 看到右边的列）",
+      _r is True and _h1 > _h0, (_r, _h0, _h1))
+_wide_post.body = [feed_sources.Block(kind=feed_sources.BLOCK_TABLE, text=_tsv)]
+w.render_feed()
+# 页边距会让文档比视口宽几像素（Qt 的滚动条最大值因此是个位数），那不是"能横着滚"
+check("同一张表不标 wide：照旧折行，就没有横滚了",
+      w.text_edit.horizontalScrollBar().maximum() <= 16,
+      w.text_edit.horizontalScrollBar().maximum())
+check("没得横滚的页连横条都不挂（不占那几像素）",
+      w.text_edit.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff,
+      w.text_edit.horizontalScrollBarPolicy())
+_wide_post.body = _wide_body
+w.render_feed()
+check("还原这一页之后横滚也收回去",
+      w.text_edit.horizontalScrollBar().maximum() <= 16,
+      w.text_edit.horizontalScrollBar().maximum())
 w.on_feed_key(Qt.Key_Backspace)
 pump(lambda: w.feed_nav.view == "list")
 check("退回列表就停表（不在列表页白跑请求）", not w.feed_live_timer.isActive())
