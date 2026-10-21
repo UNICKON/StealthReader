@@ -33,7 +33,7 @@ from urllib.parse import quote, unquote
 import feed as feed_mod
 import hupu_boards
 from feed import (Block, Comment, Post, SourceAdapter, BLOCK_H, BLOCK_IMG, BLOCK_P,
-                    BLOCK_QUOTE)
+                    BLOCK_QUOTE, BLOCK_TABLE)
 import feed_net
 import xhs_sign
 from feed_net import FeedNetError, Http, TTL_LIST, TTL_DETAIL, TTL_FOREVER
@@ -2435,60 +2435,64 @@ def _hupu_match_ts(day, hhmm):
         return 0
 
 
-def _hupu_quarter_line(q):
-    """`分节（客-主）：23-25 · 31-33 …`——分节表最后一格是总分，单独放进比分那一行就够了。"""
-    labels = list(q.get("labels") or [])
-    away, home = list(q.get("away") or []), list(q.get("home") or [])
-    n = min(len(labels), len(away), len(home))
-    if labels and labels[-1] in ("总分", "总分 ", "合计"):
-        n = min(n, len(labels) - 1)
-    bits = []
-    for i in range(n):
-        bits.append("%s %s" % (labels[i], "%s-%s" % (away[i], home[i])))
-    return "分节（客-主）：" + " · ".join(bits)
+def _hupu_standings_table(rows):
+    """战绩表：名次 / 球队 / 胜-负 / 胜率 / 净胜 / 连胜连败。"""
+    lines = ["\t".join(["名次", "球队", "胜-负", "胜率", "净胜", "近况"])]
+    for r in rows:
+        diff = str(r.get("diff") or "").strip()
+        if diff and not diff.startswith("-") and not diff.startswith("+"):
+            diff = "+" + diff                      # 正负号摆出来，一眼看得出赢分还是输分
+        lines.append("\t".join([r["rank"], r["team"], "%s-%s" % (r["win"], r["loss"]),
+                                 r["pct"], diff, r["streak"]]))
+    return "\n".join(lines)
 
 
-def _hupu_team_line(name, tot, pct):
-    """全队那一行：投篮/三分/罚球（带命中率）+ 篮板/助攻/抢断/失误/封盖/犯规 + 得分。"""
-    def pair(key):
-        v = tot.get(key) or ""
-        p = (pct or {}).get(key) or ""
-        return "%s（%s）" % (v, p) if p else v
-
-    bits = [name] if name else []
-    bits += ["投篮 " + pair("fg"), "三分 " + pair("p3"), "罚球 " + pair("ft")]
-    reb = tot.get("reb") or ""
-    if reb:
-        bits.append("篮板 %s（前 %s / 后 %s）" % (reb, tot.get("oreb") or "-", tot.get("dreb") or "-"))
-    for label, key in (("助攻", "ast"), ("抢断", "stl"), ("失误", "to"),
-                       ("封盖", "blk"), ("犯规", "pf")):
-        if tot.get(key):
-            bits.append("%s %s" % (label, tot[key]))
-    if tot.get("pts"):
-        bits.append("%s 分" % tot["pts"])
-    return " · ".join(bits)
+def _hupu_quarters_table(q, away="", home=""):
+    """分节比分表：队 / 一 / 二 / 三 / 四 / 总分。"""
+    labels = [str(x).strip() for x in (q.get("labels") or [])]
+    a = [str(x).strip() for x in (q.get("away") or [])]
+    h = [str(x).strip() for x in (q.get("home") or [])]
+    n = min(len(labels), len(a), len(h))
+    if n <= 0:
+        return ""
+    return "\n".join(["\t".join(["队"] + labels[:n]),
+                      "\t".join([away or "客"] + a[:n]),
+                      "\t".join([home or "主"] + h[:n])])
 
 
-def _hupu_player_line(p):
-    """一个球员一行：名字 · 时间 · 投篮 · 三分 · 罚球 · 板/助/断/失/帽 · 得分 · +/-。"""
-    bits = [p.get("name") or ""]
-    if p.get("min"):
-        bits.append("%s分钟" % p["min"])
-    if p.get("fg"):
-        bits.append(p["fg"])                       # 投篮（命中-出手）先说
-    for label, key in (("三分", "p3"), ("罚球", "ft")):
-        if p.get(key) and p[key] not in ("0-0",):
-            bits.append("%s %s" % (label, p[key]))
-    for label, key, unit in (("板", "reb", "板"), ("助", "ast", "助"),
-                             ("断", "stl", "断"), ("失", "to", "失"), ("帽", "blk", "帽")):
-        v = p.get(key)
-        if v and v != "0":
-            bits.append(v + unit)
-    if p.get("pts"):
-        bits.append("%s 分" % p["pts"])
-    if p.get("pm"):
-        bits.append(p["pm"])
-    return " · ".join(b for b in bits if b)
+def _hupu_shooting_table(tot, pct):
+    """投篮/三分/罚球：两行——命中-出手、命中率。"""
+    if not tot:
+        return ""
+    pct = pct or {}
+    return "\n".join(["\t".join(["", "投篮", "三分", "罚球"]),
+                      "\t".join(["命中"] + [tot.get(k) or "" for k in ("fg", "p3", "ft")]),
+                      "\t".join(["命中率"] + [pct.get(k) or "" for k in ("fg", "p3", "ft")])])
+
+
+def _hupu_misc_table(tot):
+    """篮板（分前后场）/ 助攻 / 抢断 / 失误 / 封盖 / 犯规：一行标题一行数。"""
+    if not tot:
+        return ""
+    pairs = (("篮板", "reb"), ("前场", "oreb"), ("后场", "dreb"), ("助攻", "ast"),
+             ("抢断", "stl"), ("失误", "to"), ("封盖", "blk"), ("犯规", "pf"))
+    head = [label for label, _k in pairs]
+    vals = [str(tot.get(k) or "") for _l, k in pairs]
+    return "\n".join(["\t".join(head), "\t".join(vals)])
+
+
+def _hupu_players_table(players):
+    """每人一行：球员 / 时间 / 投篮 / 三分 / 罚球 / 板 / 助 / 分。"""
+    if not players:
+        return ""
+    # 只放六列：浮层宽度就 400 出头，八列（再加三分/罚球）会把名字挤成两行，反而更难看；
+    # 三分和罚球在队那张"命中/命中率"表里已经有了。
+    lines = ["\t".join(["球员", "时间", "投篮", "板", "助", "分"])]
+    for p in players:
+        lines.append("\t".join([p.get("name") or "", p.get("min") or "",
+                                 p.get("fg") or "", p.get("reb") or "",
+                                 p.get("ast") or "", p.get("pts") or ""]))
+    return "\n".join(lines)
 
 
 def parse_hupu_header(html):
@@ -2802,10 +2806,7 @@ class HupuSource(RealSource):
         if not rows:
             raise FeedNetError("虎扑战绩页没解析出表格（可能改版了）")
         # 用 ` · ` 分隔：连续空格在 HTML 里会被压成一个，光靠空格看不出层次
-        out.body = [Block(kind=BLOCK_P, text=(
-            "%s. %s · %s-%s · 胜率 %s · 净胜 %s · %s"
-            % (r["rank"], r["team"], r["win"], r["loss"], r["pct"], r["diff"], r["streak"])))
-            for r in rows]
+        out.body = [Block(kind=BLOCK_TABLE, text=_hupu_standings_table(rows))]
         return out
 
     def _match_detail(self, post):
@@ -2827,14 +2828,25 @@ class HupuSource(RealSource):
         if data["start"]:
             body.append(Block(kind=BLOCK_P, text="开赛：%s" % data["start"]))
         q = data.get("quarters") or {}
-        if q.get("labels") and (q.get("away") or q.get("home")):
-            body.append(Block(kind=BLOCK_P, text=_hupu_quarter_line(q)))
+        qtable = _hupu_quarters_table(q, data.get("away") or "", data.get("home") or "")
+        if qtable:
+            body.append(Block(kind=BLOCK_TABLE, text=qtable))
+        plays = []
+
+        def flush():
+            """把攒着的回合一次排成表格：列对齐才读得下去（` · ` 串起来一屏就糊了）。"""
+            if plays:
+                body.append(Block(kind=BLOCK_TABLE,
+                                  text="时间\t球队\t回合\t比分\n" + "\n".join(plays)))
+                del plays[:]
+
         for it in data["rows"][:150]:
             if it["kind"] == "mark":
+                flush()                    # 节与节之间用标题断开，表格不跨节
                 body.append(Block(kind=BLOCK_H, text=it["text"]))
             else:
-                body.append(Block(kind=BLOCK_P, text="%s %s %s  %s" % (
-                    it["time"], it["team"], it["text"], it["score"])))
+                plays.append("\t".join([it["time"], it["team"], it["text"], it["score"]]))
+        flush()
         out.body = body
         out.url = HUPU_PBP_URL % mid
         self._tag_live(out, data["live"], data["status"])
@@ -2896,8 +2908,11 @@ class HupuSource(RealSource):
         if head["start"]:
             body.append(Block(kind=BLOCK_P, text="开赛：%s" % head["start"]))
         q = data["quarters"]
-        if q.get("labels") and (q.get("away") or q.get("home")):
-            body.append(Block(kind=BLOCK_P, text=_hupu_quarter_line(q)))
+        names = [t.get("name") or "" for t in data["teams"]]
+        qtable = _hupu_quarters_table(q, names[0] if names else head["away"],
+                                      names[1] if len(names) > 1 else head["home"])
+        if qtable:
+            body.append(Block(kind=BLOCK_TABLE, text=qtable))
         body.append(Block(kind=BLOCK_H, text="数据统计"))
         for t in teams:
             name = t.get("name") or ""
@@ -2905,13 +2920,18 @@ class HupuSource(RealSource):
             tot = t.get("total") or {}
             if name:
                 body.append(Block(kind=BLOCK_H, text=name))
-            if tot:
-                body.append(Block(kind=BLOCK_P, text=_hupu_team_line(name, tot, pct)))
+            shoot = _hupu_shooting_table(tot, pct)
+            if shoot:
+                body.append(Block(kind=BLOCK_TABLE, text=shoot))
+            misc = _hupu_misc_table(tot)
+            if misc:
+                body.append(Block(kind=BLOCK_TABLE, text=misc))
             players = [p for p in (t.get("starters") or []) + (t.get("bench") or [])
                        if str(p.get("min") or "").strip() not in ("", "0", "-")]
             players.sort(key=lambda p: -int(re.sub(r"\D", "", p.get("pts") or "0") or 0))
-            for p in players:
-                body.append(Block(kind=BLOCK_P, text=_hupu_player_line(p)))
+            ptable = _hupu_players_table(players)
+            if ptable:
+                body.append(Block(kind=BLOCK_TABLE, text=ptable))
         out.body = body
         out.url = HUPU_BOX_URL % mid
         self._tag_live(out, head["live"], head["status"])

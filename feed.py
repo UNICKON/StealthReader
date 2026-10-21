@@ -31,7 +31,8 @@ BLOCK_QUOTE = "quote"
 BLOCK_CODE = "code"
 BLOCK_IMG = "img"
 BLOCK_LIST = "list"
-KINDS = (BLOCK_P, BLOCK_H, BLOCK_QUOTE, BLOCK_CODE, BLOCK_IMG, BLOCK_LIST)
+BLOCK_TABLE = "table"
+KINDS = (BLOCK_P, BLOCK_H, BLOCK_QUOTE, BLOCK_CODE, BLOCK_IMG, BLOCK_LIST, BLOCK_TABLE)
 
 PAGE_SIZE = 6          # 演示源每页几条（用来跑通"快到底自动续页"这条路）
 
@@ -935,6 +936,58 @@ def esc(text):
     return html.escape(str(text or ""), quote=False)
 
 
+def _is_number(cell):
+    """这一格看着像数字（右对齐用）。"10-12"、"43.0%"、"+8" 都算。"""
+    return bool(re.match(r"^[+-]?\d[\d.:%+\-/]*$", (cell or "").strip()))
+
+
+def _table_html(text, theme, f):
+    """TSV → 表格。第一行是表头（弱化 + 加粗），数字列右对齐。
+
+    为什么要真表格：战绩、技术统计、一行行回合，本来就是"列对齐了才读得下去"的东西；
+    用 ` · ` 串成一句话，一屏下来糊成一片（真人原话："排版太丑，很难看"）。
+    Qt 的富文本只认一部分 CSS：`cellspacing/cellpadding/width` 和 `td` 上的
+    `align/font-*/color` 是稳的，`border-collapse`、每格边框、半透明底色都不稳，
+    所以这里不画线，靠留白和列对齐分层。
+    """
+    rows = []
+    for line in (text or "").split("\n"):
+        if line.strip(" \t"):
+            rows.append(line.split("\t"))
+    if not rows:
+        return ""
+    cells_font = max(11, int(f["sub"]))
+    pad = max(2, int(round(cells_font * 0.22)))
+    # 每一列的朝向由**数据**决定：整列都是数字就右对齐。表头跟着列走——
+    # 表头右对齐、数据左对齐（或者反过来）最难看，看起来像没对齐的表格。
+    cols = max(len(r) for r in rows)
+    aligns = []
+    for j in range(cols):
+        vals = [(r[j].strip() if j < len(r) else "") for r in rows[1:]]
+        vals = [v for v in vals if v]
+        numeric = bool(vals) and all(_is_number(v) for v in vals)
+        aligns.append("right" if numeric and j > 0 else "left")
+    parts = ['<table width="100%" cellspacing="0" cellpadding="' + str(pad)
+             + '" style="margin:10px 0 2px 0;">']
+    for i, cells in enumerate(rows):
+        parts.append("<tr>")
+        for j, raw in enumerate(cells):
+            cell = (raw or "").strip()
+            text_html = html.escape(cell) if cell else "&nbsp;"
+            if i == 0:
+                # 表头：比正文弱一档，加粗，别抢正文的注意力
+                style = ('font-size:%dpx; color:%s; font-weight:bold;' %
+                         (max(10, cells_font - 1), theme["faint"]))
+            else:
+                color = theme["text"] if j else theme["mark"]
+                style = 'font-size:%dpx; color:%s;' % (cells_font, color)
+            align = aligns[j] if j < len(aligns) else "left"
+            parts.append('<td align="%s" style="%s">%s</td>' % (align, style, text_html))
+        parts.append("</tr>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
 def _nl(text):
     return esc(text).replace("\n", "<br>")
 
@@ -1402,6 +1455,9 @@ def _block_paragraphs(blocks, theme):
             else:
                 out.append(f'<p style="margin:11px 0 0 0;">'
                            f'{_img_tag(b.url or b.text, theme, 460)}</p>')
+            continue
+        if b.kind == BLOCK_TABLE:
+            out.append(_table_html(b.text, theme, f))
             continue
         if b.kind == BLOCK_H:
             style = (f'margin:17px 0 0 0; font-size:{f["head"]}px; line-height:150%;'

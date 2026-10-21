@@ -1126,15 +1126,20 @@ else:
               and st_nxt is None and "活塞 1-0" in st_posts[0].excerpt,
               [(p.id, p.excerpt[:24]) for p in st_posts])
         std, _ = hp.detail(st_posts[0])
-        check("（真夹具）东部榜 4 行，排名/队名/胜-负/胜率/净胜/连胜都在一行里",
-              len(std.body) == 4
-              and std.body[0].text == "1. 活塞 · 1-0 · 胜率 100.0% · 净胜 8.0 · 1连胜"
-              and std.body[1].text.startswith("2. 凯尔特人"),
-              [b.text for b in std.body[:2]])
+        _st_rows = [x for x in (std.body[0].text if std.body else "").split("\n") if x]
+        check("（真夹具）东部榜是一张表：表头 + 4 行，名次/队名/胜-负/胜率/净胜/近况",
+              std.body and std.body[0].kind == feed_mod.BLOCK_TABLE
+              and len(_st_rows) == 5
+              and _st_rows[0] == "名次\t球队\t胜-负\t胜率\t净胜\t近况"
+              and _st_rows[1] == "1\t活塞\t1-0\t100.0%\t+8.0\t1连胜"
+              and _st_rows[2].startswith("2\t凯尔特人\t"),
+              _st_rows[:2])
         stw, _ = hp.detail(st_posts[1])
+        _stw_rows = [x for x in (stw.body[0].text if stw.body else "").split("\n") if x]
         check("西部那条读的是西部的表（不是把东部的又摆一遍）",
-              stw.body and stw.body[0].text.startswith("1. 独行侠"),
-              stw.body[0].text if stw.body else "")
+              len(_stw_rows) > 1 and _stw_rows[1].startswith("1\t独行侠\t"), _stw_rows[1:2])
+        check("净胜分带正负号（一眼看得出赢分还是输分）",
+              "+8.0" in (_st_rows[1]) and "-8.0" in (_st_rows[2]), _st_rows[1:3])
         lv_posts, lv_nxt = hp.list("NBA 赛程")
         check("赛程栏 = 赛程上的每一场（表头那行'客队 vs 主队'挡掉，只剩真比赛）",
               len(lv_posts) == 14 and lv_nxt is None
@@ -1151,6 +1156,12 @@ else:
               and lvd.body[1].text.startswith("开赛：")
               and any("布伦森两分突破漂移跳投命中" in b.text for b in lvd.body),
               [b.text[:40] for b in lvd.body[:3]])
+        _pb_rows = [x for x in lvd.body[3].text.split("\n") if x] if len(lvd.body) > 3 else []
+        check("回合排成表：时间/球队/回合/比分各一列（不是一句话串到底）",
+              lvd.body[3].kind == feed_mod.BLOCK_TABLE and _pb_rows
+              and _pb_rows[0] == "时间\t球队\t回合\t比分"
+              and _pb_rows[1].startswith("0.0\"\t76人\t") and _pb_rows[1].endswith("\t23-25"),
+              _pb_rows[:2])
         # 夹具砍掉了分节表（真页面上有），分节这件事用手写形状验，别拿砍过的页面断真事
         _pbp_q = feed_sources.parse_hupu_pbp(
             '<div class="team_vs"><div class="team_a"><div class="message"><h2>96</h2>'
@@ -1168,8 +1179,10 @@ else:
             '<div class="table_list_live playbyplay_td table_overflow"><table>'
             '<tr><td>5:22</td><td>尼克斯</td><td>换人</td><td>96-92</td></tr></table></div>')
         check("直播详情也带分节比分（分节表就在同一张页面上，不多发请求）",
-              feed_sources._hupu_quarter_line(_pbp_q["quarters"])
-              == "分节（客-主）：一 23-25 · 二 31-33 · 三 29-18 · 四 13-16",
+              feed_sources._hupu_quarters_table(_pbp_q["quarters"], "76人", "尼克斯")
+              == "队\t一\t二\t三\t四\t总分"
+                 "\n76人\t23\t31\t29\t13\t96"
+                 "\n尼克斯\t25\t33\t18\t16\t92",
               _pbp_q["quarters"])
         check("节与节之间那条'第一节结束。'是标题块，不是普通回合",
               any(b.kind == feed_mod.BLOCK_H and b.text == "第一节结束。" for b in lvd.body),
@@ -1197,28 +1210,34 @@ else:
         check("按 T 切到数据统计", hp.toggle_detail_view(match) == "stats"
               and hp.detail_view(match) == "stats", hp.detail_view(match))
         bxd, _ = hp.detail(match)
-        check("（真夹具）数据统计：先比分和状态，再开赛时间、分节比分",
+        check("（真夹具）数据统计：先比分和状态，再开赛时间、分节比分表",
               bxd.body[0].text == "76人 104 - 98 尼克斯（第四节剩1:07）"
               and bxd.body[1].text.startswith("开赛：")
-              and bxd.body[2].text == "分节（客-主）：一 23-25 · 二 31-33 · 三 29-18 · 四 21-22",
+              and bxd.body[2].kind == feed_mod.BLOCK_TABLE
+              and bxd.body[2].text == ("队\t一\t二\t三\t四\t总分"
+                                       "\n76人\t23\t31\t29\t21\t104"
+                                       "\n尼克斯\t25\t33\t18\t22\t98"),
               [b.text for b in bxd.body[:3]])
         check("'数据统计'是小标题，不是普通段落",
               bxd.body[3].kind == feed_mod.BLOCK_H and bxd.body[3].text == "数据统计",
               (bxd.body[3].kind, bxd.body[3].text))
-        check("（真夹具）全队一行：投篮/三分/罚球带命中率，篮板分前后，其余各项都在",
-              any("投篮 37-87（42.5%）" in b.text and "篮板 43（前 5 / 后 38）" in b.text
-                  and "助攻 28" in b.text and "104 分" in b.text for b in bxd.body),
-              [b.text[:70] for b in bxd.body[4:6]])
-        _pl = [b.text for b in bxd.body if "分钟" in b.text]
-        check("（真夹具）每个上场球员一行，按得分从高到低（马克西 28 分在最前）",
-              len(_pl) >= 8 and _pl[0].startswith("泰雷斯-马克西")
-              and "28 分" in _pl[0] and _pl[0].count(" · ") >= 5,
-              _pl[:2])
-        check("球员行里投篮排在三分/罚球前面（不是把出手数甩到最后）",
-              "9-19" in _pl[0] and _pl[0].index("9-19") < _pl[0].index("三分"),
-              _pl[0][:60])
+        check("（真夹具）全队两张表：投篮/三分/罚球（命中 + 命中率）与前后场篮板等",
+              bxd.body[5].kind == feed_mod.BLOCK_TABLE
+              and bxd.body[5].text.split("\n")[1] == "命中\t37-87\t11-39\t19-25"
+              and bxd.body[5].text.split("\n")[2] == "命中率\t42.5%\t28.2%\t76.0%"
+              and bxd.body[6].text.split("\n")[0] == "篮板\t前场\t后场\t助攻\t抢断\t失误\t封盖\t犯规"
+              and bxd.body[6].text.split("\n")[1] == "43\t5\t38\t28\t8\t9\t9\t22",
+              [b.text for b in bxd.body[5:7]])
+        _prows = [x for x in bxd.body[7].text.split("\n") if x]
+        check("（真夹具）球员一张表：球员/时间/投篮/板/助/分，按得分从高到低",
+              _prows[0] == "球员\t时间\t投篮\t板\t助\t分"
+              and _prows[1] == "泰雷斯-马克西\t38\t9-19\t4\t5\t28"
+              and [int(r.split("\t")[5]) for r in _prows[1:]]
+              == sorted([int(r.split("\t")[5]) for r in _prows[1:]], reverse=True),
+              _prows[:3])
         check("（真夹具）没上场的（时间 0）不进正文，省得摆一屏 0-0",
-              not any("0分钟" in x or " · 0板" in x for x in _pl), _pl[-1][:40])
+              len(_prows) == 5 and not any(r.split("\t")[1] == "0" for r in _prows[1:]),
+              _prows[1:])
         check("数据统计那一页同样打'进行中'（主窗口照样 20 秒一取），标签换成'数据统计'",
               "进行中" in bxd.tags and "数据统计" in bxd.tags, bxd.tags)
         check("再从数据统计切回文字直播：又回到回合表",
