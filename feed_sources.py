@@ -2350,6 +2350,7 @@ def _hupu_time(text):
 HUPU_STANDINGS_URL = "https://nba.hupu.com/standings"
 HUPU_SCHEDULE_URL = "https://nba.hupu.com/schedule"
 HUPU_PBP_URL = "https://nba.hupu.com/games/playbyplay/%s"
+HUPU_BOX_URL = "https://nba.hupu.com/games/boxscore/%s"
 HUPU_LIVE_TTL = 20          # 文字直播的缓存寿命：比列表短得多，按 R 就是真去问一次
 
 
@@ -2434,12 +2435,64 @@ def _hupu_match_ts(day, hhmm):
         return 0
 
 
-def parse_hupu_pbp(html):
-    """文字直播页 → 比分/状态/事件行。
+def _hupu_quarter_line(q):
+    """`分节（客-主）：23-25 · 31-33 …`——分节表最后一格是总分，单独放进比分那一行就够了。"""
+    labels = list(q.get("labels") or [])
+    away, home = list(q.get("away") or []), list(q.get("home") or [])
+    n = min(len(labels), len(away), len(home))
+    if labels and labels[-1] in ("总分", "总分 ", "合计"):
+        n = min(n, len(labels) - 1)
+    bits = []
+    for i in range(n):
+        bits.append("%s %s" % (labels[i], "%s-%s" % (away[i], home[i])))
+    return "分节（客-主）：" + " · ".join(bits)
 
-    返回 `{"away","home","away_score","home_score","status","live","start","rows"}`；
-    `rows` 里 `kind == "mark"` 是"第一节结束。"这种分隔行，`kind == "play"` 是一条事件。
-    """
+
+def _hupu_team_line(name, tot, pct):
+    """全队那一行：投篮/三分/罚球（带命中率）+ 篮板/助攻/抢断/失误/封盖/犯规 + 得分。"""
+    def pair(key):
+        v = tot.get(key) or ""
+        p = (pct or {}).get(key) or ""
+        return "%s（%s）" % (v, p) if p else v
+
+    bits = [name] if name else []
+    bits += ["投篮 " + pair("fg"), "三分 " + pair("p3"), "罚球 " + pair("ft")]
+    reb = tot.get("reb") or ""
+    if reb:
+        bits.append("篮板 %s（前 %s / 后 %s）" % (reb, tot.get("oreb") or "-", tot.get("dreb") or "-"))
+    for label, key in (("助攻", "ast"), ("抢断", "stl"), ("失误", "to"),
+                       ("封盖", "blk"), ("犯规", "pf")):
+        if tot.get(key):
+            bits.append("%s %s" % (label, tot[key]))
+    if tot.get("pts"):
+        bits.append("%s 分" % tot["pts"])
+    return " · ".join(bits)
+
+
+def _hupu_player_line(p):
+    """一个球员一行：名字 · 时间 · 投篮 · 三分 · 罚球 · 板/助/断/失/帽 · 得分 · +/-。"""
+    bits = [p.get("name") or ""]
+    if p.get("min"):
+        bits.append("%s分钟" % p["min"])
+    if p.get("fg"):
+        bits.append(p["fg"])                       # 投篮（命中-出手）先说
+    for label, key in (("三分", "p3"), ("罚球", "ft")):
+        if p.get(key) and p[key] not in ("0-0",):
+            bits.append("%s %s" % (label, p[key]))
+    for label, key, unit in (("板", "reb", "板"), ("助", "ast", "助"),
+                             ("断", "stl", "断"), ("失", "to", "失"), ("帽", "blk", "帽")):
+        v = p.get(key)
+        if v and v != "0":
+            bits.append(v + unit)
+    if p.get("pts"):
+        bits.append("%s 分" % p["pts"])
+    if p.get("pm"):
+        bits.append(p["pm"])
+    return " · ".join(b for b in bits if b)
+
+
+def parse_hupu_header(html):
+    """比分面板（两张页面都有）：`away/home/away_score/home_score/status/live/start`。"""
     h = html or ""
     m = re.search(r'<div class="team_vs">(.*?)<div class="yuece_num">', h, re.S)
     panel = m.group(1) if m else h
@@ -2448,6 +2501,113 @@ def parse_hupu_pbp(html):
     st = re.search(r'<div class="team_num">([^<]*)</div>', panel)
     start = re.search(r'<p class="time_f">开赛：([^<]*)</p>', panel)
     status = re.sub(r"\s+", " ", st.group(1)).strip() if st else ""
+    return {
+        "away": names[0].strip() if names else "",
+        "home": names[1].strip() if len(names) > 1 else "",
+        "away_score": scores[0] if scores else "",
+        "home_score": scores[1] if len(scores) > 1 else "",
+        "status": status,
+        "live": bool(status) and not any(k in status for k in ("结束", "未开始", "取消")),
+        "start": re.sub(r"\s+", " ", start.group(1)).strip() if start else "",
+    }
+
+
+def parse_hupu_quarters(html):
+    """分节比分表（`table.itinerary_table`）：`{"labels": ["一","二","三","四","总分"], "away": [...], "home": [...]}`。"""
+    h = html or ""
+    it = re.search(r'<table class="itinerary_table">(.*?)</table>', h, re.S)
+    out = {"labels": [], "away": [], "home": []}
+    if not it:
+        return out
+    rows = [_hupu_cells(r) for r in re.findall(r"<tr\b.*?</tr>", it.group(1), re.S)]
+    if not rows:
+        return out
+    out["labels"] = [c for c in rows[0][1:] if c]
+    teams = [r for r in rows[1:] if r and r[0]]
+    for key, row in zip(("away", "home"), teams):
+        out[key] = row[1:]
+    return out
+
+
+def parse_hupu_boxscore(html):
+    """数据统计页 → `{"header": {...}, "quarters": {...}, "teams": [队1, 队2]}`。
+
+    每队：`name`、`starters`/`bench`（每人是 dict：name/pos/min/fg/p3/ft/reb/ast/pf/stl/to/blk/pts/pm）、
+    `total`（全队那行）、`pct`（三项命中率）。
+    """
+    h = html or ""
+    rows_by_team = {}
+    for tid in ("J_away_content", "J_home_content"):
+        m = re.search(r'id="%s"[^>]*>(.*?)</table>' % tid, h, re.S)
+        rows_by_team[tid] = m.group(1) if m else ""
+    quarters = parse_hupu_quarters(h)
+    names = []
+    for tid in ("J_away_content", "J_home_content"):
+        names.append("")           # 队名下面按分节表补
+    if quarters.get("labels"):
+        pass
+    # 队名：分节表第一列就是两队（客在前）
+    it = re.search(r'<table class="itinerary_table">(.*?)</table>', h, re.S)
+    if it:
+        rows = [_hupu_cells(r) for r in re.findall(r"<tr\b.*?</tr>", it.group(1), re.S)]
+        names = [r[0] for r in rows[1:] if r and r[0]][:2]
+    teams = []
+    for idx, tid in enumerate(("J_away_content", "J_home_content")):
+        group = ""
+        team = {"name": names[idx] if idx < len(names) else "",
+                "starters": [], "bench": [], "total": {}, "pct": {}}
+        for row in re.findall(r"<tr\b.*?</tr>", rows_by_team[tid], re.S):
+            cells = _hupu_cells(row)
+            if not cells:
+                continue
+            if cells[0] in ("首发", "替补"):
+                group = cells[0]
+                continue
+            if cells[0] == "统计":
+                team["total"] = {
+                    "fg": cells[3] if len(cells) > 3 else "",
+                    "p3": cells[4] if len(cells) > 4 else "",
+                    "ft": cells[5] if len(cells) > 5 else "",
+                    "oreb": cells[6] if len(cells) > 6 else "",
+                    "dreb": cells[7] if len(cells) > 7 else "",
+                    "reb": cells[8] if len(cells) > 8 else "",
+                    "ast": cells[9] if len(cells) > 9 else "",
+                    "pf": cells[10] if len(cells) > 10 else "",
+                    "stl": cells[11] if len(cells) > 11 else "",
+                    "to": cells[12] if len(cells) > 12 else "",
+                    "blk": cells[13] if len(cells) > 13 else "",
+                    "pts": cells[14] if len(cells) > 14 else "",
+                }
+                continue
+            if cells[0] == "命中率":
+                team["pct"] = {
+                    "fg": cells[3] if len(cells) > 3 else "",
+                    "p3": cells[4] if len(cells) > 4 else "",
+                    "ft": cells[5] if len(cells) > 5 else "",
+                }
+                continue
+            if len(cells) < 16:
+                continue
+            player = {
+                "name": cells[0], "pos": cells[1], "min": cells[2],
+                "fg": cells[3], "p3": cells[4], "ft": cells[5],
+                "oreb": cells[6], "dreb": cells[7], "reb": cells[8],
+                "ast": cells[9], "pf": cells[10], "stl": cells[11],
+                "to": cells[12], "blk": cells[13], "pts": cells[14], "pm": cells[15],
+            }
+            team["starters" if group == "首发" else "bench"].append(player)
+        teams.append(team)
+    return {"header": parse_hupu_header(h), "quarters": quarters, "teams": teams}
+
+
+def parse_hupu_pbp(html):
+    """文字直播页 → 比分/状态/事件行。
+
+    返回 `{"away","home","away_score","home_score","status","live","start","rows"}`；
+    `rows` 里 `kind == "mark"` 是"第一节结束。"这种分隔行，`kind == "play"` 是一条事件。
+    """
+    h = html or ""
+    head = parse_hupu_header(h)
     rows = []
     table = re.search(
         r'<div class="table_list_live playbyplay_td table_overflow">(.*?)</table>', h, re.S)
@@ -2462,16 +2622,10 @@ def parse_hupu_pbp(html):
         if len(cells) >= 4 and cells[0] and cells[0] != "时间":
             rows.append({"kind": "play", "time": cells[0], "team": cells[1],
                          "text": cells[2], "score": cells[3]})
-    return {
-        "away": names[0].strip() if names else "",
-        "home": names[1].strip() if len(names) > 1 else "",
-        "away_score": scores[0] if scores else "",
-        "home_score": scores[1] if len(scores) > 1 else "",
-        "status": status,
-        "live": bool(status) and not any(k in status for k in ("结束", "未开始", "取消")),
-        "start": re.sub(r"\s+", " ", start.group(1)).strip() if start else "",
-        "rows": rows,
-    }
+    out = dict(head)
+    out["rows"] = rows
+    out["quarters"] = parse_hupu_quarters(h)
+    return out
 
 
 class HupuSource(RealSource):
@@ -2499,7 +2653,8 @@ class HupuSource(RealSource):
     # 两栏 NBA：不是 bbs 的板，走 nba.hupu.com 的页面（战绩表 / 赛程 + 文字直播）
     NBA_STANDINGS = "NBA 战绩"
     NBA_LIVE = "NBA 文字直播"
-    NBA_CHANNELS = (NBA_STANDINGS, NBA_LIVE)
+    NBA_STATS = "NBA 数据统计"
+    NBA_CHANNELS = (NBA_STANDINGS, NBA_LIVE, NBA_STATS)
     CHANNELS = tuple(label for label, _slug in HUPU_BOARDS)
     SLUG = dict(HUPU_BOARDS)
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -2609,14 +2764,15 @@ class HupuSource(RealSource):
             raise FeedNetError("虎扑战绩页没解析出表格（可能改版了）")
         return posts
 
-    def _schedule_posts(self):
-        """文字直播栏：赛程表上的每一场（时间 + 客 vs 主 + 到哪一步了）。"""
+    def _schedule_posts(self, channel=None):
+        """赛程表上的每一场（时间 + 客 vs 主 + 到哪一步了）：直播栏和数据统计栏共用。"""
+        channel = channel or self.NBA_LIVE
         rows = parse_hupu_schedule(self._html(HUPU_SCHEDULE_URL, TTL_LIST))
         posts = []
         for it in rows:
             stage = it.get("stage") or ""
             posts.append(Post(
-                source=self.key, source_label=self.label, channel=self.NBA_LIVE,
+                source=self.key, source_label=self.label, channel=channel,
                 pid=it["match_id"] or ("%s-%s" % (it["away"], it["home"])),
                 title="%s vs %s" % (it["away"], it["home"]),
                 author="NBA", created="%s %s" % (it["date"], it["time"]),
@@ -2661,6 +2817,9 @@ class HupuSource(RealSource):
             body.append(Block(kind=BLOCK_P, text=head))
         if data["start"]:
             body.append(Block(kind=BLOCK_P, text="开赛：%s" % data["start"]))
+        q = data.get("quarters") or {}
+        if q.get("labels") and (q.get("away") or q.get("home")):
+            body.append(Block(kind=BLOCK_P, text=_hupu_quarter_line(q)))
         for it in data["rows"][:150]:
             if it["kind"] == "mark":
                 body.append(Block(kind=BLOCK_H, text=it["text"]))
@@ -2668,13 +2827,57 @@ class HupuSource(RealSource):
                 body.append(Block(kind=BLOCK_P, text="%s %s %s  %s" % (
                     it["time"], it["team"], it["text"], it["score"])))
         out.body = body
-        # 进行中/已结束：主窗口据此决定"要不要每 20 秒自己再问一次"
+        self._tag_live(out, data["live"], data["status"])
+        return out
+
+    def _tag_live(self, out, live, status):
+        """进行中/已结束：主窗口据此决定"要不要每 20 秒自己再问一次"。"""
         keep = [t for t in (out.tags or []) if t not in ("进行中", "已结束")]
-        if data["live"]:
+        if live:
             keep.append("进行中")
-        elif data["status"]:
+        elif status:
             keep.append("已结束")
         out.tags = keep
+
+    def _box_detail(self, post):
+        """数据统计：比分 + 分节 + 全队一行 + 每个上场球员一行（打满了就按得分排）。"""
+        out = Post.from_dict(post.to_dict())
+        mid = str(post.id or "").strip()
+        if not mid.isdigit():
+            raise FeedNetError("这场比赛没有 id（%s）" % mid)
+        data = parse_hupu_boxscore(self._html(HUPU_BOX_URL % mid, HUPU_LIVE_TTL))
+        head = data["header"]
+        teams = [t for t in data["teams"] if t.get("total") or t.get("starters")]
+        if not teams:
+            raise FeedNetError("这场还没有数据统计（可能没开赛）")
+        body = []
+        if head["away"] or head["home"]:
+            line = "%s %s - %s %s" % (head["away"], head["away_score"],
+                                      head["home_score"], head["home"])
+            if head["status"]:
+                line += "（%s）" % head["status"]
+            body.append(Block(kind=BLOCK_P, text=line))
+        if head["start"]:
+            body.append(Block(kind=BLOCK_P, text="开赛：%s" % head["start"]))
+        q = data["quarters"]
+        if q.get("labels") and (q.get("away") or q.get("home")):
+            body.append(Block(kind=BLOCK_P, text=_hupu_quarter_line(q)))
+        body.append(Block(kind=BLOCK_H, text="数据统计"))
+        for t in teams:
+            name = t.get("name") or ""
+            pct = t.get("pct") or {}
+            tot = t.get("total") or {}
+            if name:
+                body.append(Block(kind=BLOCK_H, text=name))
+            if tot:
+                body.append(Block(kind=BLOCK_P, text=_hupu_team_line(name, tot, pct)))
+            players = [p for p in (t.get("starters") or []) + (t.get("bench") or [])
+                       if str(p.get("min") or "").strip() not in ("", "0", "-")]
+            players.sort(key=lambda p: -int(re.sub(r"\D", "", p.get("pts") or "0") or 0))
+            for p in players:
+                body.append(Block(kind=BLOCK_P, text=_hupu_player_line(p)))
+        out.body = body
+        self._tag_live(out, head["live"], head["status"])
         return out
 
     def _headers(self):
@@ -2703,8 +2906,8 @@ class HupuSource(RealSource):
         ch = str(channel or "").strip()
         if ch == self.NBA_STANDINGS:
             return self._standings_posts(), None
-        if ch == self.NBA_LIVE:
-            return self._schedule_posts(), None
+        if ch in (self.NBA_LIVE, self.NBA_STATS):
+            return self._schedule_posts(ch), None
         label = self.board_label(self.board_fid(channel))
         slug = self.board_fid(channel)
         try:
@@ -2734,6 +2937,8 @@ class HupuSource(RealSource):
             return self._standings_detail(post), None
         if ch == self.NBA_LIVE:
             return self._match_detail(post), None
+        if ch == self.NBA_STATS:
+            return self._box_detail(post), None
         out = Post.from_dict(post.to_dict())
         detail = self._detail_json(post.id)
         th = detail.get("thread") or {}

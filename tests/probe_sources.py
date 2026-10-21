@@ -1018,17 +1018,20 @@ else:
     raw_st = fixture_bytes("hupu_standings.html")
     raw_sc = fixture_bytes("hupu_schedule.html")
     raw_pb = fixture_bytes("hupu_playbyplay.html")
+    raw_bx = fixture_bytes("hupu_boxscore.html")
     hp = feed_sources.HupuSource(
         FakeHttp(bytes_routes={"/bxj": raw_hl, "/vote": raw_hl, "/topic-daily": raw_hl,
                                "643064746.html": raw_ht,
                                "nba.hupu.com/standings": raw_st,
                                "nba.hupu.com/schedule": raw_sc,
-                               "nba.hupu.com/games/playbyplay/": raw_pb},
+                               "nba.hupu.com/games/playbyplay/": raw_pb,
+                               "nba.hupu.com/games/boxscore/": raw_bx},
                  cache=MemCache()))
-    check("虎扑的栏目 = 两栏 NBA + 精选 + 全量目录（名字不重复，步行街还在第三）",
+    check("虎扑的栏目 = 三栏 NBA + 精选 + 全量目录（名字不重复，步行街排在它们后面）",
           len(hp.channels()) > 200 and len(set(hp.channels())) == len(hp.channels())
-          and hp.channels()[:3] == ["NBA 战绩", "NBA 文字直播", "步行街主干道"],
-          hp.channels()[:3])
+          and hp.channels()[:4] == ["NBA 战绩", "NBA 文字直播", "NBA 数据统计",
+                                    "步行街主干道"],
+          hp.channels()[:4])
     check("板块表是静态的：boards() 不发网络请求，label/slug 双向翻译都对，认不出退回步行街",
           hp.http.calls == [] and hp.board_fid("篮球场") == "nba"
           and hp.board_label("nba") == "篮球场" and hp.board_fid("不认识的") == "bxj",
@@ -1162,6 +1165,38 @@ else:
         check("打完的比赛不算'进行中'（不然会一直空转重取）",
               ob["live"] is False and ob["status"] == "比赛结束", (ob["live"], ob["status"]))
         check("这两栏没有'回复'这一层，评论如实为空", hp.comments(lv_posts[0]) == ([], None))
+
+        bx_posts, bx_nxt = hp.list("NBA 数据统计")
+        check("数据统计栏跟直播共用同一张赛程（每场都有，栏目名分开记）",
+              len(bx_posts) == 14 and bx_nxt is None
+              and all(p.channel == "NBA 数据统计" for p in bx_posts)
+              and [p.id for p in bx_posts] == [p.id for p in lv_posts],
+              (len(bx_posts), bx_posts[0].channel))
+        bxd, _ = hp.detail(bx_posts[1])
+        check("（真夹具）数据统计：先比分和状态，再开赛时间、分节比分",
+              bxd.body[0].text == "76人 104 - 98 尼克斯（第四节剩1:07）"
+              and bxd.body[1].text.startswith("开赛：")
+              and bxd.body[2].text == "分节（客-主）：一 23-25 · 二 31-33 · 三 29-18 · 四 21-22",
+              [b.text for b in bxd.body[:3]])
+        check("'数据统计'是小标题，不是普通段落",
+              bxd.body[3].kind == feed_mod.BLOCK_H and bxd.body[3].text == "数据统计",
+              (bxd.body[3].kind, bxd.body[3].text))
+        check("（真夹具）全队一行：投篮/三分/罚球带命中率，篮板分前后，其余各项都在",
+              any("投篮 37-87（42.5%）" in b.text and "篮板 43（前 5 / 后 38）" in b.text
+                  and "助攻 28" in b.text and "104 分" in b.text for b in bxd.body),
+              [b.text[:70] for b in bxd.body[4:6]])
+        _pl = [b.text for b in bxd.body if "分钟" in b.text]
+        check("（真夹具）每个上场球员一行，按得分从高到低（马克西 28 分在最前）",
+              len(_pl) >= 8 and _pl[0].startswith("泰雷斯-马克西")
+              and "28 分" in _pl[0] and _pl[0].count(" · ") >= 5,
+              _pl[:2])
+        check("球员行里投篮排在三分/罚球前面（不是把出手数甩到最后）",
+              "9-19" in _pl[0] and _pl[0].index("9-19") < _pl[0].index("三分"),
+              _pl[0][:60])
+        check("（真夹具）没上场的（时间 0）不进正文，省得摆一屏 0-0",
+              not any("0分钟" in x or " · 0板" in x for x in _pl), _pl[-1][:40])
+        check("数据统计里的比赛也是'进行中'（主窗口照样 20 秒一取）",
+              "进行中" in bxd.tags, bxd.tags)
 
 print("\n=== 17. 小红书的 x-s 签名（照摸鱼插件那份纯 JS 实现搬的，逐字节比对过）===")
 # 这 6 项是**固定的比对标量**：同一组输入在 JS 版（TouchFish 的 XhsClient）里算出来的
