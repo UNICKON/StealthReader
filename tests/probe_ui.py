@@ -1021,7 +1021,7 @@ check("退回再进同一条：仍然一次请求都没多发", (cs.n_detail, cs
 w.on_feed_key(Qt.Key_Backspace)
 pump(lambda: w.feed_nav.view == "list")
 
-# 文字直播：详情这条标了"进行中"就把 20 秒那张表开起来；回到列表就停。
+# 文字直播：详情这条标了"进行中"就把 2 秒那张表开起来；回到列表就停。
 w.feed_nav.index = 0
 w.feed_open()
 pump(lambda: w.feed_nav.view == "detail" and w.feed_nav.detail_loaded and not w.feed_busy, 10.0)
@@ -1029,9 +1029,30 @@ _live_post = w.feed_nav.post
 _keep_tags = list(_live_post.tags or [])
 _live_post.tags = _keep_tags + ["进行中"]
 w.render_feed()
-check("进行中的比赛：详情页把'每 20 秒自己再问一次'开起来",
-      w.feed_live_timer.isActive() and w.feed_live_timer.interval() == 20000,
+check("进行中的比赛：详情页把'每 2 秒自己再问一次'开起来",
+      w.feed_live_timer.isActive() and w.feed_live_timer.interval() == 2000,
       (w.feed_live_timer.isActive(), w.feed_live_timer.interval()))
+# 2 秒一拍这么密，失败必须退让：翻倍、封顶 30 秒；退让没到点就不发请求。
+_tag0 = getattr(w.feed_source(), "key", "")
+_n_live = cs.n_detail
+w._feed_live_fail = 0
+w._feed_live_retry_at = 0.0
+w.on_feed_data("error", ("boom", w.feed_gen, _tag0))
+_f1 = (w._feed_live_fail, int(round(w._feed_live_retry_at - time.time())))
+w.on_feed_data("error", ("boom", w.feed_gen, _tag0))
+_f2 = (w._feed_live_fail, int(round(w._feed_live_retry_at - time.time())))
+w.feed_error = ""
+check("重取连着失败就翻倍退让（4 秒 → 8 秒，封顶 30 秒）",
+      _f1[0] == 1 and 2 <= _f1[1] <= 5 and _f2[0] == 2 and _f2[1] > _f1[1],
+      (_f1, _f2))
+w.feed_live_tick()
+check("退让还没到点：这一拍不发请求（不上去硬撞站点）",
+      cs.n_detail == _n_live, (cs.n_detail, _n_live))
+w._feed_live_fail = 0
+w._feed_live_retry_at = 0.0
+pump(lambda: cs.n_detail > _n_live, 8.0)
+check("2 秒到点真的会再问一次（不只是把表开起来）", cs.n_detail > _n_live,
+      (cs.n_detail, _n_live))
 w.on_feed_key(Qt.Key_Backspace)
 pump(lambda: w.feed_nav.view == "list")
 check("退回列表就停表（不在列表页白跑请求）", not w.feed_live_timer.isActive())

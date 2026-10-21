@@ -2944,8 +2944,11 @@ class StealthReader(QWidget):
         # 文字直播：详情页是一条"进行中"的比赛就每 20 秒静默再问一次（人不用一直按 R）。
         # 只在**详情页且比赛没结束**时开着：别让它在列表页或已结束的比赛上白跑请求。
         self.feed_live_timer = QTimer(self)
-        self.feed_live_timer.setInterval(20000)
+        self.feed_live_timer.setInterval(2000)      # 真人要的"每 2 秒刷一次"
         self.feed_live_timer.timeout.connect(self.feed_live_tick)
+        # 2 秒一拍这么密，失败必须自己退让（见 feed_live_tick / on_feed_data）
+        self._feed_live_fail = 0                     # 连着失败了几拍
+        self._feed_live_retry_at = 0.0               # 退让到什么时候之前不发请求
         if FEED_OK:
             try:
                 self.feed_sources = feed_mod.build_sources(
@@ -5149,6 +5152,14 @@ class StealthReader(QWidget):
         if kind == "error":
             self.feed_error = str(msg)
             log_event(f"社区取数失败: {msg}")
+            if self._feed_live_watching():
+                # 2 秒一拍的重取失败了：退让，别每 2 秒撞一次站点。
+                # 成功的那一拍会把它清零（见下面的 detail 分支）。
+                self._feed_live_fail = min(4, int(self._feed_live_fail) + 1)
+                _gap = min(30, 2 ** (self._feed_live_fail + 1))
+                self._feed_live_retry_at = time.time() + _gap
+                log_event("直播重取失败（第 %d 次），%d 秒后再试"
+                          % (self._feed_live_fail, _gap))
             if self.feed_board_pending:              # 拉板块表失败：这不该让整页变成"取数失败"
                 self.feed_board_pending = False
                 self.feed_error = ""
@@ -5168,6 +5179,8 @@ class StealthReader(QWidget):
                 self.feed_more_armed = True
             elif kind == "detail":
                 nav.set_detail(post, cmts, cnxt)
+                self._feed_live_fail = 0        # 这一拍成了：退让清零
+                self._feed_live_retry_at = 0.0
             elif kind == "comments":
                 nav.add_comments(cmts, nxt)
                 self.feed_more_armed = True        # 新一页到了：重新武装"滚到底续页"
@@ -5229,29 +5242,44 @@ class StealthReader(QWidget):
         if getattr(self, "feed_live_timer", None) is not None:
             self.feed_live_watch()
 
-    def feed_live_watch(self):
-        """按当前视图决定直播那张表要不要走：进行中的比赛详情 → 开；其它情况 → 停。"""
+    def _feed_live_watching(self):
+        """此刻是不是"正在看一场还没打完的球"（定时重取、失败退让都看这一条）。"""
         nav = self.feed_nav
         post = nav.post if nav is not None else None
+        return bool(self.feed_mode and nav is not None and nav.view == "detail"
+                    and post is not None and "进行中" in (post.tags or []))
+
+    def feed_live_watch(self):
+        """按当前视图决定直播那张表要不要走：进行中的比赛详情 → 开；其它情况 → 停。"""
         timer = getattr(self, "feed_live_timer", None)
         if timer is None:
             return
-        live = (bool(self.feed_mode) and nav is not None and nav.view == "detail"
-                and post is not None and "进行中" in (post.tags or []))
-        if live:
+        if self._feed_live_watching():
             if not timer.isActive():
                 timer.start()
         elif timer.isActive():
             timer.stop()
 
     def feed_live_tick(self):
-        """20 秒到点：还在看一场没结束的球，就静默重取这一条（位置由 render_feed 保）。"""
-        nav = self.feed_nav
-        post = nav.post if nav is not None else None
-        if (not self.feed_mode or nav is None or nav.view != "detail" or post is None
-                or "进行中" not in (post.tags or [])):
+        """2 秒到点：还在看一场没结束的球，就静默重取这一条（位置由 render_feed 保）。
+
+        2 秒一拍是真人要的（"直播每2秒刷新一次"）。这么密就得自己兜住两件事：
+
+        1. 上一拍还没回来（`feed_busy`）就**跳过**这一拍——绝不把请求排队堆起来；
+        2. 连着失败就退让（2→4→8→16→30 秒封顶，成功一拍立刻清零），
+           否则站点一限流，就是每 2 秒撞一次，屏幕上还尽是"取数失败"。
+
+        "每 2 秒"不等于"每 2 秒抖一下"：内容没变时连重排都不会发生
+        （`_feed_sig_now` 比签名，见 on_feed_data），真出现了新回合才重画，
+        滚动位置仍由 render_feed 接着。
+        """
+        if not self._feed_live_watching():
             self.feed_live_timer.stop()
+            self._feed_live_fail = 0
+            self._feed_live_retry_at = 0.0
             return
+        if time.time() < float(self._feed_live_retry_at or 0):
+            return                    # 刚才连着失败：退让还没到点，这一拍不发请求
         if self.feed_busy:
             return                    # 上一次还没回来：这一拍跳过，下一拍再说
         self.feed_load("detail", fresh=True)
