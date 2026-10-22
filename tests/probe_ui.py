@@ -125,8 +125,9 @@ def fake_build(cache_root=None, config=None, log=None):
 feed_sources.build_real_sources = fake_build
 
 import main as app_mod                                                   # noqa: E402
+from PyQt5.QtGui import QKeyEvent                                          # noqa: E402
 from PyQt5.QtWidgets import QApplication, QFrame, QLabel                 # noqa: E402
-from PyQt5.QtCore import Qt                                              # noqa: E402
+from PyQt5.QtCore import Qt, QEvent                                      # noqa: E402
 
 LOGS = []
 app_mod.save_annotations = lambda data: None
@@ -244,6 +245,59 @@ pump(lambda: bool(w.feed_nav.posts) and not w.feed_busy)
 check("回到热榜后列表又有了", len(w.feed_nav.posts) > 0, len(w.feed_nav.posts))
 check("栏目停在一个真实存在的值上（不再显示不存在的'全部'）",
       w.feed_nav.channel in w.feed_source().channels(), w.feed_nav.channel)
+
+print("\n=== 4b. 组合键不算单键：ctrl+alt+f 不该顺带换板块 ===")
+# keyboard 库的全局热键回调**不吞按键**，所以热键那一下还会以普通按键落到窗口里。
+# 真人 2026-10-22："按 caf 也会触发 f 的切换板块"——窗口内的单键必须只在纯按时生效。
+_ch0 = w.feed_nav.channel
+w.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_F, Qt.ControlModifier | Qt.AltModifier))
+pump(lambda: not w.feed_busy)
+check("按 ctrl+alt+f（社区热键）不再顺带触发 f=上一个板块",
+      w.feed_nav.channel == _ch0, (w.feed_nav.channel, _ch0))
+w.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_F, Qt.ControlModifier))
+pump(lambda: not w.feed_busy)
+check("只按着 ctrl 也不换（组合键一律不算单键）",
+      w.feed_nav.channel == _ch0, (w.feed_nav.channel, _ch0))
+w.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_F, Qt.NoModifier))
+pump(lambda: not w.feed_busy)
+check("单按 f 照样换到上一个板块", w.feed_nav.channel != _ch0, w.feed_nav.channel)
+_lk0 = bool(w.config.get("feed_lowkey", False))
+w.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_E, Qt.ControlModifier))
+pump(lambda: True)
+check("按 ctrl+e（偷瞄热键）不再顺带翻一次图",
+      bool(w.config.get("feed_lowkey", False)) == _lk0, w.config.get("feed_lowkey"))
+w.feed_goto_channel("热榜")
+pump(lambda: not w.feed_busy)
+
+
+class _FakeU32(object):
+    """只答 GetAsyncKeyState：报哪几个键"按着"。"""
+
+    def __init__(self, down):
+        self.down = set(int(v) for v in down)
+
+    def GetAsyncKeyState(self, vk):
+        return 0x8000 if int(vk) in self.down else 0
+
+
+_orig_u32 = app_mod._user32
+try:
+    app_mod._user32 = _FakeU32({0x11})
+    check("偷瞄钩子：按着 Ctrl 认得出来（组合键不抢）",
+          w.peek_input_hook._modifiers_down() is True)
+    app_mod._user32 = _FakeU32({0xA2})
+    check("偷瞄钩子：单独按左 Ctrl 也算（左右 Ctrl 都认）",
+          w.peek_input_hook._modifiers_down() is True)
+    app_mod._user32 = _FakeU32({0x12})
+    check("偷瞄钩子：按着 Alt 也算", w.peek_input_hook._modifiers_down() is True)
+    app_mod._user32 = _FakeU32({0x10})
+    check("偷瞄钩子：只按着 Shift 不算（shift+字母还是那个字母）",
+          w.peek_input_hook._modifiers_down() is False)
+    app_mod._user32 = _FakeU32(set())
+    check("偷瞄钩子：什么都没按就照旧归我们", w.peek_input_hook._modifiers_down() is False)
+finally:
+    app_mod._user32 = _orig_u32
+
 while w.feed_source().key != "ithome":
     w.feed_cycle_source(1)
     pump(lambda: not w.feed_busy)

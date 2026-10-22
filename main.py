@@ -1383,6 +1383,16 @@ class GlobalInputHook:
                 _user32.UnhookWindowsHookEx(handle)
                 setattr(self, name, None)
 
+    # Ctrl / Alt / Win（含左右键）。按着这些的键是组合键，一个都不归我们。
+    _MOD_VKS = (0x11, 0xA2, 0xA3, 0x12, 0xA0, 0xA1, 0x5B, 0x5C)
+
+    def _modifiers_down(self):
+        """Ctrl / Alt / Win 按着没有（Shift 不算：shift+字母仍然是那个字母）。"""
+        try:
+            return any(_user32.GetAsyncKeyState(int(v)) & 0x8000 for v in self._MOD_VKS)
+        except Exception:
+            return False
+
     def _matches_peek_key(self, vk_code):
         if self._peek_vk is None or vk_code != self._peek_vk:
             return False
@@ -1416,6 +1426,11 @@ class GlobalInputHook:
                     if self._matches_peek_key(int(info.vkCode)):
                         self.owner.peek_exit_signal.emit("peek_key")
                         return 1  # 偷瞄期间这个键归我们，别落到当前应用上
+                    if self._modifiers_down():
+                        # 按着 Ctrl/Alt/Win 的组合键不归我们：那是热键或别人的快捷键。
+                        # 以前偷瞄里按 ctrl+c 会被当成 c=下一个社区 吞掉，ctrl+alt+f
+                        # 还会顺带触发 f=上一个板块（和窗口里那个坑是同一个）。
+                        return _user32.CallNextHookEx(None, n_code, w_param, l_param)
                     # 偷瞄这一层是全局的：当前页是卡片时，卡片交互键也在这里捕获——
                     # 不聚焦窗口也能翻面/评分（这是"ce 全局"的含义），而且不退出偷瞄。
                     if self.owner.peek_captures_review_keys():
@@ -8934,13 +8949,21 @@ class StealthReader(QWidget):
 
     def keyPressEvent(self, event):
         key = event.key()
+        # 「单键」只在**纯按**时生效：按着 Ctrl/Alt/Win 的是组合键/热键，不是页面按键。
+        # 全局热键（keyboard 库）的回调不吞按键，所以 `ctrl+alt+f`（社区）落到窗口里
+        # 就变成 f=上一个板块 顺带又执行一次，`ctrl+e`（偷瞄）还会顺带翻一次图；
+        # 真人 2026-10-22 报的就是这个。Shift 不算：shift+字母仍然是那个字母。
+        plain = not bool(event.modifiers() & (Qt.ControlModifier | Qt.AltModifier
+                                              | Qt.MetaModifier))
         if self.feed_mode:
             # 社区页的键全在 on_feed_key 里；这里吃掉没处理的键，别让书页那套切页逻辑
             # 把社区流当成书来翻（两者是不同页面，滚动方式也不一样）
-            if self.on_feed_key(key):
+            if plain and self.on_feed_key(key):
                 event.accept()
             return
         if self.review_mode and not self.safe_mode:
+            if not plain:
+                return
             # 卡片页的交互键 = **窗口内**（和书页完全同一套机制）：只有窗口是当前活动窗口
             # 时才响应。在这之前这套键走的是全局低级钩子，你在别的软件里打字按到 1-4
             # 会把卡片直接评掉——那条路已经删掉了。
@@ -8956,6 +8979,8 @@ class StealthReader(QWidget):
                 sb.setValue(min(sb.maximum(), sb.value() + page))
             elif key in [Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp]:
                 sb.setValue(max(sb.minimum(), sb.value() - page))
+            return
+        if not plain:
             return
         if key in (Qt.Key_Down, Qt.Key_Up):
             # 上下箭头 = 逐行滚动（行数可调），和滚轮一个手感；

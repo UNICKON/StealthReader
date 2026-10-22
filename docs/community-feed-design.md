@@ -1567,6 +1567,31 @@ mid 拼得出详情地址/带 Cookie 的详情摆出引用块/被挡在登录页
 空格无所谓 / 拆客主与比分 / 「已结束」几种写法 / 找到一次就记住 / 没找到记十分钟 / 打完那场的回复
 给赛后帖 / 数据统计不接回复），`probe_ui.py` 229、`probe_weread.py` 47、`probe_cookies.py` 12 不变。
 
+## 9.ab（2026-10-22）按 ctrl+alt+f 会顺带换板块：组合键不是单键
+
+**来由**：真人"按 caf 也会触发 f 的切换板块，类似的逻辑应该都要检查休整一下"，同一条里还
+要了板块顺序——"虎扑前四个板块应该是战绩赛程步行街湿乎乎"。
+
+**为什么热键会被当成单键**：全局热键是 `keyboard` 库注册的，它的低级钩子回调**不吞按键**
+（热键回调只是"顺便通知你一下"），所以 `ctrl+alt+f` 除了触发社区切换，那一下还作为普通
+按键落到前台窗口，`keyPressEvent` 只看 `event.key()`、没看修饰键，于是 `f`＝上一个板块又
+执行一次。同一类坑还有：`ctrl+e`（偷瞄）顺带翻一次图、`ctrl+alt+d`（安全文档）顺带切上一个
+社区、窗口里 `ctrl+c` 会被当成"下一个社区"。偷瞄那一层也有：钩子按 vkCode 认键，按着 Ctrl
+打 `c` 一样被吞成"下一个社区"。
+
+**做法**（一处判定、两条路都守）：
+
+- 窗口层：`keyPressEvent` 先算 `plain = 没有 Ctrl/Alt/Win`，社区页、卡片页、书页三个分支
+  的单键动作都只在 `plain` 时执行（`Shift` 不算修饰——shift+字母还是那个字母）。
+- 钩子层：`GlobalInputHook._modifiers_down()` 用 `GetAsyncKeyState` 查 Ctrl/Alt/Win（左右都算），
+  按着就 `CallNextHookEx` 放行，一个键都不抢；偷瞄键本身（`ctrl+e`）在那之前先认，不受影响。
+- 板块顺序：`HUPU_BOARDS` 里把 `湿乎乎的话题` 挪到 `步行街主干道` 后面，`channels()` 前四栏
+  就是 战绩 / 赛程 / 步行街 / 湿乎乎，`V` 往后才是篮球场这些专题板。
+
+**验收**：`probe_sources.py` 348（+1 前四栏顺序）、`probe_ui.py` 238（+9：ctrl+alt+f /
+只按 ctrl / 单按 f / ctrl+e 四项走真实 `QKeyEvent`，钩子层五项走假 `GetAsyncKeyState`，
+含"只按 Shift 不算"）、`probe_weread.py` 47、`probe_cookies.py` 12。
+
 ## 10. 我替你定的、你可能想改的
 
 1. 键位那一套（尤其 `Ctrl+Alt+F`）。

@@ -1030,15 +1030,19 @@ else:
                                # 比赛中心按日期：/games/2026-10-21（赛程页本身不给比分）
                                "nba.hupu.com/games/20": raw_gd or b""},
                  cache=MemCache()))
-    check("虎扑的栏目 = 两栏 NBA + 精选 + 全量目录（名字不重复，步行街排在它们后面）",
+    check("虎扑的栏目 = 两栏 NBA + 精选 + 全量目录：前四栏就是 战绩/赛程/步行街/湿乎乎",
           len(hp.channels()) > 200 and len(set(hp.channels())) == len(hp.channels())
-          and hp.channels()[:3] == ["NBA 战绩", "NBA 赛程", "步行街主干道"],
-          hp.channels()[:3])
+          and hp.channels()[:4] == ["NBA 战绩", "NBA 赛程", "步行街主干道", "湿乎乎的话题"]
+          and hp.channels()[4] == "篮球场",
+          hp.channels()[:6])
     check("板块表是静态的：boards() 不发网络请求，label/slug 双向翻译都对，认不出退回步行街",
           hp.http.calls == [] and hp.board_fid("篮球场") == "nba"
           and hp.board_label("nba") == "篮球场" and hp.board_fid("不认识的") == "bxj",
           (hp.http.calls, hp.board_fid("篮球场"), hp.board_label("nba")))
     # 真人点名要的那个板：湿乎乎的话题（/vote）
+    check("湿乎乎紧跟在步行街后面（真人要的顺序：战绩/赛程/步行街/湿乎乎）",
+          hp.channels().index("湿乎乎的话题") == hp.channels().index("步行街主干道") + 1,
+          hp.channels()[:5])
     check("湿乎乎的话题在板块表里，名字和 slug 双向都通",
           "湿乎乎的话题" in hp.channels() and hp.board_fid("湿乎乎的话题") == "vote"
           and hp.board_label("vote") == "湿乎乎的话题",
