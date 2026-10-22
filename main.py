@@ -172,7 +172,9 @@ DEFAULT_CONFIG = {
     "anki_api_key": "",                  # AnkiConnect 配了 apiKey 时填这里
     # --- 社区统一流（知乎/V2EX/微博…统一成一种帖子，当第三个内容页，见 docs/community-feed-design.md）---
     "feed_key": "ctrl+alt+f",            # 进/出社区统一流
-    "lowkey_key": "e",                   # 社区页有图 ↔ 无图（低调显示），当场生效
+    "lowkey_key": "e",
+    # 锁屏解锁之后静默重启一次（钩子/窗口摆放/显示配置全部重来），起来时保持隐藏
+    "restart_on_unlock": True,                   # 社区页有图 ↔ 无图（低调显示），当场生效
                                          # 单个字母只在窗口里有焦点时算（挂全局钩子会跟打字打架）；
                                          # 写成 ctrl+alt+l 这种组合就注册成全局热键
     "feed_lowkey": False,                # 低调显示：社区页不出图、[图] 占位，工位上更不显眼
@@ -789,6 +791,11 @@ def parse_restart_wait(argv):
     except Exception:
         pass
     return None
+
+
+def parse_hidden_flag(argv):
+    """命令行里有没有 `--hidden`：解锁后台重启时起来就藏着，别把窗口弹到人脸上。"""
+    return "--hidden" in list(argv or [])
 
 
 def _pid_alive(pid):
@@ -4312,6 +4319,10 @@ class StealthReader(QWidget):
                 if msg.message == WM_WTSSESSION_CHANGE and msg.wParam in (WTS_SESSION_UNLOCK, WTS_SESSION_LOGON):
                     log_event("检测到解锁/登录，稍后重挂全局热键")
                     QTimer.singleShot(800, lambda: self.recover_hotkeys("解锁/登录后"))
+                    # 解锁后静默重启一次（真人要求）：锁屏期间 Windows 会摘掉低级键盘钩子、
+                    # 把窗口丢到屏幕外，修补总有漏网的；重启最干净——进度和窗口位置在退出前
+                    # 已经钉住，新进程从 config 原样接上，而且起来是**藏着**的。
+                    QTimer.singleShot(1200, self.restart_on_unlock)
                     # 解锁时 Windows 可能已经把窗口挪到桌面外（锁屏期间显示器断电/分辨率抖动），
                     # 窗口当时若还开着，顺手拉回它该在的位置；藏着的话等下次 show 自动处理
                     QTimer.singleShot(900, self.ensure_on_screen)
@@ -8970,41 +8981,73 @@ class StealthReader(QWidget):
             self.save_config()
         super().closeEvent(event)
 
-    def save_before_restart(self):
-        """重新启动前把"人看得见的状态"钉住：进度、窗口位置、当前模式。
+    def restart_on_unlock(self):
+        """解锁（或登录）之后静默重启自己，窗口保持隐藏。
 
-        和 `quit_app` 里那几行是同一套，只是不退出——老进程紧接着就退出，写两遍没有副作用。
+        几道闸门：配置里关了就不做（`restart_on_unlock`）；二十秒内只重启一次（解锁通知会成串
+        来）；有弹窗开着、或者正在隐形背诵（重启会惊动 Anki 窗口）就跳过，并在日志里写清原因。
+        """
+        try:
+            if not self.config.get("restart_on_unlock", True):
+                return
+            if time.time() - getattr(self, "_last_unlock_restart", 0.0) < 20.0:
+                return
+            if QApplication.activeModalWidget() is not None:
+                log_event("有弹窗开着，这次解锁不重启")
+                return
+            if self.review_mode:
+                log_event("正在隐形背诵，这次解锁不重启（免得惊动 Anki 窗口）")
+                return
+            self._last_unlock_restart = time.time()
+            self.restart_app(hidden=True, reason="解锁")
+        except Exception as e:
+            log_event(f"解锁重启失败: {e}")
+
+    def save_before_restart(self):
+        """重新启动前把"人看得见的状态"钉住：阅读进度、窗口位置、当前模式。
+
+        和"老板键收起"那条路是同一套（收起来就是把**视口顶那一行**记成进度，而不是本页页首），
+        只是不隐藏窗口。安全文档 / Anki 卡片 / 社区页的坐标不是书的位置，`_book_veiled()` 挡掉。
         """
         try:
             if self.feed_mode:
                 self.exit_feed_mode(reason="restart")
+            try:
+                self.sync_progress_async()
+            except Exception:
+                pass
             if self.is_local_mode and not self._book_veiled():
                 self.config["last_local_pos"] = self.current_top_offset()
             self.save_window_pos()
             self.save_config()
+            log_event("重启前已记下进度 %s、窗口位置 %s"
+                      % (self.config.get("last_local_pos"),
+                         (self.config.get("win_x"), self.config.get("win_y"))))
         except Exception as e:
-            log_event(f"重新启动前保存失败: {e}")
+            log_event(f"重启前保存失败: {e}")
 
-    def restart_app(self):
-        """托盘 → 重新启动：起一个新进程，等它接上后自己退出。
+    def restart_app(self, hidden=False, reason=""):
+        """重新启动：起一个新进程，等它接上后自己退出。
+
+        `hidden=True` 时新进程起来不露脸（解锁后台重启用）；托盘菜单点的那次照常显示。
 
         双开是有害的（两个进程同时响应老板键、互相覆盖阅读进度），所以顺序是：
         存状态 → 放下单实例互斥体 → 起新进程（把本 pid 传过去让它先等我死）→ 自己退出。
         新进程用 `pythonw.exe` 起，不留黑框；`DETACHED_PROCESS` 让它不跟着这个进程一起被收走。
         """
         try:
-            log_event("重新启动（托盘）")
+            log_event("重新启动（%s）" % (reason or "托盘"))
             self.save_before_restart()
             exe = sys.executable
             pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
             if not getattr(sys, "frozen", False) and os.path.exists(pyw):
                 exe = pyw
             args = [exe]
-            if getattr(sys, "frozen", False):
-                args.append("--restart-wait")
-            else:
+            if not getattr(sys, "frozen", False):
                 args.append(os.path.join(APP_DIR, "main.py"))
-                args.append("--restart-wait")
+            if hidden:
+                args.append("--hidden")
+            args.append("--restart-wait")
             args.append(str(os.getpid()))
             release_single_instance_mutex()
             proc = subprocess.Popen(args, cwd=APP_DIR, close_fds=True,
@@ -9085,8 +9128,10 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     ex = StealthReader()
-    ex.show()
-    # 启动恢复位置后校验一次：窗口可能被存到了已经不存在的显示器坐标上
-    QTimer.singleShot(400, ex.ensure_on_screen)
-    log_event("应用启动")
+    _hidden = parse_hidden_flag(sys.argv)
+    if not _hidden:
+        ex.show()
+        # 启动恢复位置后校验一次：窗口可能被存到了已经不存在的显示器坐标上
+        QTimer.singleShot(400, ex.ensure_on_screen)
+    log_event("应用启动" + ("（解锁后台重启，保持隐藏）" if _hidden else ""))
     sys.exit(app.exec_())

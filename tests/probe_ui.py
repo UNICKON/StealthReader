@@ -1944,6 +1944,89 @@ finally:
     w.quit_app = _quit_bak
     w.save_before_restart = _save_bak
 
+# 锁屏解锁 → 后台静默重启，起来保持隐藏；进度与窗口位置在退出前就钉住
+check("命令行里认得出 --hidden",
+      app_mod.parse_hidden_flag(["main.py", "--hidden"]) is True
+      and app_mod.parse_hidden_flag(["main.py"]) is False,
+      app_mod.parse_hidden_flag(["main.py", "--hidden"]))
+
+_unlock_spawned, _unlock_finished = [], []
+_popen_bak2 = app_mod.subprocess.Popen
+_pid_alive_bak2 = app_mod._pid_alive
+_finish_bak = w._finish_restart
+_save_bak2 = w.save_before_restart
+_cfg_ru = w.config.get("restart_on_unlock", True)
+_ilm_bak = w.is_local_mode
+_veiled_bak = w._book_veiled
+_cto_bak = w.current_top_offset
+_rm_bak = w.review_mode
+_save_bak3 = w.save_config
+try:
+    app_mod.subprocess.Popen = lambda args, **kw: (_unlock_spawned.append(list(args)),
+                                                   _FakeProc())[1]
+    app_mod._pid_alive = lambda pid: True
+    w._finish_restart = lambda: _unlock_finished.append(1)
+    w.save_before_restart = lambda: None
+    w.save_config = lambda *a, **k: None
+
+    # ① 解锁那条路：带 --hidden 起新进程
+    w._last_unlock_restart = 0.0
+    w.config["restart_on_unlock"] = True
+    w.review_mode = False
+    w.restart_on_unlock()
+    check("解锁后重启：新进程带 --hidden（起来藏着，不弹到人脸上）",
+          len(_unlock_spawned) == 1 and "--hidden" in _unlock_spawned[0],
+          _unlock_spawned[0] if _unlock_spawned else None)
+
+    # ② 二十秒内只重启一次（解锁通知会成串来）
+    _n = len(_unlock_spawned)
+    w.restart_on_unlock()
+    check("解锁通知成串来的时候只重启一次", len(_unlock_spawned) == _n, len(_unlock_spawned))
+
+    # ③ 正在隐形背诵 / 有弹窗 / 关了开关，都不重启
+    w._last_unlock_restart = 0.0
+    w.review_mode = True
+    w.restart_on_unlock()
+    w.review_mode = False
+    w._last_unlock_restart = 0.0
+    w.config["restart_on_unlock"] = False
+    w.restart_on_unlock()
+    w.config["restart_on_unlock"] = True
+    check("背诵中 / 开关关着都不重启（别惊动 Anki、也让人能自己关掉）",
+          len(_unlock_spawned) == _n, len(_unlock_spawned))
+
+    # ④ 托盘手动重启照旧显示（不带 --hidden）
+    _n = len(_unlock_spawned)
+    w.restart_app()
+    check("托盘那一次照常显示（不带 --hidden）",
+          len(_unlock_spawned) == _n + 1 and "--hidden" not in _unlock_spawned[-1],
+          _unlock_spawned[-1])
+
+    # ⑤ 重启前真的把"进度 + 窗口位置"钉住
+    w.is_local_mode = True
+    w._book_veiled = lambda: False
+    w.current_top_offset = lambda: 12345
+    w.config["last_local_pos"] = 0
+    w.save_before_restart = _save_bak2
+    w.save_before_restart()
+    check("重启前记下的是视口顶那一行（不是本页页首）", w.config.get("last_local_pos") == 12345,
+          w.config.get("last_local_pos"))
+    check("重启前窗口位置也记下来了",
+          isinstance(w.config.get("win_x"), int) and isinstance(w.config.get("win_y"), int),
+          (w.config.get("win_x"), w.config.get("win_y")))
+finally:
+    app_mod.subprocess.Popen = _popen_bak2
+    app_mod._pid_alive = _pid_alive_bak2
+    w._finish_restart = _finish_bak
+    w.save_before_restart = _save_bak2
+    w.save_config = _save_bak3
+    w.is_local_mode = _ilm_bak
+    w._book_veiled = _veiled_bak
+    w.current_top_offset = _cto_bak
+    w.review_mode = _rm_bak
+    w.config["restart_on_unlock"] = _cfg_ru
+    w._last_unlock_restart = 0.0
+
 # 窗口摆放（"按了老板键，日志说显示了，屏幕上什么都没有，然后一闪一闪"）：
 # 两个信号任一为真就摆一次，**摆只用 Qt 的坐标**（Win32 挪 + 除以 dpr 同步回来，两套坐标一打架
 # 窗口就在屏幕内外来回跳 = 人看到的闪烁），摆完冷却 30 秒、摆不好安静五分钟。
