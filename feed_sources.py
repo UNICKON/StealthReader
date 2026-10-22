@@ -2497,6 +2497,77 @@ def _hupu_score_excerpt(sc, stage=""):
     return " · ".join(bits)
 
 
+HUPU_VOTE_LABEL = "湿乎乎的话题"        # 赛后帖都发在这里（`bbs.hupu.com/vote`）
+HUPU_MATCH_POST_KEY = "hupu://match-post/%s"   # 磁盘缓存键：比赛 id -> 赛后帖 id
+
+
+def hupu_finished(text):
+    """这场打完了吗（摘要/标签里出现这几个字就算）。"""
+    s = str(text or "")
+    return any(k in s for k in ("已结束", "完场", "比赛结束", "全场结束"))
+
+
+def hupu_match_teams(post):
+    """赛程那条帖子 → (客队, 客分, 主队, 主分)。
+
+    标题是 `老鹰 vs 魔术`（客在前），摘要是 `132 - 125 · 已结束`（客分在前），两边顺序一致。
+    """
+    title = str(getattr(post, "title", "") or "")
+    away, sep, home = title.partition(" vs ")
+    if not sep:
+        return ("", "", "", "")
+    m = re.search(r"(\d{1,3})\s*-\s*(\d{1,3})", str(getattr(post, "excerpt", "") or ""))
+    if not m:
+        return ("", "", "", "")
+    return (away.strip(), m.group(1), home.strip(), m.group(2))
+
+
+def parse_hupu_match_post(rows, away, away_score, home, home_score):
+    """从一堆 (标题, 帖子id) 里挑出这场比赛的赛后帖。
+
+    赛后帖标题是固定格式：`[赛后]老鹰132-125魔术，沃克31分4板3助，…`（客队在前）。
+    比分必须一起比：只认队名会把同一天里被反复讨论的那支队认成好几场比赛。
+    """
+    def norm(x):
+        return re.sub(r"\s+", "", str(x or ""))
+
+    want = norm("%s%s-%s%s" % (away, away_score, home_score, home))
+    if len(want) < 5 or not str(away or "").strip():
+        return ""
+    for row in (rows or []):
+        try:
+            title, tid = row[0], row[1]
+        except Exception:
+            continue
+        t = norm(title)
+        if t.startswith("[赛后]") and want in t:
+            return str(tid)
+    return ""
+
+
+def _hupu_score_title(head):
+    """详情页标题就用比分：`老鹰 132 - 125 魔术`。
+
+    进行中把节次留在括号里（"第四节剩5:22"这个数字每 20 秒在变，只有标题看得见）；
+    打完的不加"（已结束）"——比分是死的，页签和赛程列表已经说明这场结束了。
+    """
+    head = head or {}
+    away = str(head.get("away") or "").strip()
+    home = str(head.get("home") or "").strip()
+    asc = str(head.get("away_score") or "").strip()
+    hsc = str(head.get("home_score") or "").strip()
+    if not (away and home):
+        return ""
+    if asc and hsc:
+        line = "%s %s - %s %s" % (away, asc, hsc, home)
+    else:
+        line = "%s vs %s" % (away, home)
+    st = str(head.get("status") or "").strip()
+    if head.get("live") and st:
+        line += "（%s）" % st
+    return line
+
+
 def _hupu_with_live(sc):
     """文字直播/技术统计页的状态只有"第四节剩5:22"，摘要里补上"进行中"（和列表一个样子）。"""
     sc = dict(sc or {})
@@ -2978,24 +3049,129 @@ class HupuSource(RealSource):
         out.body = [Block(kind=BLOCK_TABLE, text=_hupu_standings_table(rows))]
         return out
 
+    # --- 赛后帖（已结束的比赛点开就是它）--------------------------------
+    def _match_post_key(self, mid):
+        return HUPU_MATCH_POST_KEY % str(mid or "").strip()
+
+    def _cached_match_post(self, mid):
+        """记住的赛后帖 id（只读缓存，不发网络）。"""
+        if not str(mid or "").strip():
+            return ""
+        try:
+            got = self.http.cache.read_json(self._match_post_key(mid), TTL_FOREVER) or {}
+        except Exception:
+            return ""
+        return str(got.get("tid") or "")
+
+    def _scan_match_post(self, away, asc, home, hsc, pages=3):
+        """翻湿乎乎找 `[赛后]<客><分>-<分><主>`。
+
+        湿乎乎滚得快：今天 5 场里有 2 场的赛后帖已经在第 2、3 页，所以默认翻三页。
+        """
+        seen = []
+        cur = None
+        for _ in range(max(1, int(pages))):
+            try:
+                out = self.list(HUPU_VOTE_LABEL, cur)
+            except FeedNetError:
+                break
+            posts, nxt = (out if isinstance(out, tuple) else (out, None))
+            for p in posts or []:
+                seen.append((getattr(p, "title", ""), getattr(p, "id", "")))
+            if not nxt or str(nxt) == str(cur):
+                break
+            cur = nxt
+        return parse_hupu_match_post(seen, away, asc, home, hsc)
+
+    def match_post_tid(self, mid, away, asc, home, hsc):
+        """这场比赛赛后帖的 id：找到一次就记住，重启也在，不用每次去翻。
+
+        没找到也记十分钟（刚完场那几分钟帖还没发出来），省得每次点开都翻三页。
+        """
+        mid = str(mid or "").strip()
+        if not mid:
+            return ""
+        tid = self._cached_match_post(mid)
+        if tid:
+            return tid
+        miss = getattr(self, "_match_post_miss", None)
+        if miss is None:
+            miss = self._match_post_miss = {}
+        if time.time() - float(miss.get(mid) or 0.0) < 600:
+            return ""
+        tid = self._scan_match_post(away, asc, home, hsc)
+        if tid:
+            try:
+                self.http.cache.write_json(self._match_post_key(mid), {
+                    "tid": tid,
+                    "title": "%s vs %s" % (away, home),
+                    "found_at": int(time.time()),
+                })
+            except Exception:
+                pass
+            miss.pop(mid, None)
+            return tid
+        miss[mid] = time.time()
+        return ""
+
+    def _match_post_detail(self, post, tid):
+        """赛后帖：标题换成虎扑那条帖子的标题，正文只有比分一行。
+
+        主楼是虎扑的"比赛卡片"（`{"type":"iframe-match"}`，一张 H5），不是文字，跳过不显示；
+        能读的是回复，走 `comments()` 那一层。
+        """
+        out = Post.from_dict(post.to_dict())
+        detail = self._detail_json(tid)
+        th = detail.get("thread") or {}
+        title = feed_mod.strip_html(str(th.get("title") or ""))
+        if title:
+            out.title = title
+        # 标题（`[赛后]公牛92-135猛龙，…`）里就是比分，正文不再重复一遍
+        out.body = []
+        out.author = ""
+        out.source_label = ""
+        return out
+
+    def _bbs_replies(self, tid):
+        """虎扑帖子的回复（`replies.list`）。赛后帖的讨论也走这里。"""
+        detail = self._detail_json(tid)
+        rows = ((detail.get("replies") or {}).get("list")) or []
+        out = []
+        for i, it in enumerate(rows):
+            blocks = self._localize_images(
+                feed_mod.blocks_from_html(it.get("content") or "", max_blocks=12), limit=2)
+            # 没内容的回复就是没内容（以前塞一句"（这条回复没内容）"，属于说明文字）。
+            out.append(Comment(
+                cid=str(it.get("pid") or ("r%d" % i)),
+                author=_hupu_name(it.get("author")) or "匿名",
+                created=feed_mod.human_time(int(it.get("createdAt") or 0) / 1000.0),
+                score=int(it.get("allLightCount") or 0),
+                body=blocks,
+                # 虎扑的引用在 `quote` 里（`{"author": {"puname": "..."}, "content": ...}`）：
+                # 这就是"这条回复在回谁"，比正文里猜准得多（它们的正文不带 @ 前缀）
+                reply_to=_hupu_name((it.get("quote") or {}).get("author")),
+            ))
+        return out
+
     def _match_detail(self, post):
         """一场比赛的文字直播：头部比分 + 状态，然后最新的回合在上、越往下越早。"""
         out = Post.from_dict(post.to_dict())
         mid = str(post.id or "").strip()
         if not mid.isdigit():
             raise FeedNetError("这场比赛没有 id（%s）" % mid)
+        # 打完了：点开就是赛后帖（真人要的）。还没发出帖子（刚完场那几分钟）就照旧给文字直播。
+        if hupu_finished(post.excerpt) or hupu_finished(" ".join(post.tags or [])):
+            tid = self.match_post_tid(mid, *hupu_match_teams(post))
+            if tid:
+                return self._match_post_detail(post, tid)
         data = parse_hupu_pbp(self._html(HUPU_PBP_URL % mid, HUPU_LIVE_TTL))
         if not data["rows"]:
             raise FeedNetError("这场还没有文字直播（可能没开赛）")
+        # 比分进标题、时间进元信息那一行；正文从分节表开始（真人："很多冗余数据…这样就行"）
+        out.title = _hupu_score_title(data) or out.title
+        out.author = ""
+        out.source_label = ""
         body = []
-        if data["away"] or data["home"]:
-            head = "%s %s - %s %s" % (data["away"], data["away_score"],
-                                      data["home_score"], data["home"])
-            if data["status"]:
-                head += "（%s）" % data["status"]
-            body.append(Block(kind=BLOCK_P, text=head))
-        if data["start"]:
-            body.append(Block(kind=BLOCK_P, text="开赛：%s" % data["start"]))
         q = data.get("quarters") or {}
         qtable = _hupu_quarters_table(q, data.get("away") or "", data.get("home") or "")
         if qtable:
@@ -3074,22 +3250,16 @@ class HupuSource(RealSource):
         teams = [t for t in data["teams"] if t.get("total") or t.get("starters")]
         if not teams:
             raise FeedNetError("这场还没有数据统计（可能没开赛）")
+        out.title = _hupu_score_title(head) or out.title
+        out.author = ""
+        out.source_label = ""
         body = []
-        if head["away"] or head["home"]:
-            line = "%s %s - %s %s" % (head["away"], head["away_score"],
-                                      head["home_score"], head["home"])
-            if head["status"]:
-                line += "（%s）" % head["status"]
-            body.append(Block(kind=BLOCK_P, text=line))
-        if head["start"]:
-            body.append(Block(kind=BLOCK_P, text="开赛：%s" % head["start"]))
         q = data["quarters"]
         names = [t.get("name") or "" for t in data["teams"]]
         qtable = _hupu_quarters_table(q, names[0] if names else head["away"],
                                       names[1] if len(names) > 1 else head["home"])
         if qtable:
             body.append(Block(kind=BLOCK_TABLE, text=qtable))
-        body.append(Block(kind=BLOCK_H, text="数据统计"))
         for t in teams:
             name = t.get("name") or ""
             pct = t.get("pct") or {}
@@ -3194,25 +3364,13 @@ class HupuSource(RealSource):
     def comments(self, post, cursor=None):
         """回复（虎扑的回复没有真正的层级，引用写在正文里，所以按平铺给）。"""
         if str(getattr(post, "channel", "") or "").strip() in self.NBA_CHANNELS:
-            return [], None          # 战绩/文字直播这两栏本身就是内容，没有"回复"这一层
-        detail = self._detail_json(post.id)
-        rows = ((detail.get("replies") or {}).get("list")) or []
-        out = []
-        for i, it in enumerate(rows):
-            blocks = self._localize_images(
-                feed_mod.blocks_from_html(it.get("content") or "", max_blocks=12), limit=2)
-            # 没内容的回复就是没内容（以前塞一句"（这条回复没内容）"，属于说明文字）。
-            out.append(Comment(
-                cid=str(it.get("pid") or ("r%d" % i)),
-                author=_hupu_name(it.get("author")) or "匿名",
-                created=feed_mod.human_time(int(it.get("createdAt") or 0) / 1000.0),
-                score=int(it.get("allLightCount") or 0),
-                body=blocks,
-                # 虎扑的引用在 `quote` 里（`{"author": {"puname": "..."}, "content": ...}`）：
-                # 这就是"这条回复在回谁"，比正文里猜准得多（它们的正文不带 @ 前缀）
-                reply_to=_hupu_name((it.get("quote") or {}).get("author")),
-            ))
-        return out, None
+            # 数据统计/文字直播本身是内容，没有"回复"这一层；
+            # 但打完了的那场，详情页给的是赛后帖，回复就是它的讨论。
+            if self.detail_view(post) == "stats":
+                return [], None
+            tid = self._cached_match_post(post.id)
+            return (self._bbs_replies(tid) if tid else []), None
+        return self._bbs_replies(post.id), None
 
 
 def _hupu_name(author):

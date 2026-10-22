@@ -1165,7 +1165,9 @@ def _meta_line(post, theme):
 
     分隔符用中点、不用全角空格：Qt 的 HTML 解析会把 `　` 折成半角空格，最后挤成一团。
     """
-    src = post.source_label or post.source
+    # 来源那一截只在真有标签时出现：赛程/比分这类页面自己有页签（文字直播/数据统计），
+    # 再顶着"虎扑 · NBA"就是重复（真人 2026-10-22 把那三行圈出来说冗余）
+    src = post.source_label
     stat = []
     if post.score:
         stat.append("%s %s" % (_num(post.score), post.score_label or "赞"))

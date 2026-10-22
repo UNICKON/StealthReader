@@ -1048,6 +1048,91 @@ else:
     check("板块搜索表里带分类和热度（湿乎乎：NBA · 18.7w）",
           len(_wet) == 1 and _wet[0]["group"] == "NBA" and _wet[0]["heat"] == "18.7w"
           and _wet[0]["fid"] == "vote", _wet)
+
+    # ---- 赛后帖：已结束的比赛点开就是它，而且找到一次就记住 ----
+    check("赛后帖的标题认得出（[赛后]<客><分>-<分><主>）",
+          feed_sources.parse_hupu_match_post(
+              [("[赛后]老鹰132-125魔术，沃克31分4板3助", "643144284")],
+              "老鹰", "132", "魔术", "125") == "643144284")
+    check("比分对不上就不是这一场",
+          feed_sources.parse_hupu_match_post(
+              [("[赛后]老鹰132-125魔术，沃克31分", "1")],
+              "老鹰", "131", "魔术", "125") == "")
+    check("标题不带 [赛后] 的不算（普通讨论帖里也会同时出现队名和比分）",
+          feed_sources.parse_hupu_match_post(
+              [("老鹰132-125魔术，这球太漂亮了", "1")],
+              "老鹰", "132", "魔术", "125") == "")
+    check("标题里有空格也认得出",
+          feed_sources.parse_hupu_match_post(
+              [("[赛后]老鹰 132-125 魔术，沃克31分", "9")],
+              "老鹰", "132", "魔术", "125") == "9")
+    check("赛程那条帖子里拆得出客/主和比分（标题客在前，摘要客分在前）",
+          feed_sources.hupu_match_teams(
+              feed_mod.Post(title="老鹰 vs 魔术", excerpt="132 - 125 · 已结束"))
+          == ("老鹰", "132", "魔术", "125"))
+    check("认得出「已结束」的几种写法，也不把进行中认成结束",
+          feed_sources.hupu_finished("132 - 125 · 已结束")
+          and feed_sources.hupu_finished("完场")
+          and not feed_sources.hupu_finished("74 - 67 · 进行中 第三节剩5:57"))
+
+    class _MatchPostCache(object):
+        """只管一条：URL -> JSON，够验"记住"这件事。"""
+
+        def __init__(self):
+            self.d = {}
+
+        def read_json(self, url, ttl):
+            return self.d.get(url)
+
+        def write_json(self, url, obj):
+            self.d[url] = obj
+
+    _cache_bak = hp.http.cache
+    _scan_bak = hp._scan_match_post
+    _miss_bak = getattr(hp, "_match_post_miss", None)
+    _cached_bak = hp._cached_match_post
+    _replies_bak = hp._bbs_replies
+    hp.http.cache = _MatchPostCache()
+    hp._match_post_miss = {}
+    try:
+        _scans = []
+
+        def _scan_hit(*a, **k):
+            _scans.append(1)
+            return "643144284"
+
+        hp._scan_match_post = _scan_hit
+        _t1 = hp.match_post_tid("168965", "老鹰", "132", "魔术", "125")
+        _t2 = hp.match_post_tid("168965", "老鹰", "132", "魔术", "125")
+        check("赛后帖找到一次就记住（第二次不再去翻湿乎乎）",
+              _t1 == _t2 == "643144284" and len(_scans) == 1, (_t1, _t2, len(_scans)))
+
+        def _scan_miss(*a, **k):
+            _scans.append(1)
+            return ""
+
+        hp._scan_match_post = _scan_miss
+        _m1 = hp.match_post_tid("999001", "甲", "1", "乙", "2")
+        _m2 = hp.match_post_tid("999001", "甲", "1", "乙", "2")
+        check("没找到也记十分钟（刚完场还没发帖，不至于每次点开都翻三页）",
+              _m1 == _m2 == "" and len(_scans) == 2, len(_scans))
+
+        hp._cached_match_post = lambda mid: "643145559"
+        hp._bbs_replies = lambda tid: ["r1", "r2"]
+        _live_post = feed_mod.Post(source="hupu", channel=feed_sources.HupuSource.NBA_LIVE,
+                                   pid="168967", title="公牛 vs 猛龙")
+        check("打完那场：详情页的回复给的是赛后帖的讨论",
+              len(hp.comments(_live_post)[0]) == 2, hp.comments(_live_post)[0])
+        hp._views()["168967"] = "stats"
+        check("切到数据统计就不接赛后帖回复（那一页给的是数字）",
+              hp.comments(_live_post)[0] == [], hp.comments(_live_post)[0])
+        hp._views().pop("168967", None)
+    finally:
+        hp.http.cache = _cache_bak
+        hp._scan_match_post = _scan_bak
+        hp._match_post_miss = _miss_bak
+        hp._cached_match_post = _cached_bak
+        hp._bbs_replies = _replies_bak
     check("板块表按名字去重（没有两条一样的板名）",
           len(hp_boards) == len(set(b["label"] for b in hp_boards)), len(hp_boards))
     check("手填 slug 也认（vote / bxj / lakers），中文乱填的不认",
@@ -1194,7 +1279,7 @@ else:
         _day_calls2 = [u for u in hp.http.calls[_calls1:] if "/games/20" in u]
         _live_p = [p for p in lv_posts if "进行中" in (p.excerpt or "")][0]
         _d, _ = hp.detail(_live_p)
-        _head = next((b.text for b in _d.body if getattr(b, "text", "")), "")
+        _head = _d.title          # 比分现在扛在标题上
         _num = re.search(r"(\d+) - (\d+)", _head)
         check("详情的摘要跟着这一刻的比分走（不是进列表那一刻那份）",
               bool(_num) and _d.excerpt.startswith("%s - %s" % (_num.group(1), _num.group(2)))
@@ -1216,14 +1301,16 @@ else:
         for _p in lv_posts:
             _p.ts = _now_ts
         lvd, _ = hp.detail(lv_posts[1])
-        check("（真夹具）文字直播：先比分和状态，再一条条回合（最新的在上）",
-              lvd.body[0].text == "76人 96 - 92 尼克斯（第四节剩5:22）"
-              and lvd.body[1].text.startswith("开赛：")
+        _pb = [b for b in lvd.body if b.kind == feed_mod.BLOCK_TABLE
+               and (b.text or "").startswith("时间\t球队\t回合\t比分")]
+        check("（真夹具）文字直播：标题就是比分和状态，正文直接一条条回合（最新的在上）",
+              lvd.title == "76人 96 - 92 尼克斯（第四节剩5:22）"
+              and not any((b.text or "").startswith("开赛：") for b in lvd.body)
               and any("布伦森两分突破漂移跳投命中" in b.text for b in lvd.body),
-              [b.text[:40] for b in lvd.body[:3]])
-        _pb_rows = [x for x in lvd.body[3].text.split("\n") if x] if len(lvd.body) > 3 else []
+              (lvd.title, [b.text[:30] for b in lvd.body[:2]]))
+        _pb_rows = [x for x in _pb[0].text.split("\n") if x] if _pb else []
         check("回合排成表：时间/球队/回合/比分各一列（不是一句话串到底）",
-              lvd.body[3].kind == feed_mod.BLOCK_TABLE and _pb_rows
+              bool(_pb) and _pb_rows
               and _pb_rows[0] == "时间\t球队\t回合\t比分"
               and _pb_rows[1].startswith("0.0\"\t76人\t") and _pb_rows[1].endswith("\t23-25"),
               _pb_rows[:2])
@@ -1275,25 +1362,30 @@ else:
         check("按 T 切到数据统计", hp.toggle_detail_view(match) == "stats"
               and hp.detail_view(match) == "stats", hp.detail_view(match))
         bxd, _ = hp.detail(match)
-        check("（真夹具）数据统计：先比分和状态，再开赛时间、分节比分表",
-              bxd.body[0].text == "76人 104 - 98 尼克斯（第四节剩1:07）"
-              and bxd.body[1].text.startswith("开赛：")
-              and bxd.body[2].kind == feed_mod.BLOCK_TABLE
-              and bxd.body[2].text == ("队\t一\t二\t三\t四\t总分"
-                                       "\n76人\t23\t31\t29\t21\t104"
-                                       "\n尼克斯\t25\t33\t18\t22\t98"),
-              [b.text for b in bxd.body[:3]])
-        check("'数据统计'是小标题，不是普通段落",
-              bxd.body[3].kind == feed_mod.BLOCK_H and bxd.body[3].text == "数据统计",
-              (bxd.body[3].kind, bxd.body[3].text))
+        _q = [b for b in bxd.body if b.kind == feed_mod.BLOCK_TABLE
+              and (b.text or "").startswith("队\t一\t二")]
+        check("（真夹具）数据统计：标题扛比分，正文直接从分节比分表开始（不重复那两行）",
+              bxd.title == "76人 104 - 98 尼克斯（第四节剩1:07）"
+              and bool(_q) and _q[0].text == ("队\t一\t二\t三\t四\t总分"
+                                              "\n76人\t23\t31\t29\t21\t104"
+                                              "\n尼克斯\t25\t33\t18\t22\t98"),
+              (bxd.title, [b.text[:24] for b in bxd.body[:2]]))
+        check("「数据统计」不再当小标题重复一遍（页签里已经有了）",
+              not any(b.kind == feed_mod.BLOCK_H and b.text == "数据统计" for b in bxd.body),
+              [b.text for b in bxd.body if b.kind == feed_mod.BLOCK_H])
+        _shoot = next((b for b in bxd.body if b.kind == feed_mod.BLOCK_TABLE
+                       and (b.text or "").startswith("\t投篮")), None)
+        _misc = next((b for b in bxd.body if b.kind == feed_mod.BLOCK_TABLE
+                      and (b.text or "").startswith("篮板\t前场")), None)
         check("（真夹具）全队汇总在每队最前面：投篮/三分/罚球（命中 + 命中率）与前后场篮板等",
-              bxd.body[5].kind == feed_mod.BLOCK_TABLE
-              and bxd.body[5].text.split("\n")[1] == "命中\t37-87\t11-39\t19-25"
-              and bxd.body[5].text.split("\n")[2] == "命中率\t42.5%\t28.2%\t76.0%"
-              and bxd.body[6].text.split("\n")[0] == "篮板\t前场\t后场\t助攻\t抢断\t失误\t封盖\t犯规"
-              and bxd.body[6].text.split("\n")[1] == "43\t5\t38\t28\t8\t9\t9\t22",
-              [b.text[:40] for b in bxd.body[5:7]])
-        _prows = [x for x in bxd.body[7].text.split("\n") if x]
+              _shoot is not None and _misc is not None
+              and _shoot.text.split("\n")[1] == "命中\t37-87\t11-39\t19-25"
+              and _shoot.text.split("\n")[2] == "命中率\t42.5%\t28.2%\t76.0%"
+              and _misc.text.split("\n")[0] == "篮板\t前场\t后场\t助攻\t抢断\t失误\t封盖\t犯规"
+              and _misc.text.split("\n")[1] == "43\t5\t38\t28\t8\t9\t9\t22",
+              [_shoot.text[:40] if _shoot else None, _misc.text[:40] if _misc else None])
+        _pl = next((b for b in bxd.body if getattr(b, "lang", "") == "wide"), None)
+        _prows = [x for x in _pl.text.split("\n") if x] if _pl is not None else []
         check("（真夹具）球员表 17 列、按重要程度排：球员/得分/篮板/助攻/时间/投篮/三分/罚球/"
               "抢断/封盖/失误/犯规/前场/后场/±/首发/位置",
               _prows[0] == ("球员\t得分\t篮板\t助攻\t时间\t投篮\t三分\t罚球\t抢断\t封盖"
@@ -1307,7 +1399,8 @@ else:
               == sorted([int(r.split("\t")[1]) for r in _prows[1:]], reverse=True),
               _prows[:2])
         check("这张表标了 wide（横条不显示，靠左右滑看右边几列）",
-              getattr(bxd.body[7], "lang", "") == "wide", getattr(bxd.body[7], "lang", ""))
+              _pl is not None and getattr(_pl, "lang", "") == "wide",
+              getattr(_pl, "lang", "") if _pl is not None else None)
         check("（真夹具）没上场的（时间 0）不进正文，省得摆一屏 0-0",
               len(_prows) == 5 and not any(r.split("\t")[4] == "0" for r in _prows[1:]),
               _prows[1:])
@@ -1315,7 +1408,7 @@ else:
               "进行中" in bxd.tags and "数据统计" in bxd.tags, bxd.tags)
         check("再从数据统计切回文字直播：又回到回合表",
               hp.toggle_detail_view(match) == "live"
-              and hp.detail(match)[0].body[0].text.startswith("76人 96 - 92 尼克斯"),
+              and hp.detail(match)[0].title.startswith("76人 96 - 92 尼克斯"),
               hp.detail(match)[0].tags)
         check("切视图只影响这一场（别把别的比赛也带过去）",
               hp.detail_view(lv_posts[3]) == "live", hp.detail_view(lv_posts[3]))
