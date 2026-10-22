@@ -127,7 +127,7 @@ feed_sources.build_real_sources = fake_build
 import main as app_mod                                                   # noqa: E402
 from PyQt5.QtGui import QKeyEvent                                          # noqa: E402
 from PyQt5.QtWidgets import QApplication, QFrame, QLabel                 # noqa: E402
-from PyQt5.QtCore import Qt, QEvent                                      # noqa: E402
+from PyQt5.QtCore import Qt, QEvent, QPoint                              # noqa: E402
 
 LOGS = []
 app_mod.save_annotations = lambda data: None
@@ -297,6 +297,64 @@ try:
     check("偷瞄钩子：什么都没按就照旧归我们", w.peek_input_hook._modifiers_down() is False)
 finally:
     app_mod._user32 = _orig_u32
+
+print("\n=== 4c. 幽灵模式：鼠标离开窗口，社区页的正文也要藏起来 ===")
+# 真人 2026-10-22："幽灵模式在社区模式没生效"。病根：变色龙那条只改文字控件的
+# `color`，可社区页的正文是**内联颜色**（标题强调色、灰色小字、表格），改控件颜色
+# 压不住，于是字一直亮着。现在改成 alpha=0 的图形效果罩住整个文字控件。
+_gmode0 = w.config.get("ghost_mode", False)
+_amode0 = w.config.get("auto_mode", False)
+_cursor_bak = app_mod.QCursor
+_adjust_bak = w.adjust_color_to_background
+
+
+class _FakeCursor(object):
+    """光标在窗口外面（离得很远），leaveEvent 才肯真的"离开"。"""
+
+    @staticmethod
+    def pos():
+        return QPoint(-4000, -4000)
+
+
+try:
+    w.adjust_color_to_background = lambda: None      # 探针里不真去抓壁纸取色
+    app_mod.QCursor = _FakeCursor
+    w.config["ghost_mode"] = True
+    w.config["auto_mode"] = True
+    _sb0 = w.text_edit.verticalScrollBar().value()
+    w.leaveEvent(QEvent(QEvent.Leave))
+    _eff = w.text_edit.graphicsEffect()
+    check("幽灵态：文字控件罩上一层 alpha=0 的效果（内联颜色也一起藏）",
+          _eff is not None and abs(float(_eff.opacity()) - 0.0) < 1e-6,
+          None if _eff is None else _eff.opacity())
+    check("幽灵态：ghost_veiled 标记置上、划线高亮一起藏",
+          w.ghost_veiled is True and not w.text_edit.extraSelections(), w.ghost_veiled)
+    check("幽灵态：窗口不整体淡出（变色龙底色留着）",
+          abs(w.windowOpacity() - 1.0) < 1e-6, w.windowOpacity())
+    check("幽灵态不重排：滚动位置一点没动",
+          w.text_edit.verticalScrollBar().value() == _sb0,
+          (w.text_edit.verticalScrollBar().value(), _sb0))
+    w.enterEvent(QEvent(QEvent.Enter))
+    check("鼠标回来：罩子摘掉、正文照常", w.text_edit.graphicsEffect() is None
+          and w.ghost_veiled is False,
+          (w.text_edit.graphicsEffect(), w.ghost_veiled))
+    w.config["auto_mode"] = False                    # 非自动挡走整窗透明度那条老路
+    w.leaveEvent(QEvent(QEvent.Leave))
+    # 系统把不透明度量化成 0~255（0.005 → 1/255 ≈ 0.0039），所以按"几乎全透明"判
+    check("非自动挡：照旧整窗淡到看不见（≈0.005），也不加罩子",
+          w.windowOpacity() <= 0.01
+          and w.text_edit.graphicsEffect() is None, w.windowOpacity())
+    w.enterEvent(QEvent(QEvent.Enter))
+    check("非自动挡：鼠标回来恢复成配置里的不透明度",
+          abs(w.windowOpacity() - float(w.config.get("opacity", 1.0))) < 1e-6,
+          w.windowOpacity())
+finally:
+    app_mod.QCursor = _cursor_bak
+    w.adjust_color_to_background = _adjust_bak
+    w.config["ghost_mode"] = _gmode0
+    w.config["auto_mode"] = _amode0
+    w.set_ghost_veil(False)
+    w.apply_style()
 
 while w.feed_source().key != "ithome":
     w.feed_cycle_source(1)

@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QFrame, QTextEdit, QShortcut, QListWidget,
                              QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog,
                              QInputDialog, QMessageBox, QToolTip, QTabWidget, QScrollArea,
-                             QStackedWidget, QGridLayout)
+                             QStackedWidget, QGridLayout, QGraphicsOpacityEffect)
 from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject,
                           QThread, QTimer, QEvent, QUrl)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
@@ -7837,6 +7837,7 @@ class StealthReader(QWidget):
             """)
 
     def apply_style(self):
+        self.set_ghost_veil(False)      # 正常样式回来了：幽灵那层罩子先摘掉
         # 刷样式会重排（字号/行距/页边距都在里面），重排前先认住"现在正看的那一行"，
         # 重绘时拿它当页首——否则每次刷样式都从本页最上面重铺，看着就是"阅读进度老是跳回"。
         anchor = self.current_top_offset()
@@ -7898,6 +7899,27 @@ class StealthReader(QWidget):
             self.repage_to(anchor)
         self.update_review_bar()   # 页脚（还剩多少 + 各评分键的后果）跟着字号/颜色与模式走
 
+    def set_ghost_veil(self, on):
+        """把"幽灵态"落到控件上：正文（含内联颜色、图、表格）一起藏掉，滚动位置不动。
+
+        以前只改文字控件的 `color`：书页那种**没写内联颜色**的正文会跟着透明，可社区页
+        和卡片页的正文全是内联色（标题强调色、灰色小字、表格），只改控件颜色压不住，
+        于是"幽灵模式在社区模式没生效"（真人 2026-10-22）。alpha=0 的图形效果只管
+        要不要画，进出各切一次，不重排、不跳行。
+        """
+        on = bool(on)
+        if on == bool(getattr(self, "_ghost_veil_on", False)):
+            return
+        self._ghost_veil_on = on
+        if on:
+            eff = QGraphicsOpacityEffect(self.text_edit)
+            eff.setOpacity(0.0)
+            self.text_edit.setGraphicsEffect(eff)
+            self._ghost_effect = eff        # 留住引用：被回收的效果会当场失效
+        else:
+            self.text_edit.setGraphicsEffect(None)
+            self._ghost_effect = None
+
     def enterEvent(self, event):
         self.is_mouse_in = True
         self.ghost_veiled = False  # 回来就把划线一起显示出来
@@ -7922,18 +7944,12 @@ class StealthReader(QWidget):
             self.ghost_veiled = True
             self.text_edit.setExtraSelections([])
             if self.config.get("auto_mode", False):
+                # 变色龙：窗口底色留着（那是跟壁纸配出来的），只把"字"藏掉。
+                # 注意社区页/卡片页的正文是**内联颜色**，改控件 `color` 压不住它们，
+                # 所以这里罩一层 alpha=0 的图形效果（见 set_ghost_veil）。
                 self.chameleon_timer.stop()
                 self.content_frame.set_draw_corners(False)
-                current_bg = self.content_frame.auto_bg_fill
-                r, g, b = current_bg.red(), current_bg.green(), current_bg.blue()
-                ghost_bg_style = f"rgba({r}, {g}, {b}, 2)"
-                self.text_edit.setStyleSheet(f"""
-                    QTextEdit {{
-                        color: transparent; 
-                        background-color: {ghost_bg_style};
-                        padding: 0px; margin: 0px; border: none;
-                    }}
-                """)
+                self.set_ghost_veil(True)
                 self.setWindowOpacity(1.0)
             else:
                 self.setWindowOpacity(0.005)
