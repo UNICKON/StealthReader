@@ -2269,6 +2269,29 @@ try:
 except Exception:
     pass
 
+print("\n=== 28. 单实例：老进程还在拆钩子时要重试，不能一撞就弹")
+# 2026-10-22 真撞上一次：新进程比老进程先起来，第一次抢互斥体拿到 183，旧代码直接弹
+# 阻塞提示框（pythonw 下连日志都没有），看起来就是"应用没打开"。现在给它六秒。
+_seen = []
+
+
+def _fake_create_late():
+    _seen.append(1)
+    # 句柄故意给一个不可能有效的值，CloseHandle 失败也无所谓
+    return (1000000 + len(_seen), 183 if len(_seen) < 3 else 0)
+
+
+_h, _ok = app_mod.acquire_single_instance(create=_fake_create_late, attempts=5, delay=0,
+                                          sleep=lambda s: None)
+check("前两次撞上 183 会重试，第三次抢到就算成功", _ok is True and len(_seen) == 3,
+      (_ok, len(_seen)))
+_h2, _ok2 = app_mod.acquire_single_instance(create=lambda: (1000001, 183), attempts=3, delay=0,
+                                            sleep=lambda s: None)
+check("一直被别人拿着就如实失败（交给提示框 + 日志）", _ok2 is False and _h2 is None, _ok2)
+_h3, _ok3 = app_mod.acquire_single_instance(create=lambda: (1000002, 0), attempts=3, delay=0,
+                                            sleep=lambda s: None)
+check("一次就抢到时不睡也不重试", _ok3 is True and _h3 == 1000002, _h3)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 print("\n================ 结果 ================")

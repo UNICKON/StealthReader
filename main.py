@@ -814,6 +814,31 @@ def _pid_alive(pid):
         return False
 
 
+def acquire_single_instance(create=None, attempts=30, delay=0.2, sleep=None):
+    """抢"只能有一个"的互斥体，抢不到就等一会儿再来（最多 attempts×delay 秒）。
+
+    为什么要等：重启是"新进程先起来、老进程随后退出"，老进程拆钩子、等 Anki 收盘可能要几秒，
+    强杀之后更是这样。以前只试一次，撞上就弹"已经在运行了"——那个提示框自己还是阻塞的，
+    pythonw 下连日志都不写，看上去就是"应用没起来"（2026-10-22 真撞上一次）。
+    """
+    create = create or (lambda: (ctypes.windll.kernel32.CreateMutexW(
+        None, False, SINGLE_INSTANCE_MUTEX), ctypes.windll.kernel32.GetLastError()))
+    sleep = sleep or time.sleep
+    handle = None
+    for i in range(max(1, int(attempts))):
+        handle, err = create()
+        if err != 183:                      # 0 = 抢到了；别的错误码也照常往下走
+            return handle, True
+        try:
+            ctypes.windll.kernel32.CloseHandle(handle)   # 183：先放掉自己这个句柄
+        except Exception:
+            pass
+        handle = None
+        if i + 1 < attempts:
+            sleep(delay)
+    return None, False
+
+
 def release_single_instance_mutex():
     """放下单实例互斥体（重新启动前用：先放手，新进程才敢起来）。
 
@@ -9151,8 +9176,9 @@ if __name__ == '__main__':
                 break
             time.sleep(0.1)
 
-    _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    _mutex, _ok = acquire_single_instance()
+    if not _ok:                                     # 等了六秒还是有人拿着
+        log_event("单实例：另一个进程一直拿着互斥体，提示后退出")
         ctypes.windll.user32.MessageBoxW(None, "StealthReader 已经在运行了（托盘里）", "提示", 0x40)
         sys.exit(0)
 
