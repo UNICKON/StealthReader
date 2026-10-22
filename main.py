@@ -9174,5 +9174,6 @@ if __name__ == '__main__':
         ex.show()
         # 启动恢复位置后校验一次：窗口可能被存到了已经不存在的显示器坐标上
         QTimer.singleShot(400, ex.ensure_on_screen)
-    log_event("应用启动" + ("（解锁后台重启，保持隐藏）" if _hidden else ""))
+    # 日志照实写：只说自己知道的事——这次起来是隐藏的，别替用户认定"为什么隐藏"
+    log_event("应用启动" + ("（起来后保持隐藏）" if _hidden else ""))
     sys.exit(app.exec_())
