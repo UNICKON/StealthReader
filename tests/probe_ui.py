@@ -2272,6 +2272,80 @@ w.apply_style()
 check("关掉角标之后自动挡不再画左上/右下那两条线",
       _corners_on is True and _corners_off is False, (_corners_on, _corners_off))
 
+# 角标只在**鼠标凑近那个角**的时候才画（真人 2026-10-23：「角标在鼠标移到附近的时候才显示」）
+from PyQt5.QtGui import QImage                                            # noqa: E402
+w.config["auto_mode"] = True
+w.config["show_corners"] = True
+w.apply_style()
+qapp.processEvents()
+_fr = w.content_frame
+check("融景模式 + 开着角标：才有人盯着鼠标（那条定时器在跑）",
+      _fr._hot_timer.isActive(), _fr._hot_timer.isActive())
+check("鼠标在窗口中间：两个角都不算凑近",
+      _fr._corners_at(_fr.width() // 2, _fr.height() // 2) == (False, False),
+      _fr._corners_at(_fr.width() // 2, _fr.height() // 2))
+check("鼠标已经出窗口了：也不算凑近（不会隔着别的窗口亮起来）",
+      _fr._corners_at(-5, 5) == (False, False) and
+      _fr._corners_at(_fr.width() + 5, 5) == (False, False),
+      (_fr._corners_at(-5, 5), _fr._corners_at(_fr.width() + 5, 5)))
+check("凑近左上角只热左上、凑近右下角只热右下（各角各算各的）",
+      _fr._corners_at(5, 5) == (True, False)
+      and _fr._corners_at(_fr.width() - 5, _fr.height() - 5) == (False, True),
+      (_fr._corners_at(5, 5), _fr._corners_at(_fr.width() - 5, _fr.height() - 5)))
+check("离角再远一点（超过 CORNER_HOVER）就不亮了",
+      _fr._corners_at(_fr.CORNER_HOVER + 10, _fr.CORNER_HOVER + 10) == (False, False),
+      _fr._corners_at(_fr.CORNER_HOVER + 10, _fr.CORNER_HOVER + 10))
+
+
+def _corner_pixels(px, py):
+    """把这一帧真的画出来，数左上 / 右下两个 24×24 方块里有多少笔画像素。"""
+    _fr._cursor_local = lambda: QPoint(px, py)
+    _fr._poll_hot_corners()
+    img = QImage(max(24, _fr.width()), max(24, _fr.height()), QImage.Format_ARGB32)
+    img.fill(0)
+    _fr.render(img)
+    iw, ih = img.width(), img.height()
+
+    def _count(x0, y0):
+        n = 0
+        for x in range(max(0, x0), min(iw, x0 + 24)):
+            for y in range(max(0, y0), min(ih, y0 + 24)):
+                if ((img.pixel(x, y) >> 24) & 0xFF) >= 120:
+                    n += 1
+        return n
+
+    return _count(0, 0), _count(iw - 24, ih - 24)
+
+
+_c_mid = _corner_pixels(_fr.width() // 2, _fr.height() // 2)
+check("鼠标在中间：一帧里一条角标都没画", _c_mid == (0, 0), _c_mid)
+_c_tl = _corner_pixels(4, 4)
+check("凑到左上角：左上那条露出来、右下那条仍然不画",
+      _c_tl[0] >= 20 and _c_tl[1] == 0, _c_tl)
+_c_br = _corner_pixels(_fr.width() - 4, _fr.height() - 4)
+check("凑到右下角：换成右下那条，左上又收回去", _c_br[0] == 0 and _c_br[1] >= 20, _c_br)
+_c_again = _corner_pixels(_fr.width() // 2, _fr.height() // 2)
+check("鼠标挪回中间：两条又都收回去（不是亮过就一直亮）", _c_again == (0, 0), _c_again)
+
+w.config["show_corners"] = False
+w.apply_style()
+qapp.processEvents()
+check("关掉角标：连定时器都不留（不盯着鼠标、也不画）",
+      not _fr._hot_timer.isActive() and _fr._hot == (False, False),
+      (_fr._hot_timer.isActive(), _fr._hot))
+w.config["show_corners"] = True
+w.config["auto_mode"] = False
+w.apply_style()
+qapp.processEvents()
+check("退出融景模式：定时器停掉，角标状态清零",
+      not _fr._hot_timer.isActive() and _fr._hot == (False, False),
+      (_fr._hot_timer.isActive(), _fr._hot))
+w.config["auto_mode"] = _auto_before
+w.config["show_corners"] = True
+w.apply_style()
+qapp.processEvents()
+
+
 _rm_before = w.review_mode
 w.review_mode = True
 w.config["show_bar"] = False

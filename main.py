@@ -1488,15 +1488,29 @@ class GlobalInputHook:
 
 # ================= 辅助类：绘制背景和角标 =================
 class CornerFrame(QFrame):
+    """融景模式下那两道角标（左上、右下）。
+
+    角标只在**鼠标凑近那个角**的时候才画出来：融景模式下这四道杠是屏幕上唯一的边界记号，
+    一直画着等于在别人眼前钉了两个点（真人 2026-10-23：「角标在鼠标移到附近的时候才显示」）。
+    判断靠一条 120ms 的定时器读鼠标位置——鼠标事件都被子控件（正文区）接走了，
+    在这儿等 MouseMove 是等不到的。`CORNER_HOVER` 是"附近"的半径，各角各算各的。
+    """
+    CORNER_HOVER = 90         # 鼠标离这个角不超过这么多像素，就画这个角的标
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.is_auto_mode = False
         self.draw_corners = True          # 设置里的「显示角标」：关掉就是彻底干净的一页
         self.corner_color = QColor(128, 128, 128, 200)
         self.auto_bg_fill = QColor(0, 0, 0, 2)
+        self._hot = (False, False)        # (左上, 右下)：鼠标是不是凑到那个角附近了
+        self._hot_timer = QTimer(self)
+        self._hot_timer.setInterval(120)
+        self._hot_timer.timeout.connect(self._poll_hot_corners)
 
     def set_mode(self, auto_mode):
         self.is_auto_mode = auto_mode
+        self._sync_hot_timer()
         self.update()
 
     def set_auto_bg_color(self, color):
@@ -1507,7 +1521,46 @@ class CornerFrame(QFrame):
 
     def set_draw_corners(self, enable):
         self.draw_corners = bool(enable)
+        self._sync_hot_timer()
         self.update()
+
+    def _sync_hot_timer(self):
+        """只有"融景模式 + 开着角标"才需要盯着鼠标；其余时候一条定时器都不留。"""
+        want = bool(self.is_auto_mode and self.draw_corners)
+        try:
+            if want and not self._hot_timer.isActive():
+                self._hot_timer.start()
+            elif not want and self._hot_timer.isActive():
+                self._hot_timer.stop()
+                if self._hot != (False, False):
+                    self._hot = (False, False)
+                    self.update()
+        except Exception:
+            pass
+
+    def _cursor_local(self):
+        """鼠标在本控件里的坐标（探针直接替换这个函数就能验"凑近才显示"）。"""
+        return self.mapFromGlobal(QCursor.pos())
+
+    def _corners_at(self, x, y):
+        """(左上, 右下)：鼠标在窗口里、并且离那个角不超过 CORNER_HOVER。"""
+        w, h = self.width(), self.height()
+        if not (0 <= x <= w and 0 <= y <= h):
+            return (False, False)
+        r = self.CORNER_HOVER
+        return (x <= r and y <= r, w - x <= r and h - y <= r)
+
+    def _poll_hot_corners(self):
+        try:
+            p = self._cursor_local()
+        except Exception:
+            return
+        if p is None:
+            return
+        hot = self._corners_at(int(p.x()), int(p.y()))
+        if hot != self._hot:
+            self._hot = hot
+            self.update()
 
     def paintEvent(self, event):
         if not self.is_auto_mode:
@@ -1518,14 +1571,17 @@ class CornerFrame(QFrame):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), self.auto_bg_fill)
 
-        if self.height() > 20 and self.draw_corners:
+        top_left, bottom_right = self._hot
+        if self.height() > 20 and self.draw_corners and (top_left or bottom_right):
             painter.setPen(QPen(self.corner_color, 3))
             w, h = self.width(), self.height()
             length = 15
-            painter.drawLine(0, 0, length, 0)
-            painter.drawLine(0, 0, 0, length)
-            painter.drawLine(w, h, w - length, h)
-            painter.drawLine(w, h, w, h - length)
+            if top_left:
+                painter.drawLine(0, 0, length, 0)
+                painter.drawLine(0, 0, 0, length)
+            if bottom_right:
+                painter.drawLine(w, h, w - length, h)
+                painter.drawLine(w, h, w, h - length)
 
 
 class ReaderTextEdit(QTextEdit):

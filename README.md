@@ -246,6 +246,7 @@ python main.py
 | `anki_deck` `anki_conceal` `anki_api_key` | 默认牌组、是否隐藏 Anki 窗口、AnkiConnect 密钥 |
 | `feed_sources` `feed_rss` | 启用哪些社区来源，以及订阅地址 |
 | `ghost_mode` `auto_mode` `antishot_mode` | 幽灵模式、自动配色、防截屏 |
+| `show_corners` | 自动配色（融景）模式下左上/右下那两道角标；开着也只有鼠标凑近那个角时才露出来 |
 
 站点凭据保存在程序目录的 `feed_auth.json`：
 
