@@ -90,6 +90,15 @@ def fixture_bytes(name):
         return f.read()
 
 
+def _nga_parse_reason(raw):
+    """`_nga_parse` 对这份字节会报什么（探针里判断"是不是被截断"用）。"""
+    try:
+        feed_sources._nga_parse(raw)
+        return ""
+    except FeedNetError as e:
+        return str(e)
+
+
 def _ncalls(http):
     """替身 Http 记的请求次数（有的记成 list，有的记成 int）。"""
     c = getattr(http, "calls", 0)
@@ -711,6 +720,59 @@ else:
           [[b.text[:14] for b in c.body][:1] for c in ngc[:2]])
     check("（真夹具）NGA 只给 UID 占位名时作者留空，不把 'UID:123' 摆给人看",
           all("UID:" not in (c.author or "") for c in ngc), [c.author for c in ngc[:3]])
+
+    # 站上把 JSON 发了一半就断：实测 2026-10-23 晴风村+水区 80 条里 27 条这样，
+    # 同一帖的 HTML 页面却是完整的。所以 detail/comments 要能改读 HTML 页。
+    raw_ngat = fixture_bytes("nga_read_truncated.json")
+    raw_ngah = fixture_bytes("nga_read_page.html")
+    if raw_ngat is None or raw_ngah is None:
+        skip("NGA 回包截断的退路", "缺 nga_read_truncated.json / nga_read_page.html")
+    else:
+        check("（真夹具）那份截断的回包确实是断的（不是别的原因解析不了）",
+              b'"__R"' in raw_ngat and not raw_ngat.rstrip().endswith(b"}")
+              and ("JSON 读不出来" in str(_nga_parse_reason(raw_ngat))),
+              raw_ngat[-30:])
+        ng4 = feed_sources.NgaSource(
+            FakeHttp(bytes_routes={"__output=8": raw_ngat, "page=1": raw_ngah},
+                     cache=MemCache()), cred)
+        tgt = feed_mod.Post(source="nga", source_label="NGA", channel="晴风村",
+                            pid="47770127", title="社会化一课之向同事求证其谣言",
+                            author="某人", url="https://bbs.nga.cn/read.php?tid=47770127")
+        ngd2, why2 = ng4.detail(tgt)
+        txt2 = " ".join(b.text for b in ngd2.body)
+        check("JSON 被截断时改读 HTML 页面，正文照给（不再'点不开'）",
+              len(ngd2.body) >= 5 and "记录今天做的一件蠢事" in txt2,
+              (len(ngd2.body), txt2[:30]))
+        check("HTML 退路里 <br/> 是分行（不是把整篇挤成一坨）",
+              len(ngd2.body) >= 5 and any(b.text.strip() == "同事c问我" for b in ngd2.body),
+              [b.text[:12] for b in ngd2.body[:5]])
+        check("HTML 退路不编名字：只给 UID 占位时作者不显示",
+              "UID:" not in (ngd2.author or "") and why2 is None, ngd2.author)
+        check("HTML 退路的标题取自页面里的楼题",
+              ngd2.title == "社会化一课之向同事求证其谣言", ngd2.title)
+        ngc2, why3, nxt2 = ng4.comments_page(tgt, 1)
+        check("HTML 退路的回复：除楼主帖外都在，BBCode 清掉了",
+              len(ngc2) >= 2 and all(c.body for c in ngc2)
+              and not any("[b]" in (b.text or "") for c in ngc2 for b in c.body),
+              (len(ngc2), [c.body[0].text[:12] for c in ngc2[:2]]))
+        check("HTML 退路不满一页就不给下一页（不假装还有）", nxt2 is None, nxt2)
+        ng5 = feed_sources.NgaSource(
+            FakeHttp(bytes_routes={"__output=8": raw_ngat,
+                                   "page=1": b"<html><body>no posts here</body></html>"},
+                     cache=MemCache()), cred)
+        try:
+            ng5.detail(tgt)
+            check("HTML 页面也没正文时说清楚是'回包被截断'，不说'JSON 读不出来'", False, "没抛")
+        except FeedNetError as e:
+            check("HTML 页面也没正文时说清楚是'回包被截断'，不说'JSON 读不出来'",
+                  "截断" in str(e) and "没抠出正文" in str(e), str(e))
+        check("HTML 退路同样要能按标签配对抠正文（正文里嵌 span 也不会断半篇）",
+              "同事c问我" in feed_sources._nga_html_content(
+                  "<p id='postcontent0' class='postcontent ubbcode'>甲<span class='x'>乙</span>"
+                  "丙<br/>同事c问我</p>", "0"),
+              feed_sources._nga_html_content(
+                  "<p id='postcontent0' class='postcontent ubbcode'>甲<span class='x'>乙</span>"
+                  "丙<br/>同事c问我</p>", "0")[:24])
 
     if raw_nga403 is not None:
         # 老帖 403 的原因就写在返回体里（GBK）——从真夹具里现抠，不手写这句话

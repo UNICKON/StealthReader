@@ -1791,6 +1791,10 @@ class NgaSource(RealSource):
         except FeedNetError as e:
             if "时间超过限制" in str(e):
                 raise FeedNetError("NGA 不让看这条老帖（它自己说的：帖子发布或回复时间超过限制）")
+            if "JSON 读不出来" in str(e):
+                # 站上把 JSON 发了一半就断了（实测约三分之一的帖子会这样，同一帖的
+                # HTML 页面却完整）。改读 HTML 页——能读到的内容照给，取不到就说清楚。
+                return self._detail_html(post, str(e))
             raise
         out = Post.from_dict(post.to_dict())
         meta = ((data or {}).get("data") or {}).get("__T")
@@ -1811,6 +1815,44 @@ class NgaSource(RealSource):
             out.body = [Block(kind=BLOCK_QUOTE, text="正文没取到")]
         return out, None
 
+    def _html_page(self, post, page=1):
+        """取一帖的 HTML 页面（GBK）。只在 JSON 被截断时用——页面比 JSON 大得多。"""
+        url = "%s/read.php?tid=%s&page=%d" % (self.base_url, post.id, int(page or 1))
+        raw = self.http.get_bytes(url, ttl=TTL_LIST, max_bytes=self.MAX_PAGE_BYTES,
+                                  timeout=LIST_TIMEOUT)
+        for enc in ("gbk", "utf-8"):
+            try:
+                return raw.decode(enc)
+            except Exception:
+                continue
+        return raw.decode("gbk", "replace")
+
+    def _detail_html(self, post, why=""):
+        """JSON 被截断时的退路：同一帖的 HTML 页面（它有完整正文）。"""
+        try:
+            rows = _nga_html_posts(self._html_page(post))
+        except FeedNetError as e:
+            raise FeedNetError("NGA 这条帖子的回包被截断了（%s），HTML 页面也取不到（%s）"
+                               % (why, e))
+        if not rows:
+            raise FeedNetError("NGA 这条帖子的回包被截断了（%s），HTML 页面里也没抠出正文" % why)
+        first = rows[0]
+        out = Post.from_dict(post.to_dict())
+        if first.get("subject"):
+            out.title = feed_mod.strip_html(first["subject"])
+        name = _nga_html_author(first)
+        if name:
+            out.author = name
+        ts = feed_mod.parse_time(first.get("date"))
+        if ts:
+            out.ts, out.created = ts, feed_mod.human_time(ts)
+        out.body = self._localize_images(
+            _nga_blocks(first.get("html") or "", limit=40, attach_base=self._attach_base({})),
+            limit=8)
+        if not out.body:
+            out.body = [Block(kind=BLOCK_QUOTE, text="正文没取到")]
+        return out, None
+
     def comments(self, post, cursor=None):
         return self._comments(post, 1)[0], None
 
@@ -1826,7 +1868,9 @@ class NgaSource(RealSource):
         url = "%s/read.php?tid=%s&page=%d&__output=8" % (self.base_url, post.id, int(page))
         try:
             data = self._json(url, TTL_LIST, "NGA 回复")
-        except FeedNetError:
+        except FeedNetError as e:
+            if "JSON 读不出来" in str(e):
+                return self._comments_html(post, page)     # 和正文同一条退路
             return [], None                    # 拿不到就如实为空（老帖 403 是常态）
         out = []
         base = self._attach_base(data)
@@ -1854,6 +1898,33 @@ class NgaSource(RealSource):
         total = int(((data.get("data") or {}).get("__ROWS")) or 0)
         max_lou = max([int(it.get("lou") or 0) for it in rows] or [0])
         nxt = (page + 1) if (total and max_lou + 1 < total) else None
+        return out, nxt
+
+    def _comments_html(self, post, page):
+        """JSON 被截断时的回复退路：从 HTML 页面的各楼抠。一页 20 楼，满页就还有下一页。"""
+        try:
+            rows = _nga_html_posts(self._html_page(post, page))
+        except FeedNetError:
+            return [], None
+        out = []
+        for row in rows:
+            if int(row.get("lou") or 0) == 0:
+                continue                       # 楼主帖在正文那边
+            body = self._localize_images(
+                _nga_blocks(row.get("html") or "", attach_base=self._attach_base({})), limit=6)
+            if not body:
+                continue
+            ts = feed_mod.parse_time(row.get("date"))
+            out.append(Comment(
+                cid=str(row.get("pid") or row.get("lou") or len(out)),
+                author=_nga_html_author(row),
+                created=feed_mod.human_time(ts),
+                score=0,
+                body=body,
+                reply_to=_nga_reply_to(row.get("html") or ""),
+            ))
+        # 页面不给"这帖一共几楼"，只能按"这一页是不是满的"判断还有没有下一页
+        nxt = (int(page) + 1) if len(rows) >= 20 else None
         return out, nxt
 
 
@@ -1912,6 +1983,75 @@ def _nga_name_from_quotes(rows):
     return out
 
 
+_NGA_HTML_ROW_RE = re.compile(r"<tr id='post1strow(\d+)'", re.I)
+
+
+def _nga_html_content(chunk, idx):
+    """抠一楼的 `postcontent<idx>` 内容：**按标签配对扫**，不靠非贪婪匹配。
+
+    正文里常嵌 `<span>` / `<div>`（引用块、贴图、表情），`.*?</span>` 会在第一个内层
+    闭合处提前断开——实测那样会少掉半篇。
+    """
+    m = re.search(r"<(p|span|div)\s+id='postcontent%s'[^>]*>" % re.escape(str(idx)), chunk, re.I)
+    if not m:
+        return ""
+    tag = m.group(1).lower()
+    start = m.end()
+    depth = 1
+    for hit in re.finditer(r"</?%s\b" % tag, chunk[start:], re.I):
+        if hit.group(0)[1] == "/":
+            depth -= 1
+            if depth == 0:
+                return chunk[start:start + hit.start()]
+        else:
+            depth += 1
+    return chunk[start:]
+
+
+def _nga_html_posts(html):
+    """把 `read.php` 的 HTML 页面拆成"一楼一条"。
+
+    **只在 JSON 被站上截断时走这条路**（实测 2026-10-23：晴风村+水区 80 条里 27 条的
+    `__output=8` 回包在半路断掉，同一帖的 HTML 页面却是完整的）。HTML 里的正文是
+    "夹着 BBCode 的 HTML"（`[b]` / `[s:ac:汗]` / `[img]` 都还是字面量，等 JS 去渲染），
+    所以正文交给 `_nga_blocks` 那套现成的转换；作者名在 HTML 里是**空的**（NGA 同样用
+    JS 填，未登录时 JSON 里也只有 `UID:xxxx`），有 uid 就写 `UID:xxxx`，不编名字。
+    """
+    text = str(html or "")
+    starts = [m.start() for m in _NGA_HTML_ROW_RE.finditer(text)]
+    out = []
+    for n, at in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(text)
+        chunk = text[at:end]
+        head = _NGA_HTML_ROW_RE.search(chunk)
+        idx = head.group(1) if head else str(n)
+        lou = re.search(r"<a name='l(\d+)'", chunk)
+        pid = re.search(r"id='pid(\d+)Anchor'", chunk)
+        date = re.search(r"id='postdate%s'[^>]*>([^<]*)<" % re.escape(idx), chunk)
+        subj = re.search(r"id='postsubject%s'>([^<]*)<" % re.escape(idx), chunk)
+        uid = re.search(r"func=ucp&uid=(\d+)", chunk)
+        body = _nga_html_content(chunk, idx)
+        if not body:
+            continue
+        out.append({
+            "lou": int(lou.group(1)) if lou else 0,
+            "pid": pid.group(1) if pid else "",
+            "date": (date.group(1) or "").strip() if date else "",
+            "subject": (subj.group(1) or "").strip() if subj else "",
+            "uid": uid.group(1) if uid else "",
+            "html": body,
+        })
+    return out
+
+
+def _nga_html_author(row):
+    """HTML 页面里没有昵称（NGA 拿 JS 填的）。
+
+    和 JSON 那条路的规矩保持一致：**只有 `UID:123` 这种占位就留空**，不把机器话摆给人看。
+    """
+    return ""
+
+
 def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
     """NGA 的正文是 HTML 里夹 BBCode（`[quote]` / `[b]` / `[img]` / `[pid=...]`）。
 
@@ -1935,6 +2075,19 @@ def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
         return '<img src="%s"/>' % src
 
     text = re.sub(r"\[img\](.*?)\[/img\]", _img, text, flags=re.I | re.S)
+
+    def _img_tag(m):
+        # HTML 里已经是 <img> 的那些（走 HTML 退路时会遇到）也可能是相对路径
+        src = (m.group(2) or "").strip()
+        if src.startswith("./"):
+            src = src[2:]
+        if src and not src.lower().startswith(("http", "//", "data:")):
+            src = "https://%s/%s" % (str(attach_base or "").strip("/"), src.lstrip("/"))
+        elif src.startswith("//"):
+            src = "https:" + src
+        return '%s"%s"' % (m.group(1), src)
+
+    text = re.sub(r"(<img[^>]*?\ssrc=)['\"]([^'\"]*)['\"]", _img_tag, text, flags=re.I)
     def _quote(m):
         # 引用块的表头（`[pid=..]Reply[/pid] [b]Post by [uid=..]某人 (时间):[/b]`）不再是正文的一部分：
         # 收件人已经在表头写成"回复 某人"，留在这里就是一行"Reply Post by ..."的机器话。
@@ -1943,6 +2096,11 @@ def _nga_blocks(html, limit=40, attach_base="img.nga.cn/attachments"):
         return "<blockquote>%s</blockquote>" % inner[_nga_quote_head_len(inner):]
 
     text = re.sub(r"\[quote\](.*?)\[/quote\]", _quote, text, flags=re.I | re.S)
+
+    # NGA 的正文是"一行一行"的，换行全是 `<br/>`。`blocks_from_html` 默认把 `<br/>`
+    # 折成空格（它要照顾的是排过版的网页正文），这里就会把整篇挤成一坨——所以先把
+    # 连续的 `<br/>` 换成段落边界。实测 JSON 和 HTML 两条路发的都是 `<br/>`。
+    text = re.sub(r"(?:<br\s*/?>\s*)+", "</p><p>", text, flags=re.I)
     text = re.sub(r"\[/?[a-z=*\u4e00-\u9fff][^\]]{0,40}\]", "", text)   # [b] [/b] [pid=..] [uid=..]
     return feed_mod.blocks_from_html(text, max_blocks=limit)
 
