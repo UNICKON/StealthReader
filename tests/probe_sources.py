@@ -1002,10 +1002,11 @@ else:
     check("（真夹具）毫秒时间戳变成秒了（parse_time 自己认毫秒，不认就会显示成 5 万年后）",
           xsd.ts == feed_mod.parse_time(note.get("time")) and 1e9 < xsd.ts < 2e9,
           (xsd.ts, note.get("time")))
-    check("（真夹具）图片落到本地（正文里不留 http 外链）",
-          any(b.kind == feed_mod.BLOCK_IMG for b in xsd.body)
-          and all(not (b.url or "").startswith("http") for b in xsd.body),
+    check("（真夹具）小红书详情页不放图：正文里一个图块都没有（连 [图] 占位也没有）",
+          bool(xsd.body) and not any(b.kind == feed_mod.BLOCK_IMG for b in xsd.body),
           [(b.kind, (b.url or "")[:20]) for b in xsd.body[:4]])
+    check("（真夹具）图既然不摆，就一张都不下载",
+          xs.http.image_calls == [], xs.http.image_calls[:3])
     check("评论没取到时正文保持干净（原因进 last_error，不写进画面）",
           "406" not in d_txt and "按 O" not in d_txt and "签名" not in d_txt, d_txt[-80:])
     check("小红书的评论如实为空（接口要它的 x-s 签名，实测连插件自己算的也 406）",
@@ -1107,8 +1108,8 @@ else:
     xs_off._cover("https://img.example.com/cover.jpg")
     d_off, _ = xs_off.detail(seed)
     off_imgs = [b for b in d_off.body if b.kind == feed_mod.BLOCK_IMG]
-    check("低调模式下正文的图块还在、但都不带本地文件（渲染层画 [图]）",
-          bool(off_imgs) and all(not b.url for b in off_imgs), len(off_imgs))
+    check("低调模式下也一样：正文没有图块（不是「图块留着画 [图]」）",
+          off_imgs == [], len(off_imgs))
     check("低调模式下封面和正文图一个都不下（省时间也省流量）",
           xs_off.http.image_calls == [], xs_off.http.image_calls[:3])
     check("低调模式下列表还是知道「这条有图」（占位不是文件名）",
@@ -1820,6 +1821,22 @@ _det = feed_mod.render_detail(
     feed_sources.Post(source="x", source_label="X", pid="1", title="标题",
                       body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="正文")]),
     feed_mod.FeedNav(), _th)
+_pic = feed_sources.Block(kind=feed_sources.BLOCK_IMG, url="cached.jpg")
+_txt = feed_sources.Block(kind=feed_sources.BLOCK_P, text="正文")
+_xs_det = feed_mod.render_detail(
+    feed_sources.Post(source="xhs", source_label="小红书", pid="5", title="笔记",
+                      body=[_txt, _pic]), feed_mod.FeedNav(), _th)
+check("小红书详情页不放图：没有 <img>，也没有 [图] 占位",
+      "<img" not in _xs_det and "[图]" not in _xs_det and "正文" in _xs_det, _xs_det[-150:])
+_xs_low = feed_mod.render_detail(
+    feed_sources.Post(source="xhs", source_label="小红书", pid="5", title="笔记",
+                      body=[_txt, _pic]), feed_mod.FeedNav(), _th_low)
+check("小红书在低调模式下同样一个 [图] 都不留",
+      "[图]" not in _xs_low and "<img" not in _xs_low, _xs_low[-140:])
+check("只对小红书生效：别的来源照样出图",
+      "<img" in feed_mod.render_detail(
+          feed_sources.Post(source="zhihu", source_label="知乎", pid="6", title="回答",
+                            body=[_txt, _pic]), feed_mod.FeedNav(), _th))
 check("详情里也不出现「按 O / 按 R / 评论在下面」这类说明文字",
       not any(k in _det for k in ("按 O", "按 R", "评论在下面", "这里只", "下面那一栏")),
       _det[:200])

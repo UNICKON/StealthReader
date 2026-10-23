@@ -1314,6 +1314,17 @@ def _meta_line(post, theme):
     return " · ".join([b for b in (head, tail) if b])
 
 
+# 有的来源**详情页里根本不摆图**。小红书就是这样：正文以文字为主，一屏图把正文挤走，
+# 翻起来还打断阅读（真人 2026-10-23："小红书帖子页面不要显示图,也不要[图]"）。
+# 列表那边照旧有封面——他指的是点进去的那一页。
+NO_IMAGE_SOURCES = ("xhs",)
+
+
+def no_images(source):
+    """这个来源的详情页要不要摆图（连 `[图]` 占位也不要）。"""
+    return str(source or "") in NO_IMAGE_SOURCES
+
+
 def _img_tag(src, theme, max_w):
     src = str(src or "")
     if "." not in src:
@@ -1379,6 +1390,10 @@ def render_detail(post, nav, theme):
     """
     if post is None:
         return _wrap(theme, "")
+    if no_images(post.source):
+        # 复制一份再改：theme 是外面传进来的同一个 dict，别把"这条不放图"漏给下一次渲染
+        theme = dict(theme)
+        theme["no_img"] = True
     f = _scale(theme)
     title_style = (f'margin:0; color:{theme["mark"]}; font-size:{f["title"]}px;'
                    f' font-weight:bold; line-height:140%;')
@@ -1567,6 +1582,8 @@ def _without_mention(blocks, who):
 
 def _block_inline(b, theme):
     if b.kind == BLOCK_IMG:
+        if theme.get("no_img"):
+            return ""
         return (f'<span style="color:{theme["faint"]};">[图]</span>' if theme["lowkey"]
                 else _img_tag(b.url or b.text, theme, 360))
     if b.kind == BLOCK_H:
@@ -1590,6 +1607,8 @@ def _block_paragraphs(blocks, theme):
     f = _scale(theme)
     out = []
     for b in blocks:
+        if b.kind == BLOCK_IMG and theme.get("no_img"):
+            continue                      # 这个来源详情页不摆图：连 [图] 占位也不留
         if b.kind == BLOCK_IMG:
             if theme["lowkey"]:
                 out.append(f'<p style="margin:11px 0 0 0; color:{theme["faint"]};'

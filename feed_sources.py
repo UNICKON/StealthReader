@@ -2396,10 +2396,10 @@ class XhsSource(RealSource):
         parts = []
         if note.get("desc"):
             parts.append("<p>%s</p>" % _xhs_text(note.get("desc")))
-        for img in (note.get("imageList") or [])[:9]:
-            if isinstance(img, dict) and (img.get("urlDefault") or img.get("url")):
-                parts.append('<img src="%s"/>' % (img.get("urlDefault") or img.get("url")))
-        body = self._localize_images(feed_mod.blocks_from_html("".join(parts), max_blocks=20), limit=9)
+        # **不放 imageList**（真人 2026-10-23："小红书帖子页面不要显示图,也不要[图]"）：
+        # 图块在这里就不生成，渲染层于是既没有 <img> 也没有 [图] 占位，
+        # 顺带连下载也省了——一条 9 图的笔记光下图就要两秒多。
+        body = feed_mod.blocks_from_html("".join(parts), max_blocks=20)
         # 评论由界面层单独渲染，**不往正文里写"评论在下面（N 条）"**：那是说明文字，
         # 不是笔记内容（真人明确说过前端不要这种话）。取不到就留空，原因进日志。
         cmts, why = self._comments_of(post)
