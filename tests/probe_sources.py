@@ -119,9 +119,11 @@ class FakeHttp(object):
         self.served_stale = False
         self.image_calls = []
         self.calls = []          # 请求过哪些地址（虎扑那节要验翻页拼的 URL）
+        self.stale_flags = []    # 每次请求带没带 allow_stale（"推荐的流"那节要验）
 
-    def get_json(self, url, ttl=None, what="", headers=None, timeout=None):
+    def get_json(self, url, ttl=None, what="", headers=None, timeout=None, allow_stale=True):
         self.calls.append(url)
+        self.stale_flags.append(allow_stale)
         for frag in self.fail:
             if frag in url:
                 raise FeedNetError("连接超时")
@@ -266,6 +268,52 @@ else:
           (not zp[0].excerpt) or any(zp[0].excerpt[:16] in b.text for b in zd.body),
           [b.text[:26] for b in zd.body])
     check("知乎评论如实为空（没 Cookie 就不编回答）", zs.comments(zp[0]) == ([], None))
+
+# ---------------------------------------------------------------- 知乎：推荐是流
+print("\n=== 3b. 知乎「推荐」是流：每次进来新的一批（真人：刷来刷去都是那几条）===")
+_zp1 = fixture("zhihu_recommend_p1.json")
+_zp2 = fixture("zhihu_recommend_p2.json")
+if not _zp1 or not _zp2:
+    skip("知乎推荐流", "缺 zhihu_recommend_p1/p2.json")
+else:
+    zr = feed_sources.ZhihuSource(
+        FakeHttp({"page_number=2": _zp2, "topstory/recommend": _zp1}, cache=MemCache()))
+    check("推荐 / 关注算「流」（每次进来该换一批），热榜不算（它要的是 5 分钟那份稳定榜单）",
+          zr.rotates("推荐") and zr.rotates("关注") and not zr.rotates("热榜")
+          and not zr.rotates(""), [zr.rotates(c) for c in ("热榜", "推荐", "关注")])
+    # 第一页：短 TTL + 不许"过期的先给你、后台再取"（那条捷径正是"刷来刷去都是那几条"）
+    _seen = []
+    _orig = zr._get
+    def _spy(url, ttl=None, what="", timeout=None, allow_stale=True):
+        _seen.append((ttl, allow_stale))
+        return _orig(url, ttl, what, timeout, allow_stale)
+    zr._get = _spy
+    _posts1, _nxt1 = zr.list("推荐")
+    check("推荐第一页不吃 5 分钟那份缓存，也不拿过期的顶上",
+          _seen[0] == (feed_net.TTL_ROTATE, False), _seen[0])
+    check("推荐第一页照旧给得出一页帖子", len(_posts1) >= 4, len(_posts1))
+    check("第一页把下一页地址交出来（往下翻有得翻）",
+          bool(_nxt1) and "page_number=2" in _nxt1, (_nxt1 or "")[:60])
+    _seen[:] = []
+    _posts2, _nxt2 = zr.list("推荐", _nxt1)
+    check("往下翻用回普通缓存（同一个地址内容一样，没必要每次重取）",
+          _seen and _seen[0] == (feed_net.TTL_LIST, True), _seen[0])
+    check("第二页也把它的下一页交出来", bool(_nxt2) and "page_number=3" in _nxt2,
+          (_nxt2 or "")[:60])
+    check("第二页拿的是第二页的数据（不是把第一页又摆一遍）",
+          len(_posts2) >= 4 and set(p.id for p in _posts2) != set(p.id for p in _posts1),
+          (len(_posts2), len(_posts1)))
+    # 后台预取：进来一次就把后面两页抓进缓存，往下翻时 0 等待
+    _zp1_keys = set(p.id for p in _posts1)
+    zr.http.calls[:] = []
+    zr.list("推荐")
+    _deadline = time.time() + 3
+    while time.time() < _deadline and not any("page_number=2" in c for c in zr.http.calls):
+        time.sleep(0.05)
+    check("进来之后后台会把下一页抓进缓存（往下翻就不用等）",
+          any("page_number=2" in c for c in zr.http.calls), zr.http.calls[:3])
+    check("后台预取不改「第一页先给」这件事（第一页照样只有一页的量）",
+          len(set(p.id for p in zr.list("推荐", None)[0])) <= 6 + 1, len(_zp1_keys))
 
 # ---------------------------------------------------------------- 微博
 print("\n=== 4. 微博（只有热搜免登录）===")

@@ -77,7 +77,7 @@ class FakeHttp(object):
         self.slow = slow
         self.served_stale = stale
 
-    def get_json(self, url, ttl=None, what="", headers=None, timeout=None):
+    def get_json(self, url, ttl=None, what="", headers=None, timeout=None, **kw):
         if self.slow:
             time.sleep(self.slow)
         for frag in self.fail:
@@ -463,7 +463,7 @@ if not (wr_shelf and wr_chs and wr_prg):
 else:
     # 先让**真的适配器**把夹具揉成窗口要的形状：这样"夹具 → weread.py → 窗口"整条链一起验了
     class _FxHttp(object):
-        def get_json(self, url, ttl=None, what="", headers=None, timeout=None):
+        def get_json(self, url, ttl=None, what="", headers=None, timeout=None, **kw):
             if "/web/shelf/sync" in url:
                 return json.loads(json.dumps(wr_shelf))
             if "/web/book/getProgress" in url:
@@ -2563,6 +2563,44 @@ finally:
     w.hotkey_poll_state = {}
     w.refresh_hotkeys()                          # 轮询表/钩子恢复成配置里那套
     w.hotkey_poll_timer.start()
+
+print("\n=== 27b. 轮换的流（知乎推荐）第一页不进内存 memo ===")
+# 真人 2026-10-23：「知乎的推荐刷来刷去都是那几条」。来源那边已经不读 5 分钟缓存了，
+# 界面这边还有一层 90 秒的内存 memo——轮换的流必须绕过它，不然切回来还是那几条。
+_w = w.feed_source()
+_orig_list = _w.list
+_seen_calls = []
+
+
+def _count_list(channel=None, cursor=None):
+    _seen_calls.append(channel)
+    return _orig_list(channel, cursor)
+
+
+_w.list = _count_list
+_w.rotates = lambda ch=None: True          # 骗一下：把当前来源当"流"
+w._feed_memo.clear()
+w.feed_load("list")
+pump(lambda: _seen_calls and not w.feed_busy, 10.0)
+_first_page_memo = [k for k in w._feed_memo if k[0] == "list" and not k[3]]
+check("轮换的流：第一页不进 memo（否则 90 秒内再进来还是那几条）",
+      len(_seen_calls) == 1 and _first_page_memo == [], (_seen_calls, _first_page_memo))
+w.feed_load("list")                        # 立刻再进来一次
+pump(lambda: len(_seen_calls) >= 2 and not w.feed_busy, 10.0)
+check("轮换的流：再进来一次是真的又取了一遍（不是拿 memo 顶上）",
+      len(_seen_calls) >= 2, len(_seen_calls))
+_w.rotates = lambda ch=None: False         # 换回"榜单"那种
+w._feed_memo.clear()
+w.feed_load("list")
+pump(lambda: not w.feed_busy, 10.0)
+_plain_memo = [k for k in w._feed_memo if k[0] == "list" and not k[3]]
+check("不轮换的来源照旧进 memo（切来切去不用重新取）", bool(_plain_memo), _plain_memo)
+_w.list = _orig_list
+try:
+    del _w.rotates
+except Exception:
+    _w.rotates = None
+w._feed_memo.clear()
 
 w.exit_feed_mode(reason="probe")
 try:

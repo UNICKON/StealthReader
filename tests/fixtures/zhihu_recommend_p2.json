@@ -1,0 +1,1499 @@
+{
+ "dataV1": [
+  {
+   "action_card": false,
+   "attached_info": "CoIGCMCxsevA6Ii2gQEQBBoJNzk3MDUyNjc1IOW1/tQGKJ8SMH1ABkpCCi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFQSATAYACAAOgp7InJhdyI6IiJ9WgkxMDYyMjE1NDNiIDIzZWU2OGYwN2JjODE0MDA1ZGNhODU2MjRjZjU0NjNhchMyMDgwNjQ2NDYyNDE4MDQwNzcyigEJNjQ3NzQ4ODU3qgEJcmVjb21tZW5kwgEgMjZiYzY4OGQ1OTc5ZWI2YmJkMjgyYTk1ZmVhNWU2ZTfyAQoIDBIGTm9ybWFs8gEoCAoSJDcyN2Y0YjRjLWVjYzEtNDNhNi05ZmY5LWE2ZTkwYmMwMjJjZfIBBQgLEgEyggIAiALmqN69ljSSAiAyNmJjNjg4ZDU5NzllYjZiYmQyODJhOTVmZWE1ZTZlN5oCAMoCFlJldmlzaXRWYWx1ZVdlaWdodFJ1bGXKAhRDb250ZW50QWdlV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXKAhVMb3dGcmVxVXNlcldlaWdodFJ1bGXaAi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFToAgL6AgtOT1JNQUxfRkxPV4oDIDA5ZGE2ZTk1MWFmMzQwZDM4ZDAzZGZkY2E2MDAxMmU0mgMPCgJ2MhAAGgVvdGhlciAAqAPqwRXYAwDqAxV0ZXh0RmVlZFR3b1Rvd2VyVjFBbGz6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEALoEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAAAAC6DeP4EFAAAAAAAAAACJBUZmLUo58eU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQKQBgCgBgaoBgGSAi4KCTc5NzA1MjY3NRITMjA4MDY0NjQ2MjQxODA0MDc3MhgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2080646462418040772}",
+   "created_time": 1792741446,
+   "id": "6_1792741446.31",
+   "offset": 6,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 1950,
+     "gender": -1,
+     "headline": "",
+     "id": "26bc688d5979eb6bbd282a95fea5e6e7",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "风中二叶",
+     "url": "https://api.zhihu.com/people/26bc688d5979eb6bbd282a95fea5e6e7",
+     "url_token": "feng-zhong-er-xie",
+     "user_type": "people"
+    },
+    "comment_count": 125,
+    "content": "<p data-pid=\"oEckxXtK\">之前在检察院上班，夏天的时候，女的喜欢穿裙子，都是过膝长裙，年龄大点的光腿，年轻一点的穿个肉色连裤袜。直到有一天一个暑期实习生穿了一条齐臀小短裙，紫色裤袜，裤袜上面还印有女版海绵宝宝。袜子是8点穿的去单位的，9点多，政治部主任就找她谈话，哄回了学校。</p>",
+    "created_time": 1788844773,
+    "excerpt": "之前在检察院上班，夏天的时候，女的喜欢穿裙子，都是过膝长裙，年龄大点的光腿，年轻一点的穿个肉色连裤袜。直到有一天一个暑期实习生穿了一条齐臀小短裙，紫色裤袜，裤袜上面还印有女版海绵宝宝。袜子是8点穿的去单位的，9点多，政治部主任就找她谈话，哄回了学校。",
+    "excerpt_new": "之前在检察院上班，夏天的时候，女的喜欢穿裙子，都是过膝长裙，年龄大点的光腿，年轻一点的穿个肉色连裤袜。直到有一天一个暑期实习生穿了一条齐臀小短裙，紫色裤袜，裤袜上面还印有女版海绵宝宝。袜子是8点穿的去单位的，9点多，政治部主任就找她谈话，哄回了学校。",
+    "favorite_count": 233,
+    "id": "2080646462418040772",
+    "is_copyable": false,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+      "followers_count": 2412,
+      "gender": 0,
+      "headline": "",
+      "id": "1ea04e660e691d90ee24e44645a9347d",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "知乎用户vgiTzz",
+      "url": "https://api.zhihu.com/people/1ea04e660e691d90ee24e44645a9347d",
+      "url_token": "sha-mo-li-de-yu-76-75-56",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      15112,
+      15376,
+      16857,
+      19901
+     ],
+     "comment_count": 29,
+     "created": 1709977384,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "647748857",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "体制内着装最忌讳的是什么？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/647748857"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 233,
+      "like_count": 67
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "disallowed",
+    "segment_infos": [
+     {
+      "marks": [
+       {
+        "end_index": 50,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 24,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2086506217996919825"
+         ]
+        },
+        "start_index": 38
+       },
+       {
+        "end_index": 125,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 14,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2089145600302388167"
+         ]
+        },
+        "start_index": 118
+       }
+      ],
+      "pid": "oEckxXtK",
+      "text": "之前在检察院上班，夏天的时候，女的喜欢穿裙子，都是过膝长裙，年龄大点的光腿，年轻一点的穿个肉色连裤袜。直到有一天一个暑期实习生穿了一条齐臀小短裙，紫色裤袜，裤袜上面还印有女版海绵宝宝。袜子是8点穿的去单位的，9点多，政治部主任就找她谈话，哄回了学校。"
+     }
+    ],
+    "thanks_count": 67,
+    "type": "answer",
+    "updated_time": 1788844773,
+    "url": "https://api.zhihu.com/answers/2080646462418040772",
+    "visited_count": 352490,
+    "vote_next_step": "vote",
+    "voteup_count": 2335
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CtcFCMCxsevA6Ii2gQEQBBoJNzg4NTY5NTU1INWQp9IGKGIwBEAHSjUKIFRTX1NPVVJDRV9UV09UT1dFUl9NVUxUSVBMRV9UWVBFEgEwGAAgADoKeyJyYXciOiIifVoJMTExODUzMTkzYiAyM2VlNjhmMDdiYzgxNDAwNWRjYTg1NjI0Y2Y1NDYzYXITMjA1NzA1NTc1MDU4NTk0NzI3NooBCjQzODI4Mjk5MzmqAQlyZWNvbW1lbmTCASBkNzRkM2YwMjc1N2I4MGMyZjQxNTA0OTJkNDhhMzJlMfIBCggMEgZOb3JtYWzyASgIChIkNmI2MzkxMGUtZjczOC00OGFlLThkNjYtNDU5NzgzOGM2Yjkx8gEFCAsSATKCAgCIAuao3r2WNJICIGQ3NGQzZjAyNzU3YjgwYzJmNDE1MDQ5MmQ0OGEzMmUxmgIAygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhZTaG9ySW50ZXJlc3RXZWlnaHRSdWxlygIVTG93RnJlcVVzZXJXZWlnaHRSdWxl2gIgVFNfU09VUkNFX1RXT1RPV0VSX01VTFRJUExFX1RZUEXoAgL6AgtOT1JNQUxfRkxPV4oDIDA5ZGE2ZTk1MWFmMzQwZDM4ZDAzZGZkY2E2MDAxMmU0mgMPCgJ2MhAAGgVvdGhlciAAqAOH6AHYAwDqAx1mZWVkLXR3b3Rvd2VyLW11bHRpcGxldHlwZS12MvoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQAugQCYWnCBAM0MDDIBADSBA/mjqjojZDlt7Lmm7TmlrDYBADwBAD5BAAAAEDSQNU/gQUAAAAAAAAAAIkFRmYtSjnx5T+SBQCaBQNkZnSiBQNkZnSyBQExuQUAAAAAAAAAANAFAOAFAOgFAPAFApAGAKAGB6gGAJICLgoJNzg4NTY5NTU1EhMyMDU3MDU1NzUwNTg1OTQ3Mjc2GAQiCklNQUdFX1RFWFQ=",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2057055750585947276}",
+   "created_time": 1792741446,
+   "id": "7_1792741446.267",
+   "offset": 7,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-df29a4c50efa6a3f34b07f59ddd46d0f_l.jpg?source=b6762063",
+     "followers_count": 38,
+     "gender": 1,
+     "headline": "",
+     "id": "d74d3f02757b80c2f4150492d48a32e1",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "千年未有变局",
+     "url": "https://api.zhihu.com/people/d74d3f02757b80c2f4150492d48a32e1",
+     "url_token": "shi-zhan-69",
+     "user_type": "people"
+    },
+    "comment_count": 4,
+    "content": "<p data-pid=\"-o2we29w\">自由是毫无压力跨洋商务舱。一家人出去无论带父母还是孩子都不心疼的买商务舱。</p><p data-pid=\"qU77JQhJ\">往返正常5000美元每人。出行三个小孩一家五口往返是2.5万美元。</p><p data-pid=\"zSK3HAbm\">正常人年入五十万就起码飞机自由了吧。一般国内短程往返是两千。五个人一万。也就是五十分之一花着不心疼。</p><p data-pid=\"e6bX7H_Q\">2.5*50=125万美元。必须是税后。中美这个级别收入合法合规税大概都是50%。也就是税前大概收入250万美元。</p><p data-pid=\"BUesY0mA\">综合税前年入250万美元，或者税前年入1700万人民币商务舱自由。任意跨洋 任意航司 都基本自由</p><p data-pid=\"p78Fcfr9\">相当于一年一周的税后收入全家坐一次商务舱，这个线基本自由。这个线以下完全不自由</p>",
+    "created_time": 1783220309,
+    "excerpt": "自由是毫无压力跨洋商务舱。一家人出去无论带父母还是孩子都不心疼的买商务舱。 往返正常5000美元每人。出行三个小孩一家五口往返是2.5万美元。 正常人年入五十万就起码飞机自由了吧。一般国内短程往返是两千。五个人一万。也就是五十分之一花着不心疼。 2.5*50=125万美元。必须是税后。中美这个级别收入合法合规税大概都是50%。也就是税前大概收入250万美元。 综合税前年入250万美元，或者税前年入1700万人民币商务舱自由。任意…",
+    "excerpt_new": "自由是毫无压力跨洋商务舱。一家人出去无论带父母还是孩子都不心疼的买商务舱。 往返正常5000美元每人。出行三个小孩一家五口往返是2.5万美元。 正常人年入五十万就起码飞机自由了吧。一般国内短程往返是两千。五个人一万。也就是五十分之一花着不心疼。 2.5*50=125万美元。必须是税后。中美这个级别收入合法合规税大概都是50%。也就是税前大概收入250万美元。 综合税前年入250万美元，或者税前年入1700万人民币商务舱自由。任意…",
+    "favorite_count": 16,
+    "id": "2057055750585947276",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/50/v2-8772659bf3198c27add8e3b936fc09ea_l.jpg?source=b6762063",
+      "followers_count": 7335,
+      "gender": 1,
+      "headline": "日本正精算师/东京大学本科/b站：夏目晴人君/外资500强",
+      "id": "1b8858f1ef478ac20f7b562fabba4a02",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "Re-夏目晴人",
+      "url": "https://api.zhihu.com/people/1b8858f1ef478ac20f7b562fabba4a02",
+      "url_token": "liu-tai-ran-38-91",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      336,
+      444,
+      45172,
+      2874136
+     ],
+     "comment_count": 7,
+     "created": 1731813888,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "4382829939",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "实现商务舱自由要达到多少年收入？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/4382829939"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 16,
+      "like_count": 2
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 2,
+    "type": "answer",
+    "updated_time": 1784286087,
+    "url": "https://api.zhihu.com/answers/2057055750585947276",
+    "visited_count": 29703,
+    "vote_next_step": "vote",
+    "voteup_count": 98
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CqAGCMCxsevA6Ii2gQEQBBoJNzk3NDI4MDM5ILrZjdUGKOt0MKYKQAhKTwocVFNfU09VUkNFX0hPVF9DUk9TU19SRUFMVElNRRIpaG90X3JlY2FsbF9yZWFsdGltZV90Om5vcm1hbDoyMDI2LTEwLTIzOjcYACAAOgBaCTExNjU0NzM2MWIgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FouOXfnLz46vEcchMyMDgxNjk2NDA0MDUzOTYzNzgyigETMTk0OTQyMDIyNjA3Nzc4MzEzMKoBCXJlY29tbWVuZMIBIDk4YmNjNGY1NjIyMWIyODdjZTg3YmU2ZDlkZTc2ODUw8gEKCAwSBk5vcm1hbPIBKAgKEiRmNWE3NDk2Ni0xZWNhLTQ2ZWItOTFhNS05NjJkODE1YTY4YznyAQUICxIBMoICAIgC5qjevZY0kgIgOThiY2M0ZjU2MjIxYjI4N2NlODdiZTZkOWRlNzY4NTCaAgDKAhZSZXZpc2l0VmFsdWVXZWlnaHRSdWxlygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhdUZXN0ZWRBbmRXb3JrV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXaAhxUU19TT1VSQ0VfSE9UX0NST1NTX1JFQUxUSU1F6AIC+gILTk9STUFMX0ZMT1eKAyAwOWRhNmU5NTFhZjM0MGQzOGQwM2RmZGNhNjAwMTJlNJoDDwoCdjIQABoFb3RoZXIgAKgDx7CEAdgDAOoDH2hvdENyb3NzUmVhbFRpbWVDb250ZW50UmVjYWxsZXL6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEALoEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAADAsQjfP4EFAAAAAAAAAACJBUZmLUo58eU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQKQBgCgBgioBgOSAi4KCTc5NzQyODAzORITMjA4MTY5NjQwNDA1Mzk2Mzc4MhgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2081696404053963782}",
+   "created_time": 1792741446,
+   "id": "8_1792741446.131",
+   "offset": 8,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://pic1.zhimg.com/50/v2-77bbc6731cad25c4127e8baf3939045e_l.jpg?source=b6762063",
+     "followers_count": 1329,
+     "gender": 1,
+     "headline": "倚梦孤绝处，崖暖卧冰柔。",
+     "id": "98bcc4f56221b287ce87be6d9de76850",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "徙竹散人",
+     "url": "https://api.zhihu.com/people/98bcc4f56221b287ce87be6d9de76850",
+     "url_token": "an-dong-ni-ao-53",
+     "user_type": "people"
+    },
+    "comment_count": 1318,
+    "content": "<p data-pid=\"pCa7rRx5\">你能绷住吗，反正我看第一眼的时候没绷住。</p><a class=\"video-box\" href=\"https://link.zhihu.com/?target=https%3A//www.zhihu.com/video/2081696310063788728\" target=\"_blank\" data-video-id=\"\" data-video-playable=\"\" data-name=\"\" data-poster=\"https://pic1.zhimg.com/v2-e447c41674922d0b46b62e3c2bab626a_720w.jpg?source=ccfced1a\" data-lens-id=\"2081696310063788728\"><img class=\"thumbnail\" src=\"https://pic1.zhimg.com/v2-e447c41674922d0b46b62e3c2bab626a_720w.jpg?source=ccfced1a\"/><span class=\"content\"><span class=\"title\"><span class=\"z-ico-extern-gray\"></span><span class=\"z-ico-extern-blue\"></span></span><span class=\"url\"><span class=\"z-ico-video\"></span>https://www.zhihu.com/video/2081696310063788728</span></span></a><p></p>",
+    "created_time": 1789095098,
+    "excerpt": "你能绷住吗，反正我看第一眼的时候没绷住。 [视频]",
+    "excerpt_new": "你能绷住吗，反正我看第一眼的时候没绷住。 [视频]",
+    "favorite_count": 1991,
+    "id": "2081696404053963782",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pica.zhimg.com/50/v2-e4a2ddd0094c6734d4db8e1abbc8beac_l.jpg?source=b6762063",
+      "followers_count": 297,
+      "gender": -1,
+      "headline": "",
+      "id": "55bf8f2e6f461af181c4569c37a33897",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "山外青山楼外楼",
+      "url": "https://api.zhihu.com/people/55bf8f2e6f461af181c4569c37a33897",
+      "url_token": "71-8-65-29",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      12230,
+      13781,
+      165324,
+      26397,
+      171044
+     ],
+     "comment_count": 72,
+     "created": 1757558000,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "1949420226077783130",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "为什么中国人似乎并不惧怕宗教战争？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/1949420226077783130"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 1991,
+      "like_count": 175
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "segment_infos": [
+     {
+      "marks": [
+       {
+        "end_index": 20,
+        "seg_info": {
+         "comment_count": 2,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 55,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2083124003636507906"
+         ]
+        },
+        "start_index": 0
+       }
+      ],
+      "pid": "pCa7rRx5",
+      "text": "你能绷住吗，反正我看第一眼的时候没绷住。"
+     }
+    ],
+    "thanks_count": 175,
+    "thumbnail": "https://picx.zhimg.com/50/v2-e447c41674922d0b46b62e3c2bab626a_720w.jpg?source=b6762063",
+    "thumbnails": [
+     "https://picx.zhimg.com/50/v2-e447c41674922d0b46b62e3c2bab626a_720w.jpg?source=b6762063"
+    ],
+    "type": "answer",
+    "updated_time": 1789095098,
+    "url": "https://api.zhihu.com/answers/2081696404053963782",
+    "visited_count": 2168903,
+    "vote_next_step": "vote",
+    "voteup_count": 14955
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CtwFCMCxsevA6Ii2gQEQBBoJNzQ0MTcwMzAzIL35ucUGKNQMMMwBQAlKLwoGSXRlbUNGEh9kb2NfdHlwZTogQW5zd2VyCmlkOiA3NDQxMTY2ODYKGAAgADoAWgczNzM1NTI1YiAyM2VlNjhmMDdiYzgxNDAwNWRjYTg1NjI0Y2Y1NDYzYXITMTk0Mzk5OTc2Mzk3NzU2OTE5MooBCDI4ODgxMzUzqgEJcmVjb21tZW5kwgEgNDIzZTZmNDBlOTZhMzZlMGNkYzMyODhiNjg0OWRmNTjyAQoIDBIGTm9ybWFs8gEoCAoSJGI2NTkwZTMzLTJmN2QtNGNjZS05MzcxLTg2NDMxODk5MDBlYvIBBQgLEgEyggIAiALmqN69ljSSAiA0MjNlNmY0MGU5NmEzNmUwY2RjMzI4OGI2ODQ5ZGY1OJoCAMoCFU5lZ0ZlZWRCYWNrV2VpZ2h0UnVsZcoCFENvbnRlbnRBZ2VXZWlnaHRSdWxlygIWU2hvckludGVyZXN0V2VpZ2h0UnVsZdoCBkl0ZW1DRugCAvoCC05PUk1BTF9GTE9XigMgMDlkYTZlOTUxYWYzNDBkMzhkMDNkZmRjYTYwMDEyZTSaAw8KAnYyEAAaBW90aGVyIACoA/HHFdgDAOoDQHRleHRBbGxTaXRlTXZJdGVtQ0ZNdWx0aVJlY2FsbGVyX3RleHRBbGxTaXRlTXZIaWdoQWN0aW9uSXRlbUNGVjH6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEALoEBm1hbnVhbMIEAzE1OcgEANIED+aOqOiNkOW3suabtOaWsNgEAPAEAPkEAAAAQCLL1z+BBQAAAAAAAAAAiQVGZi1KOfHlP5IFAJoFA2RmdKIFA2RmdLIFATG5BQAAAAAAAAAA0AUA4AUA6AUA8AUCkAYAoAYJqAYAkgIuCgk3NDQxNzAzMDMSEzE5NDM5OTk3NjM5Nzc1NjkxOTIYBCIKSU1BR0VfVEVYVA==",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 1943999763977569192}",
+   "created_time": 1792741446,
+   "id": "9_1792741446.703",
+   "offset": 9,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/08ff168be1f930a0c9b686cfb806b4c0_l.jpg?source=b6762063",
+     "followers_count": 374,
+     "gender": -1,
+     "headline": "QA",
+     "id": "423e6f40e96a36e0cdc3288b6849df58",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "范先生",
+     "url": "https://api.zhihu.com/people/423e6f40e96a36e0cdc3288b6849df58",
+     "url_token": "fan-xian-sheng-50-61",
+     "user_type": "people"
+    },
+    "comment_count": 204,
+    "content": "<p data-pid=\"NYHQp3BU\">2022年入职，2024年离开。</p><p data-pid=\"7_Pk0Bm1\">测试，税前不到50k，太具体就不透漏了。（是的，字节就是这么大气，测试也能给到这种程度，去字节前在另一个大厂做测试，即使这样，也被字节hr报出薪资时给惊到了。。。😂）</p><p data-pid=\"XIOlyrqr\">我估计可能是因为按开发招聘的，三轮面试，每轮两道力扣中等难度以上的编程题，六道全部在面试过程中提交通过了，黑话就是全部ac了。</p><p data-pid=\"CUly1hml\">在大厂呆过的都知道，大厂部门，甚至小组之间都是很割裂的，所以仅以自身经历说下感受，但我觉得我说的这一点会有一定代表性。</p><p data-pid=\"skz8GE4I\">入职后会丢给你项目接手，来熟悉团队氛围和节奏，但之后，心理压力就来了，那就是字节比较推崇的“owner”意识。</p><p data-pid=\"cdZc8cub\">也就是说，你要自己想办法找有价值的事情做，提升自己的影响力，然后在绩效考评的时候证明自己的价值。这也契合字节所谓的“只选择 不培养”。</p><p data-pid=\"K00ASBUj\">当时我就懵了，我一个半新人，项目都在老员工手里，我咋自己找事情做来证明自己的价值？有人可能会说，这不正好，混呗。但是，这可是一份每个月都会税后给你打三万多，公积金9000，还包三餐的工作，你确定愿意随随便便作没了？😳 心理压力不是一般得大！</p><p data-pid=\"E_xQz5kY\">所以，如果有机会，真的可以试试就去字节，因为给的真的多！如果你是一个很有个人魅力，很会搞事情，很会给自己上价值的人，更是适合去字节闯一闯。</p><p data-pid=\"dBgFCMJU\">最后，即使是通过了字节全程技术面试这件事，都很装b啊😆😆😆</p><p></p>",
+    "created_time": 1756265661,
+    "excerpt": "2022年入职，2024年离开。 测试，税前不到50k，太具体就不透漏了。（是的，字节就是这么大气，测试也能给到这种程度，去字节前在另一个大厂做测试，即使这样，也被字节hr报出薪资时给惊到了。。。😂） 我估计可能是因为按开发招聘的，三轮面试，每轮两道力扣中等难度以上的编程题，六道全部在面试过程中提交通过了，黑话就是全部ac了。 在大厂呆过的都知道，大厂部门，甚至小组之间都是很割裂的，所以仅以自身经历说下感受，但我…",
+    "excerpt_new": "2022年入职，2024年离开。 测试，税前不到50k，太具体就不透漏了。（是的，字节就是这么大气，测试也能给到这种程度，去字节前在另一个大厂做测试，即使这样，也被字节hr报出薪资时给惊到了。。。😂） 我估计可能是因为按开发招聘的，三轮面试，每轮两道力扣中等难度以上的编程题，六道全部在面试过程中提交通过了，黑话就是全部ac了。 在大厂呆过的都知道，大厂部门，甚至小组之间都是很割裂的，所以仅以自身经历说下感受，但我…",
+    "favorite_count": 475,
+    "id": "1943999763977569192",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/v2-d41c2ceaed8f51999522f903672a521f_l.jpg?source=b6762063",
+      "followers_count": 0,
+      "gender": -1,
+      "headline": "",
+      "id": "",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "匿名用户",
+      "url": "",
+      "url_token": "",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      2566,
+      12585,
+      102177,
+      182301,
+      209209
+     ],
+     "comment_count": 18,
+     "created": 1426742725,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "28881353",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "在字节跳动工作是怎样的？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/28881353"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 475,
+      "like_count": 77
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "segment_infos": [
+     {
+      "marks": [
+       {
+        "end_index": 63,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 8,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2096988997813801967"
+         ]
+        },
+        "start_index": 0
+       }
+      ],
+      "pid": "XIOlyrqr",
+      "text": "我估计可能是因为按开发招聘的，三轮面试，每轮两道力扣中等难度以上的编程题，六道全部在面试过程中提交通过了，黑话就是全部ac了。"
+     },
+     {
+      "marks": [
+       {
+        "end_index": 120,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 29,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2063703511733479066"
+         ]
+        },
+        "start_index": 0
+       }
+      ],
+      "pid": "K00ASBUj",
+      "text": "当时我就懵了，我一个半新人，项目都在老员工手里，我咋自己找事情做来证明自己的价值？有人可能会说，这不正好，混呗。但是，这可是一份每个月都会税后给你打三万多，公积金9000，还包三餐的工作，你确定愿意随随便便作没了？😳 心理压力不是一般得大！"
+     },
+     {
+      "marks": [
+       {
+        "end_index": 69,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 7,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2086976722373698356"
+         ]
+        },
+        "start_index": 28
+       }
+      ],
+      "pid": "E_xQz5kY",
+      "text": "所以，如果有机会，真的可以试试就去字节，因为给的真的多！如果你是一个很有个人魅力，很会搞事情，很会给自己上价值的人，更是适合去字节闯一闯。"
+     }
+    ],
+    "thanks_count": 77,
+    "type": "answer",
+    "updated_time": 1756265661,
+    "url": "https://api.zhihu.com/answers/1943999763977569192",
+    "visited_count": 353265,
+    "vote_next_step": "vote",
+    "voteup_count": 1620
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CrwHCMCxsevA6Ii2gQEQBBoJODAxNTIyNzU0IPCVyNYGKLsZMNoDQApKUAocVFNfU09VUkNFX0hPVF9DUk9TU19SRUFMVElNRRIqaG90X3JlY2FsbF9yZWFsdGltZV90Om5vcm1hbDoyMDI2LTEwLTIzOjEwGAAgADoASjEKJlRTX1NPVVJDRV9URVhUX01VTFRJVklFV19HQ0ZfVVNFUkNGX1YxEgEwGAAgADoASlsKKVRTX1NPVVJDRV9IT1RfQ1JPU1NfUkVBTF9USU1FX05FV19DT05URU5UEihob3RfcmVjYWxsX3JlYWx0aW1lX3Q6bmV3N2Q6MjAyNi0xMC0yMzoyGAAgADoAWgkxMTcyMTYyMjViIDIzZWU2OGYwN2JjODE0MDA1ZGNhODU2MjRjZjU0NjNhchMyMDk0NTEwNjYyNTU5MDU2MzQ1igETMTk2OTQxMDE0OTYyMjk4MjU4M6oBCXJlY29tbWVuZMIBIDJjOGE0MjlkY2U4MTAzNzQxMWQyMjk3N2FjZGQzMDg48gEKCAwSBk5vcm1hbPIBKAgKEiRmN2ZjYTAyMS04MmI2LTQxMDEtYjNiYi04MzFiOWY2ODBlNTTyAQUICxIBMoICAIgC5qjevZY0kgIgMmM4YTQyOWRjZTgxMDM3NDExZDIyOTc3YWNkZDMwODiaAgDKAhZSZXZpc2l0VmFsdWVXZWlnaHRSdWxlygISQ2xpcFBlYWtXZWlnaHRSdWxlygIXVGVzdGVkQW5kV29ya1dlaWdodFJ1bGXKAhZTaG9ySW50ZXJlc3RXZWlnaHRSdWxlygIVTG93RnJlcVVzZXJXZWlnaHRSdWxl2gIcVFNfU09VUkNFX0hPVF9DUk9TU19SRUFMVElNRegCAvoCC05PUk1BTF9GTE9XigMgMDlkYTZlOTUxYWYzNDBkMzhkMDNkZmRjYTYwMDEyZTSaAw8KAnYyEAAaBW90aGVyIACoA+eNItgDAOoDH2hvdENyb3NzUmVhbFRpbWVDb250ZW50UmVjYWxsZXL6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEALoEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAADgzEfYP4EFAAAAAAAAAACJBUZmLUo58eU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQKQBgCgBgqoBgGSAi4KCTgwMTUyMjc1NBITMjA5NDUxMDY2MjU1OTA1NjM0NRgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2094510662559056345}",
+   "created_time": 1792741446,
+   "id": "10_1792741446.361",
+   "offset": 10,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://pic1.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 4970,
+     "gender": -1,
+     "headline": "人之忌，在好为人师！",
+     "id": "2c8a429dce81037411d22977acdd3088",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "枫镕海堰秋",
+     "url": "https://api.zhihu.com/people/2c8a429dce81037411d22977acdd3088",
+     "url_token": "ma-jiang-bu-hu-pai",
+     "user_type": "people"
+    },
+    "comment_count": 474,
+    "content": "<p data-pid=\"bA5Oh0wX\">“你一个月工资2万，算上各种乱七八糟的补贴，一共给你算5万，一年60万，就给你算100万。</p><p data-pid=\"PY-nxhgd\">你工作了20年，从当科员开始算，每年都这些钱，一分钱没花，也就2000万。</p><p data-pid=\"kwltPDXC\">就让你老婆和你收入一样，你也就有4000万。</p><p data-pid=\"vAU8vEDK\">你那70多套房产，还有一个多亿的现金是哪来的？</p><p data-pid=\"pjtYemGR\">说清楚，你可以走了，</p><p data-pid=\"_TGHRXYF\">说不清楚，后果你清楚。“</p><p></p><p></p><p></p>",
+    "created_time": 1792150256,
+    "excerpt": "“你一个月工资2万，算上各种乱七八糟的补贴，一共给你算5万，一年60万，就给你算100万。 你工作了20年，从当科员开始算，每年都这些钱，一分钱没花，也就2000万。 就让你老婆和你收入一样，你也就有4000万。 你那70多套房产，还有一个多亿的现金是哪来的？ 说清楚，你可以走了， 说不清楚，后果你清楚。“",
+    "excerpt_new": "“你一个月工资2万，算上各种乱七八糟的补贴，一共给你算5万，一年60万，就给你算100万。 你工作了20年，从当科员开始算，每年都这些钱，一分钱没花，也就2000万。 就让你老婆和你收入一样，你也就有4000万。 你那70多套房产，还有一个多亿的现金是哪来的？ 说清楚，你可以走了， 说不清楚，后果你清楚。“",
+    "favorite_count": 207,
+    "id": "2094510662559056345",
+    "is_copyable": false,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-b1f23467ef6100d776a6bf8c3c0a19d1_l.jpg?source=b6762063",
+      "followers_count": 11,
+      "gender": -1,
+      "headline": "",
+      "id": "90bce546467b4e27bb723a3197aeb06f",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "北欧",
+      "url": "https://api.zhihu.com/people/90bce546467b4e27bb723a3197aeb06f",
+      "url_token": "zhu-zhu-46-27-32",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      31882,
+      365496,
+      365891,
+      211649,
+      295072
+     ],
+     "comment_count": 22,
+     "created": 1762323969,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "1969410149622982583",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "纪委到底是怎么突破被留置人的心理防线的？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/1969410149622982583"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 207,
+      "like_count": 14
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "disallowed",
+    "thanks_count": 14,
+    "type": "answer",
+    "updated_time": 1792150256,
+    "url": "https://api.zhihu.com/answers/2094510662559056345",
+    "visited_count": 558823,
+    "vote_next_step": "vote",
+    "voteup_count": 3259
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CsYGCMCxsevA6Ii2gQEQBBoJNzczMTMyMjk3IPf8180GKJ0DMHdAC0pICh9UU19TT1VSQ0VfWlJFQ0FMTF9JVEVNQ0ZfVVBWT1RFEh9kb2NfdHlwZTogQW5zd2VyCmlkOiA3OTU1MTIxNjcKGAAgADoAWggxMzIyNDMzN2IgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzIwMTY0MzE5NDcyNDk5MDU4NDeKAQg1MjUxNDg3OKoBCXJlY29tbWVuZMIBIDc2MjZiMmNmZTA2ODQzYTQ3ZDA0NjdkYjA4N2FkYmI48gEKCAwSBk5vcm1hbPIBKAgKEiQ5YTJhMTJmMy1kNTZhLTQzNTYtYmI4Ni1iOGVhYmI1MzRjZDfyAQUICxIBMoICAIgC5qjevZY0kgIgNzYyNmIyY2ZlMDY4NDNhNDdkMDQ2N2RiMDg3YWRiYjiaAgDKAhRDb250ZW50QWdlV2VpZ2h0UnVsZcoCF1Rlc3RlZEFuZFdvcmtXZWlnaHRSdWxlygIWU2hvckludGVyZXN0V2VpZ2h0UnVsZcoCHE5lZ2F0aXZlVGl0bGVWMklzb2xhdGlvblJ1bGXKAhhRdWVzdGlvbkFnZUlzb2xhdGlvblJ1bGXaAh9UU19TT1VSQ0VfWlJFQ0FMTF9JVEVNQ0ZfVVBWT1RF6AIC+gILTk9STUFMX0ZMT1eKAyAwOWRhNmU5NTFhZjM0MGQzOGQwM2RmZGNhNjAwMTJlNJoDDwoCdjIQABoFb3RoZXIgAKgDxPIO2AMA6gNAdGV4dEFsbFNpdGVBY3Rpb25JdGVtQ0ZNdWx0aVJlY2FsbGVyX3RleHRBbGxTaXRlSHFBY3Rpb25JdGVtQ0ZWMvoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQAugQCYWnCBAM0MDDIBADSBA/mjqjojZDlt7Lmm7TmlrDYBADwBAD5BAAAAGA7xt8/gQUAAAAAAAAAAIkFRmYtSjnx5T+SBQCaBQNkZnSiBQNkZnSyBQExuQUAAAAAAAAAANAFAOAFAOgFAPAFApAGAKAGC6gGAJICLgoJNzczMTMyMjk3EhMyMDE2NDMxOTQ3MjQ5OTA1ODQ3GAQiCklNQUdFX1RFWFQ=",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2016431947249905847}",
+   "created_time": 1792741446,
+   "id": "11_1792741446.870",
+   "offset": 11,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-279e90676e9032da876dcb3a2292121a_l.jpg?source=b6762063",
+     "followers_count": 2648,
+     "gender": 1,
+     "headline": "急诊外科、某公司监事",
+     "id": "7626b2cfe06843a47d0467db087adbb8",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "EGO",
+     "url": "https://api.zhihu.com/people/7626b2cfe06843a47d0467db087adbb8",
+     "url_token": "ego-49-41",
+     "user_type": "people"
+    },
+    "comment_count": 119,
+    "content": "<p data-pid=\"Kcmklges\">去了几趟了，唯一让我不理解的是住宿为什么要按人头收费？</p>",
+    "created_time": 1773534839,
+    "excerpt": "去了几趟了，唯一让我不理解的是住宿为什么要按人头收费？",
+    "excerpt_new": "去了几趟了，唯一让我不理解的是住宿为什么要按人头收费？",
+    "favorite_count": 24,
+    "id": "2016431947249905847",
+    "is_copyable": false,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-b644065fe20b6d8d17eae7e4ac04ab85_l.jpg?source=b6762063",
+      "followers_count": 167,
+      "gender": 1,
+      "headline": "你所看到的都是别人想让你看到的!",
+      "id": "c57cf5563468a78bf4a7d3a639365795",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "尾宿",
+      "url": "https://api.zhihu.com/people/c57cf5563468a78bf4a7d3a639365795",
+      "url_token": "liu-min-62-80-11",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      229,
+      285,
+      307,
+      400,
+      686
+     ],
+     "comment_count": 16,
+     "created": 1478850487,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "52514878",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "你感觉日本最让人不解的是什么？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/52514878"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 24,
+      "like_count": 1
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "disallowed",
+    "thanks_count": 1,
+    "type": "answer",
+    "updated_time": 1773534839,
+    "url": "https://api.zhihu.com/answers/2016431947249905847",
+    "visited_count": 244036,
+    "vote_next_step": "vote",
+    "voteup_count": 413
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  }
+ ],
+ "data": [
+  {
+   "action_card": false,
+   "attached_info": "CoIGCMCxsevA6Ii2gQEQBBoJNzk3MDUyNjc1IOW1/tQGKJ8SMH1ABkpCCi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFQSATAYACAAOgp7InJhdyI6IiJ9WgkxMDYyMjE1NDNiIDIzZWU2OGYwN2JjODE0MDA1ZGNhODU2MjRjZjU0NjNhchMyMDgwNjQ2NDYyNDE4MDQwNzcyigEJNjQ3NzQ4ODU3qgEJcmVjb21tZW5kwgEgMjZiYzY4OGQ1OTc5ZWI2YmJkMjgyYTk1ZmVhNWU2ZTfyAQoIDBIGTm9ybWFs8gEoCAoSJDcyN2Y0YjRjLWVjYzEtNDNhNi05ZmY5LWE2ZTkwYmMwMjJjZfIBBQgLEgEyggIAiALmqN69ljSSAiAyNmJjNjg4ZDU5NzllYjZiYmQyODJhOTVmZWE1ZTZlN5oCAMoCFlJldmlzaXRWYWx1ZVdlaWdodFJ1bGXKAhRDb250ZW50QWdlV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXKAhVMb3dGcmVxVXNlcldlaWdodFJ1bGXaAi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFToAgL6AgtOT1JNQUxfRkxPV4oDIDA5ZGE2ZTk1MWFmMzQwZDM4ZDAzZGZkY2E2MDAxMmU0mgMPCgJ2MhAAGgVvdGhlciAAqAPqwRXYAwDqAxV0ZXh0RmVlZFR3b1Rvd2VyVjFBbGz6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEALoEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAAAAC6DeP4EFAAAAAAAAAACJBUZmLUo58eU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQKQBgCgBgaoBgGSAi4KCTc5NzA1MjY3NRITMjA4MDY0NjQ2MjQxODA0MDc3MhgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2080646462418040772}",
+   "created_time": 1792741446,
+   "id": "6_1792741446.31",
+   "offset": 6,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 1950,
+     "gender": -1,
+     "headline": "",
+     "id": "26bc688d5979eb6bbd282a95fea5e6e7",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "风中二叶",
+     "url": "https://api.zhihu.com/people/26bc688d5979eb6bbd282a95fea5e6e7",
+     "url_token": "feng-zhong-er-xie",
+     "user_type": "people"
+    },
+    "comment_count": 125,
+    "content": "<p data-pid=\"oEckxXtK\">之前在检察院上班，夏天的时候，女的喜欢穿裙子，都是过膝长裙，年龄大点的光腿，年轻一点的穿个肉色连裤袜。直到有一天一个暑期实习生穿了一条齐臀小短裙，紫色裤袜，裤袜上面还印有女版海绵宝宝。袜子是8点穿的去单位的，9点多，政治部主任就找她谈话，哄回了学校。</p>",
+    "created_time": 1788844773,
+    "excerpt": "之前在检察院上班，夏天的时候，女的喜欢穿裙子，都是过膝长裙，年龄大点的光腿，年轻一点的穿个肉色连裤袜。直到有一天一个暑期实习生穿了一条齐臀小短裙，紫色裤袜，裤袜上面还印有女版海绵宝宝。袜子是8点穿的去单位的，9点多，政治部主任就找她谈话，哄回了学校。",
+    "excerpt_new": "之前在检察院上班，夏天的时候，女的喜欢穿裙子，都是过膝长裙，年龄大点的光腿，年轻一点的穿个肉色连裤袜。直到有一天一个暑期实习生穿了一条齐臀小短裙，紫色裤袜，裤袜上面还印有女版海绵宝宝。袜子是8点穿的去单位的，9点多，政治部主任就找她谈话，哄回了学校。",
+    "favorite_count": 233,
+    "id": "2080646462418040772",
+    "is_copyable": false,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+      "followers_count": 2412,
+      "gender": 0,
+      "headline": "",
+      "id": "1ea04e660e691d90ee24e44645a9347d",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "知乎用户vgiTzz",
+      "url": "https://api.zhihu.com/people/1ea04e660e691d90ee24e44645a9347d",
+      "url_token": "sha-mo-li-de-yu-76-75-56",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      15112,
+      15376,
+      16857,
+      19901
+     ],
+     "comment_count": 29,
+     "created": 1709977384,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "647748857",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "体制内着装最忌讳的是什么？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/647748857"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 233,
+      "like_count": 67
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "disallowed",
+    "segment_infos": [
+     {
+      "marks": [
+       {
+        "end_index": 50,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 24,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2086506217996919825"
+         ]
+        },
+        "start_index": 38
+       },
+       {
+        "end_index": 125,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 14,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2089145600302388167"
+         ]
+        },
+        "start_index": 118
+       }
+      ],
+      "pid": "oEckxXtK",
+      "text": "之前在检察院上班，夏天的时候，女的喜欢穿裙子，都是过膝长裙，年龄大点的光腿，年轻一点的穿个肉色连裤袜。直到有一天一个暑期实习生穿了一条齐臀小短裙，紫色裤袜，裤袜上面还印有女版海绵宝宝。袜子是8点穿的去单位的，9点多，政治部主任就找她谈话，哄回了学校。"
+     }
+    ],
+    "thanks_count": 67,
+    "type": "answer",
+    "updated_time": 1788844773,
+    "url": "https://api.zhihu.com/answers/2080646462418040772",
+    "visited_count": 352490,
+    "vote_next_step": "vote",
+    "voteup_count": 2335
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CtcFCMCxsevA6Ii2gQEQBBoJNzg4NTY5NTU1INWQp9IGKGIwBEAHSjUKIFRTX1NPVVJDRV9UV09UT1dFUl9NVUxUSVBMRV9UWVBFEgEwGAAgADoKeyJyYXciOiIifVoJMTExODUzMTkzYiAyM2VlNjhmMDdiYzgxNDAwNWRjYTg1NjI0Y2Y1NDYzYXITMjA1NzA1NTc1MDU4NTk0NzI3NooBCjQzODI4Mjk5MzmqAQlyZWNvbW1lbmTCASBkNzRkM2YwMjc1N2I4MGMyZjQxNTA0OTJkNDhhMzJlMfIBCggMEgZOb3JtYWzyASgIChIkNmI2MzkxMGUtZjczOC00OGFlLThkNjYtNDU5NzgzOGM2Yjkx8gEFCAsSATKCAgCIAuao3r2WNJICIGQ3NGQzZjAyNzU3YjgwYzJmNDE1MDQ5MmQ0OGEzMmUxmgIAygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhZTaG9ySW50ZXJlc3RXZWlnaHRSdWxlygIVTG93RnJlcVVzZXJXZWlnaHRSdWxl2gIgVFNfU09VUkNFX1RXT1RPV0VSX01VTFRJUExFX1RZUEXoAgL6AgtOT1JNQUxfRkxPV4oDIDA5ZGE2ZTk1MWFmMzQwZDM4ZDAzZGZkY2E2MDAxMmU0mgMPCgJ2MhAAGgVvdGhlciAAqAOH6AHYAwDqAx1mZWVkLXR3b3Rvd2VyLW11bHRpcGxldHlwZS12MvoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQAugQCYWnCBAM0MDDIBADSBA/mjqjojZDlt7Lmm7TmlrDYBADwBAD5BAAAAEDSQNU/gQUAAAAAAAAAAIkFRmYtSjnx5T+SBQCaBQNkZnSiBQNkZnSyBQExuQUAAAAAAAAAANAFAOAFAOgFAPAFApAGAKAGB6gGAJICLgoJNzg4NTY5NTU1EhMyMDU3MDU1NzUwNTg1OTQ3Mjc2GAQiCklNQUdFX1RFWFQ=",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2057055750585947276}",
+   "created_time": 1792741446,
+   "id": "7_1792741446.267",
+   "offset": 7,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-df29a4c50efa6a3f34b07f59ddd46d0f_l.jpg?source=b6762063",
+     "followers_count": 38,
+     "gender": 1,
+     "headline": "",
+     "id": "d74d3f02757b80c2f4150492d48a32e1",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "千年未有变局",
+     "url": "https://api.zhihu.com/people/d74d3f02757b80c2f4150492d48a32e1",
+     "url_token": "shi-zhan-69",
+     "user_type": "people"
+    },
+    "comment_count": 4,
+    "content": "<p data-pid=\"-o2we29w\">自由是毫无压力跨洋商务舱。一家人出去无论带父母还是孩子都不心疼的买商务舱。</p><p data-pid=\"qU77JQhJ\">往返正常5000美元每人。出行三个小孩一家五口往返是2.5万美元。</p><p data-pid=\"zSK3HAbm\">正常人年入五十万就起码飞机自由了吧。一般国内短程往返是两千。五个人一万。也就是五十分之一花着不心疼。</p><p data-pid=\"e6bX7H_Q\">2.5*50=125万美元。必须是税后。中美这个级别收入合法合规税大概都是50%。也就是税前大概收入250万美元。</p><p data-pid=\"BUesY0mA\">综合税前年入250万美元，或者税前年入1700万人民币商务舱自由。任意跨洋 任意航司 都基本自由</p><p data-pid=\"p78Fcfr9\">相当于一年一周的税后收入全家坐一次商务舱，这个线基本自由。这个线以下完全不自由</p>",
+    "created_time": 1783220309,
+    "excerpt": "自由是毫无压力跨洋商务舱。一家人出去无论带父母还是孩子都不心疼的买商务舱。 往返正常5000美元每人。出行三个小孩一家五口往返是2.5万美元。 正常人年入五十万就起码飞机自由了吧。一般国内短程往返是两千。五个人一万。也就是五十分之一花着不心疼。 2.5*50=125万美元。必须是税后。中美这个级别收入合法合规税大概都是50%。也就是税前大概收入250万美元。 综合税前年入250万美元，或者税前年入1700万人民币商务舱自由。任意…",
+    "excerpt_new": "自由是毫无压力跨洋商务舱。一家人出去无论带父母还是孩子都不心疼的买商务舱。 往返正常5000美元每人。出行三个小孩一家五口往返是2.5万美元。 正常人年入五十万就起码飞机自由了吧。一般国内短程往返是两千。五个人一万。也就是五十分之一花着不心疼。 2.5*50=125万美元。必须是税后。中美这个级别收入合法合规税大概都是50%。也就是税前大概收入250万美元。 综合税前年入250万美元，或者税前年入1700万人民币商务舱自由。任意…",
+    "favorite_count": 16,
+    "id": "2057055750585947276",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/50/v2-8772659bf3198c27add8e3b936fc09ea_l.jpg?source=b6762063",
+      "followers_count": 7335,
+      "gender": 1,
+      "headline": "日本正精算师/东京大学本科/b站：夏目晴人君/外资500强",
+      "id": "1b8858f1ef478ac20f7b562fabba4a02",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "Re-夏目晴人",
+      "url": "https://api.zhihu.com/people/1b8858f1ef478ac20f7b562fabba4a02",
+      "url_token": "liu-tai-ran-38-91",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      336,
+      444,
+      45172,
+      2874136
+     ],
+     "comment_count": 7,
+     "created": 1731813888,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "4382829939",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "实现商务舱自由要达到多少年收入？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/4382829939"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 16,
+      "like_count": 2
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 2,
+    "type": "answer",
+    "updated_time": 1784286087,
+    "url": "https://api.zhihu.com/answers/2057055750585947276",
+    "visited_count": 29703,
+    "vote_next_step": "vote",
+    "voteup_count": 98
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CqAGCMCxsevA6Ii2gQEQBBoJNzk3NDI4MDM5ILrZjdUGKOt0MKYKQAhKTwocVFNfU09VUkNFX0hPVF9DUk9TU19SRUFMVElNRRIpaG90X3JlY2FsbF9yZWFsdGltZV90Om5vcm1hbDoyMDI2LTEwLTIzOjcYACAAOgBaCTExNjU0NzM2MWIgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FouOXfnLz46vEcchMyMDgxNjk2NDA0MDUzOTYzNzgyigETMTk0OTQyMDIyNjA3Nzc4MzEzMKoBCXJlY29tbWVuZMIBIDk4YmNjNGY1NjIyMWIyODdjZTg3YmU2ZDlkZTc2ODUw8gEKCAwSBk5vcm1hbPIBKAgKEiRmNWE3NDk2Ni0xZWNhLTQ2ZWItOTFhNS05NjJkODE1YTY4YznyAQUICxIBMoICAIgC5qjevZY0kgIgOThiY2M0ZjU2MjIxYjI4N2NlODdiZTZkOWRlNzY4NTCaAgDKAhZSZXZpc2l0VmFsdWVXZWlnaHRSdWxlygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhdUZXN0ZWRBbmRXb3JrV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXaAhxUU19TT1VSQ0VfSE9UX0NST1NTX1JFQUxUSU1F6AIC+gILTk9STUFMX0ZMT1eKAyAwOWRhNmU5NTFhZjM0MGQzOGQwM2RmZGNhNjAwMTJlNJoDDwoCdjIQABoFb3RoZXIgAKgDx7CEAdgDAOoDH2hvdENyb3NzUmVhbFRpbWVDb250ZW50UmVjYWxsZXL6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEALoEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAADAsQjfP4EFAAAAAAAAAACJBUZmLUo58eU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQKQBgCgBgioBgOSAi4KCTc5NzQyODAzORITMjA4MTY5NjQwNDA1Mzk2Mzc4MhgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2081696404053963782}",
+   "created_time": 1792741446,
+   "id": "8_1792741446.131",
+   "offset": 8,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://pic1.zhimg.com/50/v2-77bbc6731cad25c4127e8baf3939045e_l.jpg?source=b6762063",
+     "followers_count": 1329,
+     "gender": 1,
+     "headline": "倚梦孤绝处，崖暖卧冰柔。",
+     "id": "98bcc4f56221b287ce87be6d9de76850",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "徙竹散人",
+     "url": "https://api.zhihu.com/people/98bcc4f56221b287ce87be6d9de76850",
+     "url_token": "an-dong-ni-ao-53",
+     "user_type": "people"
+    },
+    "comment_count": 1318,
+    "content": "<p data-pid=\"pCa7rRx5\">你能绷住吗，反正我看第一眼的时候没绷住。</p><a class=\"video-box\" href=\"https://link.zhihu.com/?target=https%3A//www.zhihu.com/video/2081696310063788728\" target=\"_blank\" data-video-id=\"\" data-video-playable=\"\" data-name=\"\" data-poster=\"https://pic1.zhimg.com/v2-e447c41674922d0b46b62e3c2bab626a_720w.jpg?source=ccfced1a\" data-lens-id=\"2081696310063788728\"><img class=\"thumbnail\" src=\"https://pic1.zhimg.com/v2-e447c41674922d0b46b62e3c2bab626a_720w.jpg?source=ccfced1a\"/><span class=\"content\"><span class=\"title\"><span class=\"z-ico-extern-gray\"></span><span class=\"z-ico-extern-blue\"></span></span><span class=\"url\"><span class=\"z-ico-video\"></span>https://www.zhihu.com/video/2081696310063788728</span></span></a><p></p>",
+    "created_time": 1789095098,
+    "excerpt": "你能绷住吗，反正我看第一眼的时候没绷住。 [视频]",
+    "excerpt_new": "你能绷住吗，反正我看第一眼的时候没绷住。 [视频]",
+    "favorite_count": 1991,
+    "id": "2081696404053963782",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pica.zhimg.com/50/v2-e4a2ddd0094c6734d4db8e1abbc8beac_l.jpg?source=b6762063",
+      "followers_count": 297,
+      "gender": -1,
+      "headline": "",
+      "id": "55bf8f2e6f461af181c4569c37a33897",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "山外青山楼外楼",
+      "url": "https://api.zhihu.com/people/55bf8f2e6f461af181c4569c37a33897",
+      "url_token": "71-8-65-29",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      12230,
+      13781,
+      165324,
+      26397,
+      171044
+     ],
+     "comment_count": 72,
+     "created": 1757558000,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "1949420226077783130",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "为什么中国人似乎并不惧怕宗教战争？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/1949420226077783130"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 1991,
+      "like_count": 175
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "segment_infos": [
+     {
+      "marks": [
+       {
+        "end_index": 20,
+        "seg_info": {
+         "comment_count": 2,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 55,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2083124003636507906"
+         ]
+        },
+        "start_index": 0
+       }
+      ],
+      "pid": "pCa7rRx5",
+      "text": "你能绷住吗，反正我看第一眼的时候没绷住。"
+     }
+    ],
+    "thanks_count": 175,
+    "thumbnail": "https://picx.zhimg.com/50/v2-e447c41674922d0b46b62e3c2bab626a_720w.jpg?source=b6762063",
+    "thumbnails": [
+     "https://picx.zhimg.com/50/v2-e447c41674922d0b46b62e3c2bab626a_720w.jpg?source=b6762063"
+    ],
+    "type": "answer",
+    "updated_time": 1789095098,
+    "url": "https://api.zhihu.com/answers/2081696404053963782",
+    "visited_count": 2168903,
+    "vote_next_step": "vote",
+    "voteup_count": 14955
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CtwFCMCxsevA6Ii2gQEQBBoJNzQ0MTcwMzAzIL35ucUGKNQMMMwBQAlKLwoGSXRlbUNGEh9kb2NfdHlwZTogQW5zd2VyCmlkOiA3NDQxMTY2ODYKGAAgADoAWgczNzM1NTI1YiAyM2VlNjhmMDdiYzgxNDAwNWRjYTg1NjI0Y2Y1NDYzYXITMTk0Mzk5OTc2Mzk3NzU2OTE5MooBCDI4ODgxMzUzqgEJcmVjb21tZW5kwgEgNDIzZTZmNDBlOTZhMzZlMGNkYzMyODhiNjg0OWRmNTjyAQoIDBIGTm9ybWFs8gEoCAoSJGI2NTkwZTMzLTJmN2QtNGNjZS05MzcxLTg2NDMxODk5MDBlYvIBBQgLEgEyggIAiALmqN69ljSSAiA0MjNlNmY0MGU5NmEzNmUwY2RjMzI4OGI2ODQ5ZGY1OJoCAMoCFU5lZ0ZlZWRCYWNrV2VpZ2h0UnVsZcoCFENvbnRlbnRBZ2VXZWlnaHRSdWxlygIWU2hvckludGVyZXN0V2VpZ2h0UnVsZdoCBkl0ZW1DRugCAvoCC05PUk1BTF9GTE9XigMgMDlkYTZlOTUxYWYzNDBkMzhkMDNkZmRjYTYwMDEyZTSaAw8KAnYyEAAaBW90aGVyIACoA/HHFdgDAOoDQHRleHRBbGxTaXRlTXZJdGVtQ0ZNdWx0aVJlY2FsbGVyX3RleHRBbGxTaXRlTXZIaWdoQWN0aW9uSXRlbUNGVjH6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEALoEBm1hbnVhbMIEAzE1OcgEANIED+aOqOiNkOW3suabtOaWsNgEAPAEAPkEAAAAQCLL1z+BBQAAAAAAAAAAiQVGZi1KOfHlP5IFAJoFA2RmdKIFA2RmdLIFATG5BQAAAAAAAAAA0AUA4AUA6AUA8AUCkAYAoAYJqAYAkgIuCgk3NDQxNzAzMDMSEzE5NDM5OTk3NjM5Nzc1NjkxOTIYBCIKSU1BR0VfVEVYVA==",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 1943999763977569192}",
+   "created_time": 1792741446,
+   "id": "9_1792741446.703",
+   "offset": 9,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/08ff168be1f930a0c9b686cfb806b4c0_l.jpg?source=b6762063",
+     "followers_count": 374,
+     "gender": -1,
+     "headline": "QA",
+     "id": "423e6f40e96a36e0cdc3288b6849df58",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "范先生",
+     "url": "https://api.zhihu.com/people/423e6f40e96a36e0cdc3288b6849df58",
+     "url_token": "fan-xian-sheng-50-61",
+     "user_type": "people"
+    },
+    "comment_count": 204,
+    "content": "<p data-pid=\"NYHQp3BU\">2022年入职，2024年离开。</p><p data-pid=\"7_Pk0Bm1\">测试，税前不到50k，太具体就不透漏了。（是的，字节就是这么大气，测试也能给到这种程度，去字节前在另一个大厂做测试，即使这样，也被字节hr报出薪资时给惊到了。。。😂）</p><p data-pid=\"XIOlyrqr\">我估计可能是因为按开发招聘的，三轮面试，每轮两道力扣中等难度以上的编程题，六道全部在面试过程中提交通过了，黑话就是全部ac了。</p><p data-pid=\"CUly1hml\">在大厂呆过的都知道，大厂部门，甚至小组之间都是很割裂的，所以仅以自身经历说下感受，但我觉得我说的这一点会有一定代表性。</p><p data-pid=\"skz8GE4I\">入职后会丢给你项目接手，来熟悉团队氛围和节奏，但之后，心理压力就来了，那就是字节比较推崇的“owner”意识。</p><p data-pid=\"cdZc8cub\">也就是说，你要自己想办法找有价值的事情做，提升自己的影响力，然后在绩效考评的时候证明自己的价值。这也契合字节所谓的“只选择 不培养”。</p><p data-pid=\"K00ASBUj\">当时我就懵了，我一个半新人，项目都在老员工手里，我咋自己找事情做来证明自己的价值？有人可能会说，这不正好，混呗。但是，这可是一份每个月都会税后给你打三万多，公积金9000，还包三餐的工作，你确定愿意随随便便作没了？😳 心理压力不是一般得大！</p><p data-pid=\"E_xQz5kY\">所以，如果有机会，真的可以试试就去字节，因为给的真的多！如果你是一个很有个人魅力，很会搞事情，很会给自己上价值的人，更是适合去字节闯一闯。</p><p data-pid=\"dBgFCMJU\">最后，即使是通过了字节全程技术面试这件事，都很装b啊😆😆😆</p><p></p>",
+    "created_time": 1756265661,
+    "excerpt": "2022年入职，2024年离开。 测试，税前不到50k，太具体就不透漏了。（是的，字节就是这么大气，测试也能给到这种程度，去字节前在另一个大厂做测试，即使这样，也被字节hr报出薪资时给惊到了。。。😂） 我估计可能是因为按开发招聘的，三轮面试，每轮两道力扣中等难度以上的编程题，六道全部在面试过程中提交通过了，黑话就是全部ac了。 在大厂呆过的都知道，大厂部门，甚至小组之间都是很割裂的，所以仅以自身经历说下感受，但我…",
+    "excerpt_new": "2022年入职，2024年离开。 测试，税前不到50k，太具体就不透漏了。（是的，字节就是这么大气，测试也能给到这种程度，去字节前在另一个大厂做测试，即使这样，也被字节hr报出薪资时给惊到了。。。😂） 我估计可能是因为按开发招聘的，三轮面试，每轮两道力扣中等难度以上的编程题，六道全部在面试过程中提交通过了，黑话就是全部ac了。 在大厂呆过的都知道，大厂部门，甚至小组之间都是很割裂的，所以仅以自身经历说下感受，但我…",
+    "favorite_count": 475,
+    "id": "1943999763977569192",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/v2-d41c2ceaed8f51999522f903672a521f_l.jpg?source=b6762063",
+      "followers_count": 0,
+      "gender": -1,
+      "headline": "",
+      "id": "",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "匿名用户",
+      "url": "",
+      "url_token": "",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      2566,
+      12585,
+      102177,
+      182301,
+      209209
+     ],
+     "comment_count": 18,
+     "created": 1426742725,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "28881353",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "在字节跳动工作是怎样的？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/28881353"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 475,
+      "like_count": 77
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "segment_infos": [
+     {
+      "marks": [
+       {
+        "end_index": 63,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 8,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2096988997813801967"
+         ]
+        },
+        "start_index": 0
+       }
+      ],
+      "pid": "XIOlyrqr",
+      "text": "我估计可能是因为按开发招聘的，三轮面试，每轮两道力扣中等难度以上的编程题，六道全部在面试过程中提交通过了，黑话就是全部ac了。"
+     },
+     {
+      "marks": [
+       {
+        "end_index": 120,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 29,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2063703511733479066"
+         ]
+        },
+        "start_index": 0
+       }
+      ],
+      "pid": "K00ASBUj",
+      "text": "当时我就懵了，我一个半新人，项目都在老员工手里，我咋自己找事情做来证明自己的价值？有人可能会说，这不正好，混呗。但是，这可是一份每个月都会税后给你打三万多，公积金9000，还包三餐的工作，你确定愿意随随便便作没了？😳 心理压力不是一般得大！"
+     },
+     {
+      "marks": [
+       {
+        "end_index": 69,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 7,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2086976722373698356"
+         ]
+        },
+        "start_index": 28
+       }
+      ],
+      "pid": "E_xQz5kY",
+      "text": "所以，如果有机会，真的可以试试就去字节，因为给的真的多！如果你是一个很有个人魅力，很会搞事情，很会给自己上价值的人，更是适合去字节闯一闯。"
+     }
+    ],
+    "thanks_count": 77,
+    "type": "answer",
+    "updated_time": 1756265661,
+    "url": "https://api.zhihu.com/answers/1943999763977569192",
+    "visited_count": 353265,
+    "vote_next_step": "vote",
+    "voteup_count": 1620
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CrwHCMCxsevA6Ii2gQEQBBoJODAxNTIyNzU0IPCVyNYGKLsZMNoDQApKUAocVFNfU09VUkNFX0hPVF9DUk9TU19SRUFMVElNRRIqaG90X3JlY2FsbF9yZWFsdGltZV90Om5vcm1hbDoyMDI2LTEwLTIzOjEwGAAgADoASjEKJlRTX1NPVVJDRV9URVhUX01VTFRJVklFV19HQ0ZfVVNFUkNGX1YxEgEwGAAgADoASlsKKVRTX1NPVVJDRV9IT1RfQ1JPU1NfUkVBTF9USU1FX05FV19DT05URU5UEihob3RfcmVjYWxsX3JlYWx0aW1lX3Q6bmV3N2Q6MjAyNi0xMC0yMzoyGAAgADoAWgkxMTcyMTYyMjViIDIzZWU2OGYwN2JjODE0MDA1ZGNhODU2MjRjZjU0NjNhchMyMDk0NTEwNjYyNTU5MDU2MzQ1igETMTk2OTQxMDE0OTYyMjk4MjU4M6oBCXJlY29tbWVuZMIBIDJjOGE0MjlkY2U4MTAzNzQxMWQyMjk3N2FjZGQzMDg48gEKCAwSBk5vcm1hbPIBKAgKEiRmN2ZjYTAyMS04MmI2LTQxMDEtYjNiYi04MzFiOWY2ODBlNTTyAQUICxIBMoICAIgC5qjevZY0kgIgMmM4YTQyOWRjZTgxMDM3NDExZDIyOTc3YWNkZDMwODiaAgDKAhZSZXZpc2l0VmFsdWVXZWlnaHRSdWxlygISQ2xpcFBlYWtXZWlnaHRSdWxlygIXVGVzdGVkQW5kV29ya1dlaWdodFJ1bGXKAhZTaG9ySW50ZXJlc3RXZWlnaHRSdWxlygIVTG93RnJlcVVzZXJXZWlnaHRSdWxl2gIcVFNfU09VUkNFX0hPVF9DUk9TU19SRUFMVElNRegCAvoCC05PUk1BTF9GTE9XigMgMDlkYTZlOTUxYWYzNDBkMzhkMDNkZmRjYTYwMDEyZTSaAw8KAnYyEAAaBW90aGVyIACoA+eNItgDAOoDH2hvdENyb3NzUmVhbFRpbWVDb250ZW50UmVjYWxsZXL6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEALoEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAADgzEfYP4EFAAAAAAAAAACJBUZmLUo58eU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQKQBgCgBgqoBgGSAi4KCTgwMTUyMjc1NBITMjA5NDUxMDY2MjU1OTA1NjM0NRgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2094510662559056345}",
+   "created_time": 1792741446,
+   "id": "10_1792741446.361",
+   "offset": 10,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://pic1.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 4970,
+     "gender": -1,
+     "headline": "人之忌，在好为人师！",
+     "id": "2c8a429dce81037411d22977acdd3088",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "枫镕海堰秋",
+     "url": "https://api.zhihu.com/people/2c8a429dce81037411d22977acdd3088",
+     "url_token": "ma-jiang-bu-hu-pai",
+     "user_type": "people"
+    },
+    "comment_count": 474,
+    "content": "<p data-pid=\"bA5Oh0wX\">“你一个月工资2万，算上各种乱七八糟的补贴，一共给你算5万，一年60万，就给你算100万。</p><p data-pid=\"PY-nxhgd\">你工作了20年，从当科员开始算，每年都这些钱，一分钱没花，也就2000万。</p><p data-pid=\"kwltPDXC\">就让你老婆和你收入一样，你也就有4000万。</p><p data-pid=\"vAU8vEDK\">你那70多套房产，还有一个多亿的现金是哪来的？</p><p data-pid=\"pjtYemGR\">说清楚，你可以走了，</p><p data-pid=\"_TGHRXYF\">说不清楚，后果你清楚。“</p><p></p><p></p><p></p>",
+    "created_time": 1792150256,
+    "excerpt": "“你一个月工资2万，算上各种乱七八糟的补贴，一共给你算5万，一年60万，就给你算100万。 你工作了20年，从当科员开始算，每年都这些钱，一分钱没花，也就2000万。 就让你老婆和你收入一样，你也就有4000万。 你那70多套房产，还有一个多亿的现金是哪来的？ 说清楚，你可以走了， 说不清楚，后果你清楚。“",
+    "excerpt_new": "“你一个月工资2万，算上各种乱七八糟的补贴，一共给你算5万，一年60万，就给你算100万。 你工作了20年，从当科员开始算，每年都这些钱，一分钱没花，也就2000万。 就让你老婆和你收入一样，你也就有4000万。 你那70多套房产，还有一个多亿的现金是哪来的？ 说清楚，你可以走了， 说不清楚，后果你清楚。“",
+    "favorite_count": 207,
+    "id": "2094510662559056345",
+    "is_copyable": false,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-b1f23467ef6100d776a6bf8c3c0a19d1_l.jpg?source=b6762063",
+      "followers_count": 11,
+      "gender": -1,
+      "headline": "",
+      "id": "90bce546467b4e27bb723a3197aeb06f",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "北欧",
+      "url": "https://api.zhihu.com/people/90bce546467b4e27bb723a3197aeb06f",
+      "url_token": "zhu-zhu-46-27-32",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      31882,
+      365496,
+      365891,
+      211649,
+      295072
+     ],
+     "comment_count": 22,
+     "created": 1762323969,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "1969410149622982583",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "纪委到底是怎么突破被留置人的心理防线的？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/1969410149622982583"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 207,
+      "like_count": 14
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "disallowed",
+    "thanks_count": 14,
+    "type": "answer",
+    "updated_time": 1792150256,
+    "url": "https://api.zhihu.com/answers/2094510662559056345",
+    "visited_count": 558823,
+    "vote_next_step": "vote",
+    "voteup_count": 3259
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CsYGCMCxsevA6Ii2gQEQBBoJNzczMTMyMjk3IPf8180GKJ0DMHdAC0pICh9UU19TT1VSQ0VfWlJFQ0FMTF9JVEVNQ0ZfVVBWT1RFEh9kb2NfdHlwZTogQW5zd2VyCmlkOiA3OTU1MTIxNjcKGAAgADoAWggxMzIyNDMzN2IgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzIwMTY0MzE5NDcyNDk5MDU4NDeKAQg1MjUxNDg3OKoBCXJlY29tbWVuZMIBIDc2MjZiMmNmZTA2ODQzYTQ3ZDA0NjdkYjA4N2FkYmI48gEKCAwSBk5vcm1hbPIBKAgKEiQ5YTJhMTJmMy1kNTZhLTQzNTYtYmI4Ni1iOGVhYmI1MzRjZDfyAQUICxIBMoICAIgC5qjevZY0kgIgNzYyNmIyY2ZlMDY4NDNhNDdkMDQ2N2RiMDg3YWRiYjiaAgDKAhRDb250ZW50QWdlV2VpZ2h0UnVsZcoCF1Rlc3RlZEFuZFdvcmtXZWlnaHRSdWxlygIWU2hvckludGVyZXN0V2VpZ2h0UnVsZcoCHE5lZ2F0aXZlVGl0bGVWMklzb2xhdGlvblJ1bGXKAhhRdWVzdGlvbkFnZUlzb2xhdGlvblJ1bGXaAh9UU19TT1VSQ0VfWlJFQ0FMTF9JVEVNQ0ZfVVBWT1RF6AIC+gILTk9STUFMX0ZMT1eKAyAwOWRhNmU5NTFhZjM0MGQzOGQwM2RmZGNhNjAwMTJlNJoDDwoCdjIQABoFb3RoZXIgAKgDxPIO2AMA6gNAdGV4dEFsbFNpdGVBY3Rpb25JdGVtQ0ZNdWx0aVJlY2FsbGVyX3RleHRBbGxTaXRlSHFBY3Rpb25JdGVtQ0ZWMvoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQAugQCYWnCBAM0MDDIBADSBA/mjqjojZDlt7Lmm7TmlrDYBADwBAD5BAAAAGA7xt8/gQUAAAAAAAAAAIkFRmYtSjnx5T+SBQCaBQNkZnSiBQNkZnSyBQExuQUAAAAAAAAAANAFAOAFAOgFAPAFApAGAKAGC6gGAJICLgoJNzczMTMyMjk3EhMyMDE2NDMxOTQ3MjQ5OTA1ODQ3GAQiCklNQUdFX1RFWFQ=",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2016431947249905847}",
+   "created_time": 1792741446,
+   "id": "11_1792741446.870",
+   "offset": 11,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-279e90676e9032da876dcb3a2292121a_l.jpg?source=b6762063",
+     "followers_count": 2648,
+     "gender": 1,
+     "headline": "急诊外科、某公司监事",
+     "id": "7626b2cfe06843a47d0467db087adbb8",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "EGO",
+     "url": "https://api.zhihu.com/people/7626b2cfe06843a47d0467db087adbb8",
+     "url_token": "ego-49-41",
+     "user_type": "people"
+    },
+    "comment_count": 119,
+    "content": "<p data-pid=\"Kcmklges\">去了几趟了，唯一让我不理解的是住宿为什么要按人头收费？</p>",
+    "created_time": 1773534839,
+    "excerpt": "去了几趟了，唯一让我不理解的是住宿为什么要按人头收费？",
+    "excerpt_new": "去了几趟了，唯一让我不理解的是住宿为什么要按人头收费？",
+    "favorite_count": 24,
+    "id": "2016431947249905847",
+    "is_copyable": false,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-b644065fe20b6d8d17eae7e4ac04ab85_l.jpg?source=b6762063",
+      "followers_count": 167,
+      "gender": 1,
+      "headline": "你所看到的都是别人想让你看到的!",
+      "id": "c57cf5563468a78bf4a7d3a639365795",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "尾宿",
+      "url": "https://api.zhihu.com/people/c57cf5563468a78bf4a7d3a639365795",
+      "url_token": "liu-min-62-80-11",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      229,
+      285,
+      307,
+      400,
+      686
+     ],
+     "comment_count": 16,
+     "created": 1478850487,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "52514878",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "你感觉日本最让人不解的是什么？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/52514878"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 24,
+      "like_count": 1
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "disallowed",
+    "thanks_count": 1,
+    "type": "answer",
+    "updated_time": 1773534839,
+    "url": "https://api.zhihu.com/answers/2016431947249905847",
+    "visited_count": 244036,
+    "vote_next_step": "vote",
+    "voteup_count": 413
+   },
+   "type": "feed",
+   "updated_time": 1792741446,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  }
+ ],
+ "styles": [],
+ "feed_request_id": "09da6e951af340d38d03dfdca60012e4",
+ "fresh_text": "推荐已更新",
+ "paging": {
+  "is_end": false,
+  "is_start": false,
+  "next": "https://api.zhihu.com/topstory/recommend?action=down&ad_interval=-10&after_id=11&end_offset=11&page_number=3&session_token=23ee68f07bc814005dca85624cf5463a",
+  "previous": "https://api.zhihu.com/topstory/recommend?action=pull&ad_interval=-10&before_id=11&end_offset=11&page_number=3&session_token=23ee68f07bc814005dca85624cf5463a",
+  "totals": 0
+ },
+ "extra": {
+  "is_hit_new14_limit": false
+ }
+}

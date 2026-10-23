@@ -36,7 +36,7 @@ from feed import (Block, Comment, Post, SourceAdapter, BLOCK_H, BLOCK_IMG, BLOCK
                     BLOCK_QUOTE, BLOCK_TABLE)
 import feed_net
 import xhs_sign
-from feed_net import FeedNetError, Http, TTL_LIST, TTL_DETAIL, TTL_FOREVER
+from feed_net import FeedNetError, Http, TTL_LIST, TTL_DETAIL, TTL_FOREVER, TTL_ROTATE
 
 PAGE_MIX = 12           # 混流每页几条
 MAX_PAGES = 6           # 单个来源最多自动续几页（别把"快到底自动续页"变成无限请求）
@@ -140,9 +140,10 @@ class RealSource(SourceAdapter):
     def image_base(self):
         return self.http.cache.img_dir if self.http.cache else ""
 
-    def _get(self, url, ttl=TTL_LIST, what="", timeout=None):
+    def _get(self, url, ttl=TTL_LIST, what="", timeout=None, allow_stale=True):
         try:
-            obj = self.http.get_json(url, ttl=ttl, what=what, timeout=timeout)
+            obj = self.http.get_json(url, ttl=ttl, what=what, timeout=timeout,
+                                     allow_stale=allow_stale)
             self.last_error = ""
             self.served_stale = bool(getattr(self.http, "served_stale", False))
             return obj
@@ -694,6 +695,18 @@ class ZhihuSource(RealSource):
     # 失败只记这么久。以前失败也缓存一辈子，于是第一次撞上风控之后，这个问题到进程结束都打不开。
     RETRY_AFTER = 90
 
+    # 推荐 / 关注是**流**，不是榜单：每进来一次就该是新的一批。网页端就是这样——
+    # 真人 2026-10-23：「知乎的推荐刷来刷去都是那几条,网页端的推荐体验不是这样的」。
+    # 病根是这两栏的第一页吃了 5 分钟的列表缓存（接口明明每次都给新的一批 6 条）。
+    ROTATING = ("推荐", "关注")
+    # 一页只有 6 条（`limit` 给多少都只回 6 条，接口硬上限，实测 10/20/30/50 都试过），
+    # 所以一次抓 3 页，进来就是一屏多的"流"，不用一路往下顶到底。
+    FEED_PAGES = 3
+
+    def rotates(self, channel=None):
+        """这一栏是不是"每次进来都换一批"的流。"""
+        return str(channel or "") in self.ROTATING
+
     def __init__(self, http, auth=None):
         RealSource.__init__(self, http, auth)
         self._ans = {}          # 问题 id -> (回答列表, 失败原因, 取到的时刻)：详情和评论共用一次请求
@@ -799,11 +812,8 @@ class ZhihuSource(RealSource):
                 posts.append(p)
         return [p for p in posts if p.id and p.title], None    # 热榜就这一页，没有分页
 
-    def _list_feed(self, channel, cursor):
-        """推荐 / 关注：一次一页，分页游标就是接口自己给的 `paging.next` 完整地址。"""
-        first = self.RECOMMEND_URL if channel == "推荐" else self.FOLLOW_URL
-        url = cursor or first
-        data = self._get(url, TTL_LIST, "知乎" + channel, timeout=LIST_TIMEOUT)
+    def _feed_page(self, data, channel, url):
+        """一页 `data` → (帖子, 下一页地址)。分页游标就是接口自己给的 `paging.next`。"""
         data = data or {}
         posts = []
         for it in (data.get("data") or []):
@@ -823,6 +833,58 @@ class ZhihuSource(RealSource):
         if nxt == url:            # 有的接口把当前页原样回给你，别让它无限翻
             nxt = None
         return posts, nxt
+
+    def _list_feed(self, channel, cursor):
+        """推荐 / 关注：一次一页，分页游标就是接口自己给的 `paging.next` 完整地址。
+
+        **这两个栏目是流**，不是榜单：第一页不吃那 5 分钟的列表缓存（`TTL_ROTATE`），
+        每进来一次就是新的一批——以前切回推荐总是缓存里那 5 条，正是真人报的
+        「刷来刷去都是那几条」。往下翻（带 cursor）的那几页照旧缓存 5 分钟：
+        同一个地址重复取，内容本来也一样。
+        """
+        first = self.RECOMMEND_URL if channel == "推荐" else self.FOLLOW_URL
+        url = cursor or first
+        rotate = (not cursor) and self.rotates(channel)
+        data = self._get(url, TTL_ROTATE if rotate else TTL_LIST, "知乎" + channel,
+                         timeout=LIST_TIMEOUT, allow_stale=not rotate)
+        posts, nxt = self._feed_page(data, channel, url)
+        if rotate and nxt:
+            self._prefetch_feed(channel, nxt)
+        return posts, nxt
+
+    def _prefetch_feed(self, channel, url):
+        """后台把后面几页抓进磁盘缓存：往下翻的时候就不用等了。
+
+        为什么不在这儿串行抓完：接口一页只给 6 条，而且一次要 1.2 秒（实测），串三页就是
+        3.6 秒——进一个栏目等三秒半太久了。所以**第一页先给**，后面几页由这个线程慢慢补；
+        界面按 cursor 再问一次时读的就是缓存，0 秒。
+        """
+        def work():
+            at, left = url, max(0, int(self.FEED_PAGES) - 1)
+            # `Http.get_json` 会写 `served_stale`（页脚拿它说"这份是上次的缓存"）。
+            # 后台线程不该替界面改这个判断，取完就还原。
+            stale_before = getattr(self.http, "served_stale", False)
+            try:
+                while at and left > 0:
+                    try:
+                        # 直接问 Http：`_get` 会写 `self.last_error`，后台线程不该改那个
+                        data = self.http.get_json(at, ttl=TTL_LIST, what="知乎" + channel,
+                                                  timeout=LIST_TIMEOUT)
+                    except Exception:
+                        return
+                    posts, at = self._feed_page(data, channel, at)
+                    if not posts:
+                        return
+                    left -= 1
+            finally:
+                try:
+                    self.http.served_stale = stale_before
+                except Exception:
+                    pass
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception:
+            pass
 
     def _is_answer_post(self, post):
         return str(post.id).startswith("a") or "/answer/" in (post.url or "")

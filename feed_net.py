@@ -37,6 +37,10 @@ IMAGE_EXT_OK = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 TTL_LIST = 5 * 60
 TTL_DETAIL = 24 * 60 * 60
 TTL_FOREVER = 0
+# 会轮换的流（知乎的推荐/关注）用的：**1 秒后就当过期**。
+# 不是"不缓存"——同一瞬间重复取还会合并；但下一次进来一定重新问接口。
+# 榜单（热榜）反过来，5 分钟的那份才对（排名本来就不该秒变）。
+TTL_ROTATE = 1
 
 
 class FeedNetError(Exception):
@@ -338,11 +342,16 @@ class Http(object):
                 pass
 
     # -- 对外 -------------------------------------------------------------
-    def get_json(self, url, ttl=TTL_LIST, headers=None, what="", timeout=None):
+    def get_json(self, url, ttl=TTL_LIST, headers=None, what="", timeout=None,
+                 allow_stale=True):
         """先看新鲜缓存，没有再请求。
 
         请求失败时**退回过期缓存**：工位上网络时好时坏，上一次拿到的列表比一片空白有用得多
-        （这正是"缓存不是可选项"那条）。真的一点都没有，才把错误抛上去。"""
+        （这正是"缓存不是可选项"那条）。真的一点都没有，才把错误抛上去。
+
+        `allow_stale=False`：**不许"过期的先给、后台再取"**。会轮换的流（知乎的推荐/关注）
+        必须走这条——那条捷径会让屏幕上永远是上一批，人看到的就是"刷来刷去都是那几条"。
+        取不到照样退回过期的（那是最后一根救命稻草，不是常态）。"""
         if self.cache is not None:
             hit = self.cache.read_json(url, ttl)
             if hit is not None:
@@ -350,7 +359,7 @@ class Http(object):
                 return hit
             # 有效期内没有、但**盘里有旧的**：旧的先给出去（屏幕立刻有内容），
             # 顺手起一条线程去取新的。人按 R 的时候 is_fresh() 为真，会跳过这一段真去取。
-            if ttl and self.stale_ok and not is_fresh():
+            if ttl and self.stale_ok and allow_stale and not is_fresh():
                 old = self.cache.read_json(url, 0)
                 if old is not None:
                     self._refresh_later(url, url, None, headers, timeout)

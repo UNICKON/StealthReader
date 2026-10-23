@@ -1,0 +1,1329 @@
+{
+ "dataV1": [
+  {
+   "action_card": false,
+   "attached_info": "CvkFCI2MrMPo9KKHrwEQBBoJNzUwOTg1MDIyIOfgnccGKIgKMDpAAEo/CipUU19TT1VSQ0VfWlJFQ0FMTF9GRUVEUkVfTkVXQklFX0hPVVJMWV9SVU0SATAYACAAOgp7InJhdyI6IiJ9Wgg0NjM1ODEzMWIgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzE5NTk2NTQ1NjA3MDk3MTUwOTOKAQkzNzgzNTgwNjWqAQlyZWNvbW1lbmTCASA3ODExOGFkNjZiODRjYmJiMWExZWIwOTYxYjMyOWUzNfIBCggMEgZOb3JtYWzyASgIChIkMGFkMmI2OGItMDZkYi00MmY5LWExZTktYjg3NmI4ZTZkOGI48gEFCAsSATGCAgCIAruf3r2WNJICIDc4MTE4YWQ2NmI4NGNiYmIxYTFlYjA5NjFiMzI5ZTM1mgIAygIURmlyc3RCcnVzaFdlaWdodFJ1bGXKAhZSZXZpc2l0VmFsdWVXZWlnaHRSdWxlygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhZTaG9ySW50ZXJlc3RXZWlnaHRSdWxl2gIqVFNfU09VUkNFX1pSRUNBTExfRkVFRFJFX05FV0JJRV9IT1VSTFlfUlVN6AIC+gILTk9STUFMX0ZMT1eKAyA3ZmM5N2QwY2Y5YTU0MzkyYTY4YzYyZDc0NDFjMTAyZJoDDwoCdjIQABoFb3RoZXIgAKgD1dsk2AMA6gMQbmV3YmllX2ZlZWRyZV92MvoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQBugQGbWFudWFswgQDMTU3yAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAAAAV5TcP4EFAAAAAAAAAACJBa37ofUMgeU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQGQBgCgBgCoBgCSAi4KCTc1MDk4NTAyMhITMTk1OTY1NDU2MDcwOTcxNTA5MxgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 1959654560709715093}",
+   "created_time": 1792741445,
+   "id": "0_1792741445.283",
+   "offset": 0,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-94d00eeb39d3cd70443887d120f858d1_l.jpg?source=b6762063",
+     "followers_count": 374,
+     "gender": 1,
+     "headline": "警惕民族主义被人利用 不解决分配 大饼做的再大也没有",
+     "id": "78118ad66b84cbbb1a1eb0961b329e35",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "卡塞尔屠龙学院",
+     "url": "https://api.zhihu.com/people/78118ad66b84cbbb1a1eb0961b329e35",
+     "url_token": "jiejidouzheng-51",
+     "user_type": "people"
+    },
+    "comment_count": 58,
+    "content": "<p data-pid=\"TnddaseU\">我记得以前微信可以改定位的时候 改到西亚那块 搜周围的人 朋友圈大开眼界 罩袍底下可一点不保守啊 聊几句夸一下就给发福利图 大方极了</p>",
+    "created_time": 1759998055,
+    "excerpt": "我记得以前微信可以改定位的时候 改到西亚那块 搜周围的人 朋友圈大开眼界 罩袍底下可一点不保守啊 聊几句夸一下就给发福利图 大方极了",
+    "excerpt_new": "我记得以前微信可以改定位的时候 改到西亚那块 搜周围的人 朋友圈大开眼界 罩袍底下可一点不保守啊 聊几句夸一下就给发福利图 大方极了",
+    "favorite_count": 195,
+    "id": "1959654560709715093",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-f85bd1d6351afd133741d50c7c1473d8_l.jpg?source=b6762063",
+      "followers_count": 168,
+      "gender": 0,
+      "headline": "",
+      "id": "85529f8652fdcee665f9978068d1e8a9",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "hhhuu",
+      "url": "https://api.zhihu.com/people/85529f8652fdcee665f9978068d1e8a9",
+      "url_token": "yysxwl",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      285,
+      2250,
+      13279,
+      39503
+     ],
+     "comment_count": 5,
+     "created": 1583840225,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "378358065",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "在沙特阿拉伯女性不穿罩袍会怎样?",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/378358065"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 195,
+      "like_count": 2
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 2,
+    "type": "answer",
+    "updated_time": 1759998055,
+    "url": "https://api.zhihu.com/answers/1959654560709715093",
+    "visited_count": 601557,
+    "vote_next_step": "vote",
+    "voteup_count": 1288
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CqUGCI2MrMPo9KKHrwEQBBoJNzgyMTY3MDcxIJ/Mr9AGKMEGMK4CQAFKQgotVFNfU09VUkNFX1RXT1RPV0VSX01VTFRJX1NDRU5FX1YxX1JFQ0FMTF9URVhUEgEwGAAgADoKeyJyYXciOiIifVoJMTE1MDQ4NTkxYiAyM2VlNjhmMDdiYzgxNDAwNWRjYTg1NjI0Y2Y1NDYzYXITMjA0MDA0NTMwNzk2NzMxMjQzOYoBEzE5MDg4MTg4OTY1ODIwNTg1NjSqAQlyZWNvbW1lbmTCASAxN2Q5YTMxNDQwZjExYjNkODNlOTE1ZTYyNmFiYWM0ZfIBCggMEgZOb3JtYWzyASgIChIkN2YxY2I4OWQtZTQ0Zi00ZjM4LThmZmItYWMzNmEwOGZiYTU08gEFCAsSATGCAgCIAryf3r2WNJICIDE3ZDlhMzE0NDBmMTFiM2Q4M2U5MTVlNjI2YWJhYzRlmgIAygIURmlyc3RCcnVzaFdlaWdodFJ1bGXKAhRDb250ZW50QWdlV2VpZ2h0UnVsZcoCF1Rlc3RlZEFuZFdvcmtXZWlnaHRSdWxlygIWU2hvckludGVyZXN0V2VpZ2h0UnVsZcoCFUxvd0ZyZXFVc2VyV2VpZ2h0UnVsZdoCLVRTX1NPVVJDRV9UV09UT1dFUl9NVUxUSV9TQ0VORV9WMV9SRUNBTExfVEVYVOgCAvoCC05PUk1BTF9GTE9XigMgN2ZjOTdkMGNmOWE1NDM5MmE2OGM2MmQ3NDQxYzEwMmSaAw8KAnYyEAAaBW90aGVyIACoA5j7EdgDAOoDFXRleHRGZWVkVHdvVG93ZXJWMUFsbPoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQBugQCYWnCBAM0MDDIBADSBA/mjqjojZDlt7Lmm7TmlrDYBADwBAD5BAAAAECcCtU/gQUAAAAAAAAAAIkFrfuh9QyB5T+SBQCaBQNkZnSiBQNkZnSyBQExuQUAAAAAAAAAANAFAOAFAOgFAPAFAZAGAKAGAagGAZICLgoJNzgyMTY3MDcxEhMyMDQwMDQ1MzA3OTY3MzEyNDM5GAQiCklNQUdFX1RFWFQ=",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2040045307967312439}",
+   "created_time": 1792741445,
+   "id": "1_1792741445.673",
+   "offset": 1,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 235,
+     "gender": 1,
+     "headline": "很难评",
+     "id": "17d9a31440f11b3d83e915e626abac4e",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "凳子殺手",
+     "url": "https://api.zhihu.com/people/17d9a31440f11b3d83e915e626abac4e",
+     "url_token": "xiao-diao-chan-87",
+     "user_type": "people"
+    },
+    "comment_count": 302,
+    "content": "<p data-pid=\"0NnfUm95\">打字出来都手抖。。。上周满融满仓了衢州发展，周日打麻将的时候耍手机发现重组终止了，立马头皮就炸了。果然，这周开始连续跌停了，明天不开板就爆仓了。现在已经亏完所有的积蓄了，剩下都是负债。。。。努力五六年的200万清空了。。。我今天手抖气喘，不知道该怎么办。31年来最无助的时刻。</p>",
+    "created_time": 1779164703,
+    "excerpt": "打字出来都手抖。。。上周满融满仓了衢州发展，周日打麻将的时候耍手机发现重组终止了，立马头皮就炸了。果然，这周开始连续跌停了，明天不开板就爆仓了。现在已经亏完所有的积蓄了，剩下都是负债。。。。努力五六年的200万清空了。。。我今天手抖气喘，不知道该怎么办。31年来最无助的时刻。",
+    "excerpt_new": "打字出来都手抖。。。上周满融满仓了衢州发展，周日打麻将的时候耍手机发现重组终止了，立马头皮就炸了。果然，这周开始连续跌停了，明天不开板就爆仓了。现在已经亏完所有的积蓄了，剩下都是负债。。。。努力五六年的200万清空了。。。我今天手抖气喘，不知道该怎么办。31年来最无助的时刻。",
+    "favorite_count": 216,
+    "id": "2040045307967312439",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-1ad14def2dd9833668423ab61778302a_l.jpg?source=b6762063",
+      "followers_count": 43,
+      "gender": 0,
+      "headline": "有钱才能任性",
+      "id": "481af0bd4550e8b32a38fcd8a882b563",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "不一样的烟火",
+      "url": "https://api.zhihu.com/people/481af0bd4550e8b32a38fcd8a882b563",
+      "url_token": "wo-jiu-shi-wo-49-81-13",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      2082112,
+      2575258,
+      2985604
+     ],
+     "comment_count": 22,
+     "created": 1747877889,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "1908818896582058564",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "各位都是怎么度过人生的至暗时刻的？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/1908818896582058564"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 216,
+      "like_count": 9
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 9,
+    "type": "answer",
+    "updated_time": 1779164703,
+    "url": "https://api.zhihu.com/answers/2040045307967312439",
+    "visited_count": 294296,
+    "vote_next_step": "vote",
+    "voteup_count": 833
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CpwGCI2MrMPo9KKHrwEQBBoJNzg1MDE0MzE3IIXtnNEGKLQKMHdAAkpCCi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFQSATAYACAAOgp7InJhdyI6IiJ9Wgg0NzE1OTAyN2IgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzIwNDc1NTMzNDAwNjI2NzU1NzOKAQkzODE5NjM4ODWqAQlyZWNvbW1lbmTCASAwYmI3ZjNiYjMwZjg4Zjc0YTlmYmYzYjcxNGE1YTMwOPIBCggMEgZOb3JtYWzyASgIChIkYjhiMGNlOTEtZDhlMC00ZTVkLTg0ZDQtZGU1YjcxMWZjOWZl8gEFCAsSATGCAgCIAryf3r2WNJICIDBiYjdmM2JiMzBmODhmNzRhOWZiZjNiNzE0YTVhMzA4mgIAygIURmlyc3RCcnVzaFdlaWdodFJ1bGXKAhRDb250ZW50QWdlV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXKAhdVc2VyRXhjbHVzaXZlV2VpZ2h0UnVsZcoCGFF1ZXN0aW9uQWdlSXNvbGF0aW9uUnVsZdoCLVRTX1NPVVJDRV9UV09UT1dFUl9NVUxUSV9TQ0VORV9WMV9SRUNBTExfVEVYVOgCAvoCC05PUk1BTF9GTE9XigMgN2ZjOTdkMGNmOWE1NDM5MmE2OGM2MmQ3NDQxYzEwMmSaAw8KAnYyEAAaBW90aGVyIACoA7SCBtgDAOoDFXRleHRGZWVkVHdvVG93ZXJWMUFsbPoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQBugQCYWnCBAM0MDDIBADSBA/mjqjojZDlt7Lmm7TmlrDYBADwBAD5BAAAAGChkdU/gQUAAAAAAAAAAIkFrfuh9QyB5T+SBQCaBQNkZnSiBQNkZnSyBQExuQUAAAAAAAAAANAFAOAFAOgFAPAFAZAGAKAGAqgGAJICLgoJNzg1MDE0MzE3EhMyMDQ3NTUzMzQwMDYyNjc1NTczGAQiCklNQUdFX1RFWFQ=",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2047553340062675573}",
+   "created_time": 1792741445,
+   "id": "2_1792741445.430",
+   "offset": 2,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 5613,
+     "gender": -1,
+     "headline": "一个普通人，请勿过多要求，喜欢指点的大师请绕道",
+     "id": "0bb7f3bb30f88f74a9fbf3b714a5a308",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "吴至信",
+     "url": "https://api.zhihu.com/people/0bb7f3bb30f88f74a9fbf3b714a5a308",
+     "url_token": "wu-zhi-xin-48-89",
+     "user_type": "people"
+    },
+    "comment_count": 119,
+    "content": "<p data-pid=\"n2jKZxeD\">乔丹这人的弱点就是好面子以及发自内心的同情弱者</p><p data-pid=\"6bBdUMa5\">你在球场上跟他斗气，把他弄红温了，然后他拿出100%的斗志和毅力来跟你拼攻防、结果往往就是他在你头上砍4.50分，防守端把你限制得10分都得不到</p><p data-pid=\"zRl-F2lo\">然后一整场都对着你喷垃圾话摧毁你的信心和手感、到结束时还在你耳边释放恶魔的低语。</p><p data-pid=\"XzuwlHYS\">但是一旦你反其道而行之、就像show time时期的主力控卫斯科特那样。</p><p data-pid=\"uSwT1M8B\">根本不惹怒乔丹，反而每句话都发自内心的赞美称赞他。</p><p data-pid=\"20vBAbc_\">他投进球你就称赞他：好球，完美</p><p data-pid=\"h52t6hO_\">他打铁你比他还惋惜：真可惜，差一点。</p><p data-pid=\"6g803Qa_\">防守端也不喷垃圾话，就象征性的防守，但私底下疯狂慢回放他的脚步和技术动作。</p><p data-pid=\"1XnNiwMT\">结果就是温水煮青蛙一样，乔丹每每面对斯科特，经常只能拿25.6分，命中率也下降到45%左右</p><p data-pid=\"lmMvLJVp\">远低于他生涯的30+分和50%+命中率。</p><p data-pid=\"Ftu2lSgv\">因为乔丹觉得你给他面子，尊重他，他不好意思下手太重把你打得怀疑人生。</p><p data-pid=\"2Jy4Js2Q\">再来就是他只会觉得当晚是他自己手感不好打铁，跟你防守策略没关系</p>",
+    "created_time": 1780954757,
+    "excerpt": "乔丹这人的弱点就是好面子以及发自内心的同情弱者 你在球场上跟他斗气，把他弄红温了，然后他拿出100%的斗志和毅力来跟你拼攻防、结果往往就是他在你头上砍4.50分，防守端把你限制得10分都得不到 然后一整场都对着你喷垃圾话摧毁你的信心和手感、到结束时还在你耳边释放恶魔的低语。 但是一旦你反其道而行之、就像show time时期的主力控卫斯科特那样。 根本不惹怒乔丹，反而每句话都发自内心的赞美称赞他。 他投进球你就称赞他：…",
+    "excerpt_new": "乔丹这人的弱点就是好面子以及发自内心的同情弱者 你在球场上跟他斗气，把他弄红温了，然后他拿出100%的斗志和毅力来跟你拼攻防、结果往往就是他在你头上砍4.50分，防守端把你限制得10分都得不到 然后一整场都对着你喷垃圾话摧毁你的信心和手感、到结束时还在你耳边释放恶魔的低语。 但是一旦你反其道而行之、就像show time时期的主力控卫斯科特那样。 根本不惹怒乔丹，反而每句话都发自内心的赞美称赞他。 他投进球你就称赞他：…",
+    "favorite_count": 123,
+    "id": "2047553340062675573",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+      "followers_count": 0,
+      "gender": 0,
+      "headline": "",
+      "id": "6a26466285e824a06ce7a86d40693bc2",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "知乎用户VDVdD9",
+      "url": "https://api.zhihu.com/people/6a26466285e824a06ce7a86d40693bc2",
+      "url_token": "tian-tian-tian-gou-61",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      4196,
+      35744,
+      156097
+     ],
+     "comment_count": 2,
+     "created": 1585008416,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "381963885",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "迈克尔乔丹在球场上的弱点是什么？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/381963885"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 123,
+      "like_count": 77
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "segment_infos": [
+     {
+      "marks": [
+       {
+        "end_index": 45,
+        "seg_info": {
+         "comment_count": 3,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 24,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2047779218319324517"
+         ]
+        },
+        "start_index": 22
+       }
+      ],
+      "pid": "1XnNiwMT",
+      "text": "结果就是温水煮青蛙一样，乔丹每每面对斯科特，经常只能拿25.6分，命中率也下降到45%左右"
+     },
+     {
+      "marks": [
+       {
+        "end_index": 34,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 34,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2048736734867993491"
+         ]
+        },
+        "start_index": 0
+       }
+      ],
+      "pid": "Ftu2lSgv",
+      "text": "因为乔丹觉得你给他面子，尊重他，他不好意思下手太重把你打得怀疑人生。"
+     }
+    ],
+    "thanks_count": 77,
+    "type": "answer",
+    "updated_time": 1780954757,
+    "url": "https://api.zhihu.com/answers/2047553340062675573",
+    "visited_count": 98612,
+    "vote_next_step": "vote",
+    "voteup_count": 1332
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CosGCI2MrMPo9KKHrwEQBBoJNzk5OTAyODczILXO/dUGKOwEMDlAA0ovCgZJdGVtQ0YSH2RvY190eXBlOiBBbnN3ZXIKaWQ6IDc5OTI2Nzk3MAoYACAAOgBaCTEyMTAzNzkxNmIgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzIwODkzODcwNTU5OTAyODQ3OTmKARMyMDc0ODI0MjUwNDc3Nzg1NDc3qgEJcmVjb21tZW5kwgEgNDM3YzFlYmMzZjE3OTczMjdhOTZlNmRkZWI5Y2MyMzPyAQoIDBIGTm9ybWFs8gEoCAoSJDRiZmE0MGM1LWZlZTUtNDcxNS04M2NmLTZiZjgwMDAxYmI0NPIBBQgLEgExggIAiAK8n969ljSSAiA0MzdjMWViYzNmMTc5NzMyN2E5NmU2ZGRlYjljYzIzM5oCAMoCFEZpcnN0QnJ1c2hXZWlnaHRSdWxlygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhdUZXN0ZWRBbmRXb3JrV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXKAhVMb3dGcmVxVXNlcldlaWdodFJ1bGXaAgZJdGVtQ0boAgL6AgtOT1JNQUxfRkxPV4oDIDdmYzk3ZDBjZjlhNTQzOTJhNjhjNjJkNzQ0MWMxMDJkmgMPCgJ2MhAAGgVvdGhlciAAqAPYlQbYAwDqAzZ0ZXh0QWxsU2l0ZU12SXRlbUNGTXVsdGlSZWNhbGxlcl90ZXh0QWxsU2l0ZU12SXRlbUNGVjL6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEAboEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAAAgwCrWP4EFAAAAAAAAAACJBa37ofUMgeU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQGQBgCgBgOoBgGSAi4KCTc5OTkwMjg3MxITMjA4OTM4NzA1NTk5MDI4NDc5ORgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2089387055990284799}",
+   "created_time": 1792741445,
+   "id": "3_1792741445.673",
+   "offset": 3,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-3d1e26d9d580e6fccf76332f15c2bd1c_l.jpg?source=b6762063",
+     "followers_count": 1108,
+     "gender": 1,
+     "headline": "面向许愿编程，未来的AI上帝啥做不到？",
+     "id": "437c1ebc3f1797327a96e6ddeb9cc233",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "白羽飘",
+     "url": "https://api.zhihu.com/people/437c1ebc3f1797327a96e6ddeb9cc233",
+     "url_token": "bai-yu-piao",
+     "user_type": "people"
+    },
+    "comment_count": 57,
+    "content": "<p data-pid=\"mlqREln3\">一瓶水卖的是“信任成本”。</p><p data-pid=\"RoczADFN\">你能理解吗？</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"M4fpoiKb\">不能理解的话，就去超市拿一瓶水，</p><p data-pid=\"i_15dN5q\">付款之前和店员说，这瓶水我不要了，店员什么都不会说。</p><p data-pid=\"_CWUMMeA\">但是，如果你把瓶盖拧开，再和店员说，这瓶水我不要了，你猜店员会怎么说？</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"O2ASHd1-\">或者你拿一箱矿泉水去景区卖，</p><p data-pid=\"JwYtiJHc\">你试试开过口的能不能卖掉。</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"9x_8YbsD\">想通了吗，值钱都是【没开过口的矿泉水】。</p><hr/><p class=\"ztext-empty-paragraph\"><br/></p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"A8MCAi_B\">你如果想掀翻瓶装矿泉水市场的话，</p><p data-pid=\"AZX8IANR\">问这种没有营养问题毫无意义，</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"2aqgT9Hj\">我建议你去发明一种低成本工具，可以在几分钟之内将开过口的瓶盖接回去。而表面看不出任何区别。</p><p data-pid=\"7CYS_Cnl\">你都不用刻意去卖这种工具，你只需要将这种工具制作方法和原理公开在网上。</p><p data-pid=\"MRY9EnzC\">这样不出一年，所有的塑料瓶装矿泉水的市场就彻底灭绝了，</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"EhbXtiFR\">只会剩下【易拉罐矿泉水】</p>",
+    "created_time": 1790928693,
+    "excerpt": "一瓶水卖的是“信任成本”。 你能理解吗？ 不能理解的话，就去超市拿一瓶水， 付款之前和店员说，这瓶水我不要了，店员什么都不会说。 但是，如果你把瓶盖拧开，再和店员说，这瓶水我不要了，你猜店员会怎么说？ 或者你拿一箱矿泉水去景区卖， 你试试开过口的能不能卖掉。 想通了吗，值钱都是【没开过口的矿泉水】。 你如果想掀翻瓶装矿泉水市场的话， 问这种没有营养问题毫无意义， 我建议你去发明一种低成本工具，可以在几分钟…",
+    "excerpt_new": "一瓶水卖的是“信任成本”。 你能理解吗？ 不能理解的话，就去超市拿一瓶水， 付款之前和店员说，这瓶水我不要了，店员什么都不会说。 但是，如果你把瓶盖拧开，再和店员说，这瓶水我不要了，你猜店员会怎么说？ 或者你拿一箱矿泉水去景区卖， 你试试开过口的能不能卖掉。 想通了吗，值钱都是【没开过口的矿泉水】。 你如果想掀翻瓶装矿泉水市场的话， 问这种没有营养问题毫无意义， 我建议你去发明一种低成本工具，可以在几分钟…",
+    "favorite_count": 68,
+    "id": "2089387055990284799",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pica.zhimg.com/50/v2-5e637a753b868b391a348ba87a1dea48_l.jpg?source=b6762063",
+      "followers_count": 1070,
+      "gender": 1,
+      "headline": "陪跑新手小白，亚马逊线下一对一培训，让你学习无忧！",
+      "id": "200c0f21d2cbd62942d218b9296b88f4",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "山东花和尚",
+      "url": "https://api.zhihu.com/people/200c0f21d2cbd62942d218b9296b88f4",
+      "url_token": "shan-dong-hua-he-shang",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      19191,
+      3422708
+     ],
+     "comment_count": 95,
+     "created": 1787456649,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "2074824250477785477",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "为什么一斤粮食还没有一瓶瓶装水贵？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/2074824250477785477"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 68,
+      "like_count": 13
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 13,
+    "type": "answer",
+    "updated_time": 1790936864,
+    "url": "https://api.zhihu.com/answers/2089387055990284799",
+    "visited_count": 101080,
+    "vote_next_step": "vote",
+    "voteup_count": 620
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CtYGCI2MrMPo9KKHrwEQBBoJODAxODE0Mzk0IJ2F19YGKKoBMDJABEpCCi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFQSATAYACAAOgp7InJhdyI6IiJ9SkAKK1RTX1NPVVJDRV9UV09UT1dFUl9NU19WMV9SRUNBTExfVEVYVF9XQVJNVVASATAYACAAOgp7InJhdyI6IiJ9WgkxMTY2ODE2NTBiIDIzZWU2OGYwN2JjODE0MDA1ZGNhODU2MjRjZjU0NjNhchMyMDk1NTMyNTE2MzEyNjE3MjExigETMTk1MzQ5MDA2OTgxOTE5NTY0NKoBCXJlY29tbWVuZMIBIGNiMzJlMzNiZWZhOWMyYzBjZTcyNjZlOGJiM2E1ZTNh8gEKCAwSBk5vcm1hbPIBKAgKEiQ2Mzc2MWNkZS1jMjlhLTRjM2QtOTliNy0xZDdkZTY4YjIwZWHyAQUICxIBMYICAIgCvJ/evZY0kgIgY2IzMmUzM2JlZmE5YzJjMGNlNzI2NmU4YmIzYTVlM2GaAgDKAhRGaXJzdEJydXNoV2VpZ2h0UnVsZcoCF1Rlc3RlZEFuZFdvcmtXZWlnaHRSdWxlygIWU2hvckludGVyZXN0V2VpZ2h0UnVsZcoCHE5lZ2F0aXZlVGl0bGVWMklzb2xhdGlvblJ1bGXaAi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFToAgL6AgtOT1JNQUxfRkxPV4oDIDdmYzk3ZDBjZjlhNTQzOTJhNjhjNjJkNzQ0MWMxMDJkmgMPCgJ2MhAAGgVvdGhlciAAqAONiwHYAwDqAxV0ZXh0RmVlZFR3b1Rvd2VyVjFBbGz6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEAboEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAADAp7TaP4EFAAAAAAAAAACJBa37ofUMgeU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQGQBgCgBgSoBgCSAi4KCTgwMTgxNDM5NBITMjA5NTUzMjUxNjMxMjYxNzIxMRgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2095532516312617211}",
+   "created_time": 1792741445,
+   "id": "4_1792741445.512",
+   "offset": 4,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-617388bfe020a50fc0622b9dc6e0b36d_l.jpg?source=b6762063",
+     "followers_count": 1058,
+     "gender": 0,
+     "headline": "不如介绍一下你自己",
+     "id": "cb32e33befa9c2c0ce7266e8bb3a5e3a",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "茶山径蓝",
+     "url": "https://api.zhihu.com/people/cb32e33befa9c2c0ce7266e8bb3a5e3a",
+     "url_token": "lu-jing-shan-cha",
+     "user_type": "people"
+    },
+    "comment_count": 50,
+    "content": "<p data-pid=\"b-Iw0loB\">插一句，之前知乎很流行一个观点：叫不能开除公务员，因为领导有了这个权力就会把部门变成自己的独立王国。</p><p data-pid=\"97xQhsM1\">但现实中，美国民选官员就是可以随便开除自己部门的任何常任公务员的，甚至不用给离职补偿。这正是美国公务员岗位不受欢迎的重要原因</p><p data-pid=\"SJ7lrAk5\">也没见美国的各个部门都变成独立王国啊。真正决定领导对部门控制力的其实是任期，只要频繁轮换再强势的领导也培植不出势力。</p><p data-pid=\"prt9T7DG\">同理，现在年轻人也不要信考公培训机构给你画的永不降薪、永不被优化的大饼</p>",
+    "created_time": 1792393885,
+    "excerpt": "插一句，之前知乎很流行一个观点：叫不能开除公务员，因为领导有了这个权力就会把部门变成自己的独立王国。 但现实中，美国民选官员就是可以随便开除自己部门的任何常任公务员的，甚至不用给离职补偿。这正是美国公务员岗位不受欢迎的重要原因 也没见美国的各个部门都变成独立王国啊。真正决定领导对部门控制力的其实是任期，只要频繁轮换再强势的领导也培植不出势力。 同理，现在年轻人也不要信考公培训机构给你画的永不降薪、…",
+    "excerpt_new": "插一句，之前知乎很流行一个观点：叫不能开除公务员，因为领导有了这个权力就会把部门变成自己的独立王国。 但现实中，美国民选官员就是可以随便开除自己部门的任何常任公务员的，甚至不用给离职补偿。这正是美国公务员岗位不受欢迎的重要原因 也没见美国的各个部门都变成独立王国啊。真正决定领导对部门控制力的其实是任期，只要频繁轮换再强势的领导也培植不出势力。 同理，现在年轻人也不要信考公培训机构给你画的永不降薪、…",
+    "favorite_count": 18,
+    "id": "2095532516312617211",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+      "followers_count": 220,
+      "gender": 0,
+      "headline": "",
+      "id": "dbf219d9a327a9a98a3db355fbec74ec",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "知乎用户MV1IxF",
+      "url": "https://api.zhihu.com/people/dbf219d9a327a9a98a3db355fbec74ec",
+      "url_token": "72-71-35-69-8",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      472,
+      3226,
+      14213,
+      32016,
+      116153
+     ],
+     "comment_count": 11,
+     "created": 1758528326,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "1953490069819195644",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "为什么感觉美国人对考公不热衷？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/1953490069819195644"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 18,
+      "like_count": 7
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 7,
+    "type": "answer",
+    "updated_time": 1792394692,
+    "url": "https://api.zhihu.com/answers/2095532516312617211",
+    "visited_count": 17805,
+    "vote_next_step": "vote",
+    "voteup_count": 170
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CvoGCI2MrMPo9KKHrwEQBBoJODAwNTAyODMxIJS6ndYGKIwRMD9ABUo/CipUU19TT1VSQ0VfWlJFQ0FMTF9GRUVEUkVfTkVXQklFX0hPVVJMWV9SVU0SATAYACAAOgp7InJhdyI6IiJ9WggyMjAyNjIzNGIgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzIwOTE1NzUyMDU4MTQ3MTQ0MDWKAQkyNjg5ODA5MDOqAQlyZWNvbW1lbmTCASBjY2Y0ODNlNmI4ZWI2NTE4YzVkNWFjNDJhMWI1M2QyNvIBCggMEgZOb3JtYWzyASgIChIkYjAxYTFmNmItMmI5Ny00MDNjLWFkOWQtOGEzYjU1NDY3NWM08gEFCAsSATGCAgCIAryf3r2WNJICIGNjZjQ4M2U2YjhlYjY1MThjNWQ1YWM0MmExYjUzZDI2mgIAygIURmlyc3RCcnVzaFdlaWdodFJ1bGXKAhZSZXZpc2l0VmFsdWVXZWlnaHRSdWxlygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhdUZXN0ZWRBbmRXb3JrV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXKAhVMb3dGcmVxVXNlcldlaWdodFJ1bGXKAhZUcm9sbENvbnRlbnRXZWlnaHRSdWxlygIYUXVlc3Rpb25BZ2VJc29sYXRpb25SdWxlygIcQmF5ZXNGaXJzdExldmVsSXNvbGF0aW9uUnVsZdoCKlRTX1NPVVJDRV9aUkVDQUxMX0ZFRURSRV9ORVdCSUVfSE9VUkxZX1JVTegCAvoCC05PUk1BTF9GTE9XigMgN2ZjOTdkMGNmOWE1NDM5MmE2OGM2MmQ3NDQxYzEwMmSaAw8KAnYyEAAaBW90aGVyIACoA4HiDNgDAOoDEG5ld2JpZV9mZWVkcmVfdjL6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEAboEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAACgV3PcP4EFAAAAAAAAAACJBa37ofUMgeU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQGQBgCgBgWoBgGSAi4KCTgwMDUwMjgzMRITMjA5MTU3NTIwNTgxNDcxNDQwNRgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2091575205814714405}",
+   "created_time": 1792741445,
+   "id": "5_1792741445.915",
+   "offset": 5,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 141,
+     "gender": -1,
+     "headline": "经济学生，无业游民",
+     "id": "ccf483e6b8eb6518c5d5ac42a1b53d26",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "张国老",
+     "url": "https://api.zhihu.com/people/ccf483e6b8eb6518c5d5ac42a1b53d26",
+     "url_token": "zhang-guo-lao-89-31",
+     "user_type": "people"
+    },
+    "comment_count": 63,
+    "content": "<p data-pid=\"q8s7lpkW\">之前帮我外甥找家教，一个大二的女生跟我报价一小时80，我觉得太贵。她说你试试课就知道了。来的时候穿了一个小短裙加小腿白袜，黑长直的大眼睛忽闪闪。两个小时我给了她200，说多的40让她打车，还加了微信，准备再约她给我上课。啊不，给我外甥补习</p>",
+    "created_time": 1791450388,
+    "excerpt": "之前帮我外甥找家教，一个大二的女生跟我报价一小时80，我觉得太贵。她说你试试课就知道了。来的时候穿了一个小短裙加小腿白袜，黑长直的大眼睛忽闪闪。两个小时我给了她200，说多的40让她打车，还加了微信，准备再约她给我上课。啊不，给我外甥补习",
+    "excerpt_new": "之前帮我外甥找家教，一个大二的女生跟我报价一小时80，我觉得太贵。她说你试试课就知道了。来的时候穿了一个小短裙加小腿白袜，黑长直的大眼睛忽闪闪。两个小时我给了她200，说多的40让她打车，还加了微信，准备再约她给我上课。啊不，给我外甥补习",
+    "favorite_count": 144,
+    "id": "2091575205814714405",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/50/eb7f8d59b5437380d2919b92d9007d75_l.jpg?source=b6762063",
+      "badge": [
+       {
+        "description": "电子设备制造业 从业人员",
+        "type": "identity_people"
+       }
+      ],
+      "followers_count": 1,
+      "gender": 1,
+      "headline": "",
+      "id": "38c31d55cdbdc2ea174b80f3727c531b",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "不想读博的Jason",
+      "url": "https://api.zhihu.com/people/38c31d55cdbdc2ea174b80f3727c531b",
+      "url_token": "li-jia-sheng-62",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      4729,
+      16305
+     ],
+     "comment_count": 303,
+     "created": 1521288291,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "268980903",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "女朋友大一，要去给高二男生当家教，作为男朋友是否应该支持？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/268980903"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 144,
+      "like_count": 30
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 30,
+    "type": "answer",
+    "updated_time": 1791450388,
+    "url": "https://api.zhihu.com/answers/2091575205814714405",
+    "visited_count": 209153,
+    "vote_next_step": "vote",
+    "voteup_count": 2188
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  }
+ ],
+ "data": [
+  {
+   "action_card": false,
+   "attached_info": "CvkFCI2MrMPo9KKHrwEQBBoJNzUwOTg1MDIyIOfgnccGKIgKMDpAAEo/CipUU19TT1VSQ0VfWlJFQ0FMTF9GRUVEUkVfTkVXQklFX0hPVVJMWV9SVU0SATAYACAAOgp7InJhdyI6IiJ9Wgg0NjM1ODEzMWIgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzE5NTk2NTQ1NjA3MDk3MTUwOTOKAQkzNzgzNTgwNjWqAQlyZWNvbW1lbmTCASA3ODExOGFkNjZiODRjYmJiMWExZWIwOTYxYjMyOWUzNfIBCggMEgZOb3JtYWzyASgIChIkMGFkMmI2OGItMDZkYi00MmY5LWExZTktYjg3NmI4ZTZkOGI48gEFCAsSATGCAgCIAruf3r2WNJICIDc4MTE4YWQ2NmI4NGNiYmIxYTFlYjA5NjFiMzI5ZTM1mgIAygIURmlyc3RCcnVzaFdlaWdodFJ1bGXKAhZSZXZpc2l0VmFsdWVXZWlnaHRSdWxlygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhZTaG9ySW50ZXJlc3RXZWlnaHRSdWxl2gIqVFNfU09VUkNFX1pSRUNBTExfRkVFRFJFX05FV0JJRV9IT1VSTFlfUlVN6AIC+gILTk9STUFMX0ZMT1eKAyA3ZmM5N2QwY2Y5YTU0MzkyYTY4YzYyZDc0NDFjMTAyZJoDDwoCdjIQABoFb3RoZXIgAKgD1dsk2AMA6gMQbmV3YmllX2ZlZWRyZV92MvoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQBugQGbWFudWFswgQDMTU3yAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAAAAV5TcP4EFAAAAAAAAAACJBa37ofUMgeU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQGQBgCgBgCoBgCSAi4KCTc1MDk4NTAyMhITMTk1OTY1NDU2MDcwOTcxNTA5MxgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 1959654560709715093}",
+   "created_time": 1792741445,
+   "id": "0_1792741445.283",
+   "offset": 0,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-94d00eeb39d3cd70443887d120f858d1_l.jpg?source=b6762063",
+     "followers_count": 374,
+     "gender": 1,
+     "headline": "警惕民族主义被人利用 不解决分配 大饼做的再大也没有",
+     "id": "78118ad66b84cbbb1a1eb0961b329e35",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "卡塞尔屠龙学院",
+     "url": "https://api.zhihu.com/people/78118ad66b84cbbb1a1eb0961b329e35",
+     "url_token": "jiejidouzheng-51",
+     "user_type": "people"
+    },
+    "comment_count": 58,
+    "content": "<p data-pid=\"TnddaseU\">我记得以前微信可以改定位的时候 改到西亚那块 搜周围的人 朋友圈大开眼界 罩袍底下可一点不保守啊 聊几句夸一下就给发福利图 大方极了</p>",
+    "created_time": 1759998055,
+    "excerpt": "我记得以前微信可以改定位的时候 改到西亚那块 搜周围的人 朋友圈大开眼界 罩袍底下可一点不保守啊 聊几句夸一下就给发福利图 大方极了",
+    "excerpt_new": "我记得以前微信可以改定位的时候 改到西亚那块 搜周围的人 朋友圈大开眼界 罩袍底下可一点不保守啊 聊几句夸一下就给发福利图 大方极了",
+    "favorite_count": 195,
+    "id": "1959654560709715093",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-f85bd1d6351afd133741d50c7c1473d8_l.jpg?source=b6762063",
+      "followers_count": 168,
+      "gender": 0,
+      "headline": "",
+      "id": "85529f8652fdcee665f9978068d1e8a9",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "hhhuu",
+      "url": "https://api.zhihu.com/people/85529f8652fdcee665f9978068d1e8a9",
+      "url_token": "yysxwl",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      285,
+      2250,
+      13279,
+      39503
+     ],
+     "comment_count": 5,
+     "created": 1583840225,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "378358065",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "在沙特阿拉伯女性不穿罩袍会怎样?",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/378358065"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 195,
+      "like_count": 2
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 2,
+    "type": "answer",
+    "updated_time": 1759998055,
+    "url": "https://api.zhihu.com/answers/1959654560709715093",
+    "visited_count": 601557,
+    "vote_next_step": "vote",
+    "voteup_count": 1288
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CqUGCI2MrMPo9KKHrwEQBBoJNzgyMTY3MDcxIJ/Mr9AGKMEGMK4CQAFKQgotVFNfU09VUkNFX1RXT1RPV0VSX01VTFRJX1NDRU5FX1YxX1JFQ0FMTF9URVhUEgEwGAAgADoKeyJyYXciOiIifVoJMTE1MDQ4NTkxYiAyM2VlNjhmMDdiYzgxNDAwNWRjYTg1NjI0Y2Y1NDYzYXITMjA0MDA0NTMwNzk2NzMxMjQzOYoBEzE5MDg4MTg4OTY1ODIwNTg1NjSqAQlyZWNvbW1lbmTCASAxN2Q5YTMxNDQwZjExYjNkODNlOTE1ZTYyNmFiYWM0ZfIBCggMEgZOb3JtYWzyASgIChIkN2YxY2I4OWQtZTQ0Zi00ZjM4LThmZmItYWMzNmEwOGZiYTU08gEFCAsSATGCAgCIAryf3r2WNJICIDE3ZDlhMzE0NDBmMTFiM2Q4M2U5MTVlNjI2YWJhYzRlmgIAygIURmlyc3RCcnVzaFdlaWdodFJ1bGXKAhRDb250ZW50QWdlV2VpZ2h0UnVsZcoCF1Rlc3RlZEFuZFdvcmtXZWlnaHRSdWxlygIWU2hvckludGVyZXN0V2VpZ2h0UnVsZcoCFUxvd0ZyZXFVc2VyV2VpZ2h0UnVsZdoCLVRTX1NPVVJDRV9UV09UT1dFUl9NVUxUSV9TQ0VORV9WMV9SRUNBTExfVEVYVOgCAvoCC05PUk1BTF9GTE9XigMgN2ZjOTdkMGNmOWE1NDM5MmE2OGM2MmQ3NDQxYzEwMmSaAw8KAnYyEAAaBW90aGVyIACoA5j7EdgDAOoDFXRleHRGZWVkVHdvVG93ZXJWMUFsbPoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQBugQCYWnCBAM0MDDIBADSBA/mjqjojZDlt7Lmm7TmlrDYBADwBAD5BAAAAECcCtU/gQUAAAAAAAAAAIkFrfuh9QyB5T+SBQCaBQNkZnSiBQNkZnSyBQExuQUAAAAAAAAAANAFAOAFAOgFAPAFAZAGAKAGAagGAZICLgoJNzgyMTY3MDcxEhMyMDQwMDQ1MzA3OTY3MzEyNDM5GAQiCklNQUdFX1RFWFQ=",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2040045307967312439}",
+   "created_time": 1792741445,
+   "id": "1_1792741445.673",
+   "offset": 1,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 235,
+     "gender": 1,
+     "headline": "很难评",
+     "id": "17d9a31440f11b3d83e915e626abac4e",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "凳子殺手",
+     "url": "https://api.zhihu.com/people/17d9a31440f11b3d83e915e626abac4e",
+     "url_token": "xiao-diao-chan-87",
+     "user_type": "people"
+    },
+    "comment_count": 302,
+    "content": "<p data-pid=\"0NnfUm95\">打字出来都手抖。。。上周满融满仓了衢州发展，周日打麻将的时候耍手机发现重组终止了，立马头皮就炸了。果然，这周开始连续跌停了，明天不开板就爆仓了。现在已经亏完所有的积蓄了，剩下都是负债。。。。努力五六年的200万清空了。。。我今天手抖气喘，不知道该怎么办。31年来最无助的时刻。</p>",
+    "created_time": 1779164703,
+    "excerpt": "打字出来都手抖。。。上周满融满仓了衢州发展，周日打麻将的时候耍手机发现重组终止了，立马头皮就炸了。果然，这周开始连续跌停了，明天不开板就爆仓了。现在已经亏完所有的积蓄了，剩下都是负债。。。。努力五六年的200万清空了。。。我今天手抖气喘，不知道该怎么办。31年来最无助的时刻。",
+    "excerpt_new": "打字出来都手抖。。。上周满融满仓了衢州发展，周日打麻将的时候耍手机发现重组终止了，立马头皮就炸了。果然，这周开始连续跌停了，明天不开板就爆仓了。现在已经亏完所有的积蓄了，剩下都是负债。。。。努力五六年的200万清空了。。。我今天手抖气喘，不知道该怎么办。31年来最无助的时刻。",
+    "favorite_count": 216,
+    "id": "2040045307967312439",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-1ad14def2dd9833668423ab61778302a_l.jpg?source=b6762063",
+      "followers_count": 43,
+      "gender": 0,
+      "headline": "有钱才能任性",
+      "id": "481af0bd4550e8b32a38fcd8a882b563",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "不一样的烟火",
+      "url": "https://api.zhihu.com/people/481af0bd4550e8b32a38fcd8a882b563",
+      "url_token": "wo-jiu-shi-wo-49-81-13",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      2082112,
+      2575258,
+      2985604
+     ],
+     "comment_count": 22,
+     "created": 1747877889,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "1908818896582058564",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "各位都是怎么度过人生的至暗时刻的？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/1908818896582058564"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 216,
+      "like_count": 9
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 9,
+    "type": "answer",
+    "updated_time": 1779164703,
+    "url": "https://api.zhihu.com/answers/2040045307967312439",
+    "visited_count": 294296,
+    "vote_next_step": "vote",
+    "voteup_count": 833
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CpwGCI2MrMPo9KKHrwEQBBoJNzg1MDE0MzE3IIXtnNEGKLQKMHdAAkpCCi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFQSATAYACAAOgp7InJhdyI6IiJ9Wgg0NzE1OTAyN2IgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzIwNDc1NTMzNDAwNjI2NzU1NzOKAQkzODE5NjM4ODWqAQlyZWNvbW1lbmTCASAwYmI3ZjNiYjMwZjg4Zjc0YTlmYmYzYjcxNGE1YTMwOPIBCggMEgZOb3JtYWzyASgIChIkYjhiMGNlOTEtZDhlMC00ZTVkLTg0ZDQtZGU1YjcxMWZjOWZl8gEFCAsSATGCAgCIAryf3r2WNJICIDBiYjdmM2JiMzBmODhmNzRhOWZiZjNiNzE0YTVhMzA4mgIAygIURmlyc3RCcnVzaFdlaWdodFJ1bGXKAhRDb250ZW50QWdlV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXKAhdVc2VyRXhjbHVzaXZlV2VpZ2h0UnVsZcoCGFF1ZXN0aW9uQWdlSXNvbGF0aW9uUnVsZdoCLVRTX1NPVVJDRV9UV09UT1dFUl9NVUxUSV9TQ0VORV9WMV9SRUNBTExfVEVYVOgCAvoCC05PUk1BTF9GTE9XigMgN2ZjOTdkMGNmOWE1NDM5MmE2OGM2MmQ3NDQxYzEwMmSaAw8KAnYyEAAaBW90aGVyIACoA7SCBtgDAOoDFXRleHRGZWVkVHdvVG93ZXJWMUFsbPoDHxIMVU5LTk9XTl9NT0RFIAAqDU5PX0lNQUdFX01PREWABACIBACSBAZOb3JtYWyaBAEyoAQAqAQAsAQBugQCYWnCBAM0MDDIBADSBA/mjqjojZDlt7Lmm7TmlrDYBADwBAD5BAAAAGChkdU/gQUAAAAAAAAAAIkFrfuh9QyB5T+SBQCaBQNkZnSiBQNkZnSyBQExuQUAAAAAAAAAANAFAOAFAOgFAPAFAZAGAKAGAqgGAJICLgoJNzg1MDE0MzE3EhMyMDQ3NTUzMzQwMDYyNjc1NTczGAQiCklNQUdFX1RFWFQ=",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2047553340062675573}",
+   "created_time": 1792741445,
+   "id": "2_1792741445.430",
+   "offset": 2,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 5613,
+     "gender": -1,
+     "headline": "一个普通人，请勿过多要求，喜欢指点的大师请绕道",
+     "id": "0bb7f3bb30f88f74a9fbf3b714a5a308",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "吴至信",
+     "url": "https://api.zhihu.com/people/0bb7f3bb30f88f74a9fbf3b714a5a308",
+     "url_token": "wu-zhi-xin-48-89",
+     "user_type": "people"
+    },
+    "comment_count": 119,
+    "content": "<p data-pid=\"n2jKZxeD\">乔丹这人的弱点就是好面子以及发自内心的同情弱者</p><p data-pid=\"6bBdUMa5\">你在球场上跟他斗气，把他弄红温了，然后他拿出100%的斗志和毅力来跟你拼攻防、结果往往就是他在你头上砍4.50分，防守端把你限制得10分都得不到</p><p data-pid=\"zRl-F2lo\">然后一整场都对着你喷垃圾话摧毁你的信心和手感、到结束时还在你耳边释放恶魔的低语。</p><p data-pid=\"XzuwlHYS\">但是一旦你反其道而行之、就像show time时期的主力控卫斯科特那样。</p><p data-pid=\"uSwT1M8B\">根本不惹怒乔丹，反而每句话都发自内心的赞美称赞他。</p><p data-pid=\"20vBAbc_\">他投进球你就称赞他：好球，完美</p><p data-pid=\"h52t6hO_\">他打铁你比他还惋惜：真可惜，差一点。</p><p data-pid=\"6g803Qa_\">防守端也不喷垃圾话，就象征性的防守，但私底下疯狂慢回放他的脚步和技术动作。</p><p data-pid=\"1XnNiwMT\">结果就是温水煮青蛙一样，乔丹每每面对斯科特，经常只能拿25.6分，命中率也下降到45%左右</p><p data-pid=\"lmMvLJVp\">远低于他生涯的30+分和50%+命中率。</p><p data-pid=\"Ftu2lSgv\">因为乔丹觉得你给他面子，尊重他，他不好意思下手太重把你打得怀疑人生。</p><p data-pid=\"2Jy4Js2Q\">再来就是他只会觉得当晚是他自己手感不好打铁，跟你防守策略没关系</p>",
+    "created_time": 1780954757,
+    "excerpt": "乔丹这人的弱点就是好面子以及发自内心的同情弱者 你在球场上跟他斗气，把他弄红温了，然后他拿出100%的斗志和毅力来跟你拼攻防、结果往往就是他在你头上砍4.50分，防守端把你限制得10分都得不到 然后一整场都对着你喷垃圾话摧毁你的信心和手感、到结束时还在你耳边释放恶魔的低语。 但是一旦你反其道而行之、就像show time时期的主力控卫斯科特那样。 根本不惹怒乔丹，反而每句话都发自内心的赞美称赞他。 他投进球你就称赞他：…",
+    "excerpt_new": "乔丹这人的弱点就是好面子以及发自内心的同情弱者 你在球场上跟他斗气，把他弄红温了，然后他拿出100%的斗志和毅力来跟你拼攻防、结果往往就是他在你头上砍4.50分，防守端把你限制得10分都得不到 然后一整场都对着你喷垃圾话摧毁你的信心和手感、到结束时还在你耳边释放恶魔的低语。 但是一旦你反其道而行之、就像show time时期的主力控卫斯科特那样。 根本不惹怒乔丹，反而每句话都发自内心的赞美称赞他。 他投进球你就称赞他：…",
+    "favorite_count": 123,
+    "id": "2047553340062675573",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+      "followers_count": 0,
+      "gender": 0,
+      "headline": "",
+      "id": "6a26466285e824a06ce7a86d40693bc2",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "知乎用户VDVdD9",
+      "url": "https://api.zhihu.com/people/6a26466285e824a06ce7a86d40693bc2",
+      "url_token": "tian-tian-tian-gou-61",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      4196,
+      35744,
+      156097
+     ],
+     "comment_count": 2,
+     "created": 1585008416,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "381963885",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "迈克尔乔丹在球场上的弱点是什么？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/381963885"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 123,
+      "like_count": 77
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "segment_infos": [
+     {
+      "marks": [
+       {
+        "end_index": 45,
+        "seg_info": {
+         "comment_count": 3,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 24,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2047779218319324517"
+         ]
+        },
+        "start_index": 22
+       }
+      ],
+      "pid": "1XnNiwMT",
+      "text": "结果就是温水煮青蛙一样，乔丹每每面对斯科特，经常只能拿25.6分，命中率也下降到45%左右"
+     },
+     {
+      "marks": [
+       {
+        "end_index": 34,
+        "seg_info": {
+         "comment_count": 0,
+         "is_like": false,
+         "is_span": false,
+         "like_count": 34,
+         "my_comment_count": 0,
+         "seg_ids": [
+          "2048736734867993491"
+         ]
+        },
+        "start_index": 0
+       }
+      ],
+      "pid": "Ftu2lSgv",
+      "text": "因为乔丹觉得你给他面子，尊重他，他不好意思下手太重把你打得怀疑人生。"
+     }
+    ],
+    "thanks_count": 77,
+    "type": "answer",
+    "updated_time": 1780954757,
+    "url": "https://api.zhihu.com/answers/2047553340062675573",
+    "visited_count": 98612,
+    "vote_next_step": "vote",
+    "voteup_count": 1332
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CosGCI2MrMPo9KKHrwEQBBoJNzk5OTAyODczILXO/dUGKOwEMDlAA0ovCgZJdGVtQ0YSH2RvY190eXBlOiBBbnN3ZXIKaWQ6IDc5OTI2Nzk3MAoYACAAOgBaCTEyMTAzNzkxNmIgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzIwODkzODcwNTU5OTAyODQ3OTmKARMyMDc0ODI0MjUwNDc3Nzg1NDc3qgEJcmVjb21tZW5kwgEgNDM3YzFlYmMzZjE3OTczMjdhOTZlNmRkZWI5Y2MyMzPyAQoIDBIGTm9ybWFs8gEoCAoSJDRiZmE0MGM1LWZlZTUtNDcxNS04M2NmLTZiZjgwMDAxYmI0NPIBBQgLEgExggIAiAK8n969ljSSAiA0MzdjMWViYzNmMTc5NzMyN2E5NmU2ZGRlYjljYzIzM5oCAMoCFEZpcnN0QnJ1c2hXZWlnaHRSdWxlygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhdUZXN0ZWRBbmRXb3JrV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXKAhVMb3dGcmVxVXNlcldlaWdodFJ1bGXaAgZJdGVtQ0boAgL6AgtOT1JNQUxfRkxPV4oDIDdmYzk3ZDBjZjlhNTQzOTJhNjhjNjJkNzQ0MWMxMDJkmgMPCgJ2MhAAGgVvdGhlciAAqAPYlQbYAwDqAzZ0ZXh0QWxsU2l0ZU12SXRlbUNGTXVsdGlSZWNhbGxlcl90ZXh0QWxsU2l0ZU12SXRlbUNGVjL6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEAboEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAAAgwCrWP4EFAAAAAAAAAACJBa37ofUMgeU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQGQBgCgBgOoBgGSAi4KCTc5OTkwMjg3MxITMjA4OTM4NzA1NTk5MDI4NDc5ORgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2089387055990284799}",
+   "created_time": 1792741445,
+   "id": "3_1792741445.673",
+   "offset": 3,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-3d1e26d9d580e6fccf76332f15c2bd1c_l.jpg?source=b6762063",
+     "followers_count": 1108,
+     "gender": 1,
+     "headline": "面向许愿编程，未来的AI上帝啥做不到？",
+     "id": "437c1ebc3f1797327a96e6ddeb9cc233",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "白羽飘",
+     "url": "https://api.zhihu.com/people/437c1ebc3f1797327a96e6ddeb9cc233",
+     "url_token": "bai-yu-piao",
+     "user_type": "people"
+    },
+    "comment_count": 57,
+    "content": "<p data-pid=\"mlqREln3\">一瓶水卖的是“信任成本”。</p><p data-pid=\"RoczADFN\">你能理解吗？</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"M4fpoiKb\">不能理解的话，就去超市拿一瓶水，</p><p data-pid=\"i_15dN5q\">付款之前和店员说，这瓶水我不要了，店员什么都不会说。</p><p data-pid=\"_CWUMMeA\">但是，如果你把瓶盖拧开，再和店员说，这瓶水我不要了，你猜店员会怎么说？</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"O2ASHd1-\">或者你拿一箱矿泉水去景区卖，</p><p data-pid=\"JwYtiJHc\">你试试开过口的能不能卖掉。</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"9x_8YbsD\">想通了吗，值钱都是【没开过口的矿泉水】。</p><hr/><p class=\"ztext-empty-paragraph\"><br/></p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"A8MCAi_B\">你如果想掀翻瓶装矿泉水市场的话，</p><p data-pid=\"AZX8IANR\">问这种没有营养问题毫无意义，</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"2aqgT9Hj\">我建议你去发明一种低成本工具，可以在几分钟之内将开过口的瓶盖接回去。而表面看不出任何区别。</p><p data-pid=\"7CYS_Cnl\">你都不用刻意去卖这种工具，你只需要将这种工具制作方法和原理公开在网上。</p><p data-pid=\"MRY9EnzC\">这样不出一年，所有的塑料瓶装矿泉水的市场就彻底灭绝了，</p><p class=\"ztext-empty-paragraph\"><br/></p><p data-pid=\"EhbXtiFR\">只会剩下【易拉罐矿泉水】</p>",
+    "created_time": 1790928693,
+    "excerpt": "一瓶水卖的是“信任成本”。 你能理解吗？ 不能理解的话，就去超市拿一瓶水， 付款之前和店员说，这瓶水我不要了，店员什么都不会说。 但是，如果你把瓶盖拧开，再和店员说，这瓶水我不要了，你猜店员会怎么说？ 或者你拿一箱矿泉水去景区卖， 你试试开过口的能不能卖掉。 想通了吗，值钱都是【没开过口的矿泉水】。 你如果想掀翻瓶装矿泉水市场的话， 问这种没有营养问题毫无意义， 我建议你去发明一种低成本工具，可以在几分钟…",
+    "excerpt_new": "一瓶水卖的是“信任成本”。 你能理解吗？ 不能理解的话，就去超市拿一瓶水， 付款之前和店员说，这瓶水我不要了，店员什么都不会说。 但是，如果你把瓶盖拧开，再和店员说，这瓶水我不要了，你猜店员会怎么说？ 或者你拿一箱矿泉水去景区卖， 你试试开过口的能不能卖掉。 想通了吗，值钱都是【没开过口的矿泉水】。 你如果想掀翻瓶装矿泉水市场的话， 问这种没有营养问题毫无意义， 我建议你去发明一种低成本工具，可以在几分钟…",
+    "favorite_count": 68,
+    "id": "2089387055990284799",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pica.zhimg.com/50/v2-5e637a753b868b391a348ba87a1dea48_l.jpg?source=b6762063",
+      "followers_count": 1070,
+      "gender": 1,
+      "headline": "陪跑新手小白，亚马逊线下一对一培训，让你学习无忧！",
+      "id": "200c0f21d2cbd62942d218b9296b88f4",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "山东花和尚",
+      "url": "https://api.zhihu.com/people/200c0f21d2cbd62942d218b9296b88f4",
+      "url_token": "shan-dong-hua-he-shang",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      19191,
+      3422708
+     ],
+     "comment_count": 95,
+     "created": 1787456649,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "2074824250477785477",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "为什么一斤粮食还没有一瓶瓶装水贵？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/2074824250477785477"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 68,
+      "like_count": 13
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 13,
+    "type": "answer",
+    "updated_time": 1790936864,
+    "url": "https://api.zhihu.com/answers/2089387055990284799",
+    "visited_count": 101080,
+    "vote_next_step": "vote",
+    "voteup_count": 620
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CtYGCI2MrMPo9KKHrwEQBBoJODAxODE0Mzk0IJ2F19YGKKoBMDJABEpCCi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFQSATAYACAAOgp7InJhdyI6IiJ9SkAKK1RTX1NPVVJDRV9UV09UT1dFUl9NU19WMV9SRUNBTExfVEVYVF9XQVJNVVASATAYACAAOgp7InJhdyI6IiJ9WgkxMTY2ODE2NTBiIDIzZWU2OGYwN2JjODE0MDA1ZGNhODU2MjRjZjU0NjNhchMyMDk1NTMyNTE2MzEyNjE3MjExigETMTk1MzQ5MDA2OTgxOTE5NTY0NKoBCXJlY29tbWVuZMIBIGNiMzJlMzNiZWZhOWMyYzBjZTcyNjZlOGJiM2E1ZTNh8gEKCAwSBk5vcm1hbPIBKAgKEiQ2Mzc2MWNkZS1jMjlhLTRjM2QtOTliNy0xZDdkZTY4YjIwZWHyAQUICxIBMYICAIgCvJ/evZY0kgIgY2IzMmUzM2JlZmE5YzJjMGNlNzI2NmU4YmIzYTVlM2GaAgDKAhRGaXJzdEJydXNoV2VpZ2h0UnVsZcoCF1Rlc3RlZEFuZFdvcmtXZWlnaHRSdWxlygIWU2hvckludGVyZXN0V2VpZ2h0UnVsZcoCHE5lZ2F0aXZlVGl0bGVWMklzb2xhdGlvblJ1bGXaAi1UU19TT1VSQ0VfVFdPVE9XRVJfTVVMVElfU0NFTkVfVjFfUkVDQUxMX1RFWFToAgL6AgtOT1JNQUxfRkxPV4oDIDdmYzk3ZDBjZjlhNTQzOTJhNjhjNjJkNzQ0MWMxMDJkmgMPCgJ2MhAAGgVvdGhlciAAqAONiwHYAwDqAxV0ZXh0RmVlZFR3b1Rvd2VyVjFBbGz6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEAboEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAADAp7TaP4EFAAAAAAAAAACJBa37ofUMgeU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQGQBgCgBgSoBgCSAi4KCTgwMTgxNDM5NBITMjA5NTUzMjUxNjMxMjYxNzIxMRgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2095532516312617211}",
+   "created_time": 1792741445,
+   "id": "4_1792741445.512",
+   "offset": 4,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-617388bfe020a50fc0622b9dc6e0b36d_l.jpg?source=b6762063",
+     "followers_count": 1058,
+     "gender": 0,
+     "headline": "不如介绍一下你自己",
+     "id": "cb32e33befa9c2c0ce7266e8bb3a5e3a",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "茶山径蓝",
+     "url": "https://api.zhihu.com/people/cb32e33befa9c2c0ce7266e8bb3a5e3a",
+     "url_token": "lu-jing-shan-cha",
+     "user_type": "people"
+    },
+    "comment_count": 50,
+    "content": "<p data-pid=\"b-Iw0loB\">插一句，之前知乎很流行一个观点：叫不能开除公务员，因为领导有了这个权力就会把部门变成自己的独立王国。</p><p data-pid=\"97xQhsM1\">但现实中，美国民选官员就是可以随便开除自己部门的任何常任公务员的，甚至不用给离职补偿。这正是美国公务员岗位不受欢迎的重要原因</p><p data-pid=\"SJ7lrAk5\">也没见美国的各个部门都变成独立王国啊。真正决定领导对部门控制力的其实是任期，只要频繁轮换再强势的领导也培植不出势力。</p><p data-pid=\"prt9T7DG\">同理，现在年轻人也不要信考公培训机构给你画的永不降薪、永不被优化的大饼</p>",
+    "created_time": 1792393885,
+    "excerpt": "插一句，之前知乎很流行一个观点：叫不能开除公务员，因为领导有了这个权力就会把部门变成自己的独立王国。 但现实中，美国民选官员就是可以随便开除自己部门的任何常任公务员的，甚至不用给离职补偿。这正是美国公务员岗位不受欢迎的重要原因 也没见美国的各个部门都变成独立王国啊。真正决定领导对部门控制力的其实是任期，只要频繁轮换再强势的领导也培植不出势力。 同理，现在年轻人也不要信考公培训机构给你画的永不降薪、…",
+    "excerpt_new": "插一句，之前知乎很流行一个观点：叫不能开除公务员，因为领导有了这个权力就会把部门变成自己的独立王国。 但现实中，美国民选官员就是可以随便开除自己部门的任何常任公务员的，甚至不用给离职补偿。这正是美国公务员岗位不受欢迎的重要原因 也没见美国的各个部门都变成独立王国啊。真正决定领导对部门控制力的其实是任期，只要频繁轮换再强势的领导也培植不出势力。 同理，现在年轻人也不要信考公培训机构给你画的永不降薪、…",
+    "favorite_count": 18,
+    "id": "2095532516312617211",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://pic1.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+      "followers_count": 220,
+      "gender": 0,
+      "headline": "",
+      "id": "dbf219d9a327a9a98a3db355fbec74ec",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "知乎用户MV1IxF",
+      "url": "https://api.zhihu.com/people/dbf219d9a327a9a98a3db355fbec74ec",
+      "url_token": "72-71-35-69-8",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      472,
+      3226,
+      14213,
+      32016,
+      116153
+     ],
+     "comment_count": 11,
+     "created": 1758528326,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "1953490069819195644",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "为什么感觉美国人对考公不热衷？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/1953490069819195644"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 18,
+      "like_count": 7
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 7,
+    "type": "answer",
+    "updated_time": 1792394692,
+    "url": "https://api.zhihu.com/answers/2095532516312617211",
+    "visited_count": 17805,
+    "vote_next_step": "vote",
+    "voteup_count": 170
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  },
+  {
+   "action_card": false,
+   "attached_info": "CvoGCI2MrMPo9KKHrwEQBBoJODAwNTAyODMxIJS6ndYGKIwRMD9ABUo/CipUU19TT1VSQ0VfWlJFQ0FMTF9GRUVEUkVfTkVXQklFX0hPVVJMWV9SVU0SATAYACAAOgp7InJhdyI6IiJ9WggyMjAyNjIzNGIgMjNlZTY4ZjA3YmM4MTQwMDVkY2E4NTYyNGNmNTQ2M2FyEzIwOTE1NzUyMDU4MTQ3MTQ0MDWKAQkyNjg5ODA5MDOqAQlyZWNvbW1lbmTCASBjY2Y0ODNlNmI4ZWI2NTE4YzVkNWFjNDJhMWI1M2QyNvIBCggMEgZOb3JtYWzyASgIChIkYjAxYTFmNmItMmI5Ny00MDNjLWFkOWQtOGEzYjU1NDY3NWM08gEFCAsSATGCAgCIAryf3r2WNJICIGNjZjQ4M2U2YjhlYjY1MThjNWQ1YWM0MmExYjUzZDI2mgIAygIURmlyc3RCcnVzaFdlaWdodFJ1bGXKAhZSZXZpc2l0VmFsdWVXZWlnaHRSdWxlygIUQ29udGVudEFnZVdlaWdodFJ1bGXKAhdUZXN0ZWRBbmRXb3JrV2VpZ2h0UnVsZcoCFlNob3JJbnRlcmVzdFdlaWdodFJ1bGXKAhVMb3dGcmVxVXNlcldlaWdodFJ1bGXKAhZUcm9sbENvbnRlbnRXZWlnaHRSdWxlygIYUXVlc3Rpb25BZ2VJc29sYXRpb25SdWxlygIcQmF5ZXNGaXJzdExldmVsSXNvbGF0aW9uUnVsZdoCKlRTX1NPVVJDRV9aUkVDQUxMX0ZFRURSRV9ORVdCSUVfSE9VUkxZX1JVTegCAvoCC05PUk1BTF9GTE9XigMgN2ZjOTdkMGNmOWE1NDM5MmE2OGM2MmQ3NDQxYzEwMmSaAw8KAnYyEAAaBW90aGVyIACoA4HiDNgDAOoDEG5ld2JpZV9mZWVkcmVfdjL6Ax8SDFVOS05PV05fTU9ERSAAKg1OT19JTUFHRV9NT0RFgAQAiAQAkgQGTm9ybWFsmgQBMqAEAKgEALAEAboEAmFpwgQDNDAwyAQA0gQP5o6o6I2Q5bey5pu05paw2AQA8AQA+QQAAACgV3PcP4EFAAAAAAAAAACJBa37ofUMgeU/kgUAmgUDZGZ0ogUDZGZ0sgUBMbkFAAAAAAAAAADQBQDgBQDoBQDwBQGQBgCgBgWoBgGSAi4KCTgwMDUwMjgzMRITMjA5MTU3NTIwNTgxNDcxNDQwNRgEIgpJTUFHRV9URVhU",
+   "brief": "{\"source\": \"TS\", \"type\": \"answer\", \"id\": 2091575205814714405}",
+   "created_time": 1792741445,
+   "id": "5_1792741445.915",
+   "offset": 5,
+   "target": {
+    "allow_segment_interaction": true,
+    "answer_type": "normal",
+    "author": {
+     "avatar_url": "https://picx.zhimg.com/50/v2-abed1a8c04700ba7d72b45195223e0ff_l.jpg?source=b6762063",
+     "followers_count": 141,
+     "gender": -1,
+     "headline": "经济学生，无业游民",
+     "id": "ccf483e6b8eb6518c5d5ac42a1b53d26",
+     "is_followed": false,
+     "is_following": false,
+     "is_org": false,
+     "name": "张国老",
+     "url": "https://api.zhihu.com/people/ccf483e6b8eb6518c5d5ac42a1b53d26",
+     "url_token": "zhang-guo-lao-89-31",
+     "user_type": "people"
+    },
+    "comment_count": 63,
+    "content": "<p data-pid=\"q8s7lpkW\">之前帮我外甥找家教，一个大二的女生跟我报价一小时80，我觉得太贵。她说你试试课就知道了。来的时候穿了一个小短裙加小腿白袜，黑长直的大眼睛忽闪闪。两个小时我给了她200，说多的40让她打车，还加了微信，准备再约她给我上课。啊不，给我外甥补习</p>",
+    "created_time": 1791450388,
+    "excerpt": "之前帮我外甥找家教，一个大二的女生跟我报价一小时80，我觉得太贵。她说你试试课就知道了。来的时候穿了一个小短裙加小腿白袜，黑长直的大眼睛忽闪闪。两个小时我给了她200，说多的40让她打车，还加了微信，准备再约她给我上课。啊不，给我外甥补习",
+    "excerpt_new": "之前帮我外甥找家教，一个大二的女生跟我报价一小时80，我觉得太贵。她说你试试课就知道了。来的时候穿了一个小短裙加小腿白袜，黑长直的大眼睛忽闪闪。两个小时我给了她200，说多的40让她打车，还加了微信，准备再约她给我上课。啊不，给我外甥补习",
+    "favorite_count": 144,
+    "id": "2091575205814714405",
+    "is_copyable": true,
+    "is_labeled": false,
+    "is_navigator": false,
+    "navigator_vote": false,
+    "preview_text": "",
+    "preview_type": "default",
+    "question": {
+     "answer_count": 0,
+     "author": {
+      "avatar_url": "https://picx.zhimg.com/50/eb7f8d59b5437380d2919b92d9007d75_l.jpg?source=b6762063",
+      "badge": [
+       {
+        "description": "电子设备制造业 从业人员",
+        "type": "identity_people"
+       }
+      ],
+      "followers_count": 1,
+      "gender": 1,
+      "headline": "",
+      "id": "38c31d55cdbdc2ea174b80f3727c531b",
+      "is_followed": false,
+      "is_following": false,
+      "is_org": false,
+      "name": "不想读博的Jason",
+      "url": "https://api.zhihu.com/people/38c31d55cdbdc2ea174b80f3727c531b",
+      "url_token": "li-jia-sheng-62",
+      "user_type": "people"
+     },
+     "bound_topic_ids": [
+      4729,
+      16305
+     ],
+     "comment_count": 303,
+     "created": 1521288291,
+     "detail": "",
+     "excerpt": "",
+     "follower_count": 0,
+     "id": "268980903",
+     "is_following": false,
+     "question_type": "normal",
+     "relationship": {
+      "is_author": false
+     },
+     "title": "女朋友大一，要去给高二男生当家教，作为男朋友是否应该支持？",
+     "type": "question",
+     "url": "https://api.zhihu.com/questions/268980903"
+    },
+    "reaction": {
+     "relation": {
+      "faved": false,
+      "liked": false
+     },
+     "statistics": {
+      "favorites": 144,
+      "like_count": 30
+     }
+    },
+    "relationship": {
+     "is_nothelp": false,
+     "is_thanked": false,
+     "voting": 0
+    },
+    "reshipment_settings": "allowed",
+    "thanks_count": 30,
+    "type": "answer",
+    "updated_time": 1791450388,
+    "url": "https://api.zhihu.com/answers/2091575205814714405",
+    "visited_count": 209153,
+    "vote_next_step": "vote",
+    "voteup_count": 2188
+   },
+   "type": "feed",
+   "updated_time": 1792741445,
+   "verb": "TOPIC_ACKNOWLEDGED_ANSWER"
+  }
+ ],
+ "styles": [],
+ "feed_request_id": "7fc97d0cf9a54392a68c62d7441c102d",
+ "fresh_text": "推荐已更新",
+ "paging": {
+  "is_end": false,
+  "is_start": false,
+  "next": "https://api.zhihu.com/topstory/recommend?action=down&ad_interval=-10&after_id=5&end_offset=5&page_number=2&session_token=23ee68f07bc814005dca85624cf5463a",
+  "previous": "https://api.zhihu.com/topstory/recommend?action=pull&ad_interval=-10&before_id=5&end_offset=5&page_number=2&session_token=23ee68f07bc814005dca85624cf5463a",
+  "totals": 0
+ },
+ "extra": {
+  "is_hit_new14_limit": false
+ }
+}

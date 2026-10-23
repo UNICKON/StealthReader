@@ -5505,10 +5505,15 @@ class StealthReader(QWidget):
                     if what == "comments"
                     else ("detail", tag, target.id if target is not None else ""))
 
+        # 会轮换的流（知乎的推荐/关注）第一页不进内存 memo：90 秒内再进来还是那几条，
+        # 正是真人报的"刷来刷去都是那几条"。往下翻的那几页照旧记着（同一个地址内容一样）。
+        rotate = bool(what == "list" and channel and not cursor
+                      and callable(getattr(src, "rotates", None)) and src.rotates(channel))
+
         # 快路径：内存里有这一份就先画（0 毫秒），再照旧去取。
         # 这不是"不刷新"——取回来的内容一般一样（缓存命中），一样就不重排；
         # 真变了（新帖子/新评论）才重排。人按 R 时 fresh=True，这条路直接跳过。
-        if not fresh and what != "comments":      # 评论翻页只有"下一页"，没有快路径可走
+        if not fresh and not rotate and what != "comments":   # 评论翻页只有"下一页"，没有快路径可走
             hit = self._feed_memo.get(memo_key)
             if hit is not None:
                 payload0, when0 = hit
@@ -5530,7 +5535,7 @@ class StealthReader(QWidget):
             try:
                 if what in ("list", "more"):
                     posts, nxt = src.list(channel, cursor)
-                    if not fresh:
+                    if not fresh and not rotate:
                         self._feed_memo_put(memo_key, (posts, nxt, what == "more"))
                     self.feed_data_signal.emit("list", (posts, nxt, what == "more", gen, tag))
                 elif what == "comments":
