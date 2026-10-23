@@ -6254,6 +6254,11 @@ class StealthReader(QWidget):
         if kind == "comment":
             # 评论：点一下就是折叠/展开（"一次就好了"）。光标已经在别的条目上也一样——
             # `feed_click` 开头已经把被点的那条设成了当前条目。
+            # **子评论**走另一条：点它 = 折起它所在的整楼（真人 2026-10-23："点击子评论
+            # 也会折叠该子评论所在的楼"）。单独收一条子回复几乎没用，收整楼才是想干的事。
+            if nav.view == "detail" and not getattr(obj, "more_for", ""):
+                if nav.parent_of(obj) is not None:
+                    return self.feed_fold()
             return self.feed_toggle_collapse()
         # 列表：一下就到（force 也就是"双击"，走同一条路，不重复动作）
         return self.feed_open()
@@ -6660,6 +6665,41 @@ class StealthReader(QWidget):
                 nav.c_index = _ids.index(_first)
                 self.feed_highlight()
 
+    def feed_fold(self, whole=False):
+        """折起/摊开子评论：`whole=False` 只动这一楼，`whole=True` 整页（只看主楼）。
+
+        折起来 = 这条评论照常读、下面所有回复一起收（占位行自动写「还有 N 条回复 · 点开」，
+        点/回车摊开 3 条）；摊开 = 回到折之前摊开的条数，不是回到 3 条。
+        光标落在**楼根**上：人在子回复里按 X 收的是整楼，跟着回到楼顶才找得着东西。
+        """
+        nav = self.feed_nav
+        if nav is None or nav.view != "detail":
+            return False
+        cur = nav.current_comment()
+        root = nav.thread_root(cur) if cur is not None else None
+        if whole:
+            n = nav.fold_all()
+            doing = "折起"
+            if not n:
+                n, doing = nav.unfold_all(), "摊开"
+        else:
+            if root is None:
+                return False
+            if nav.folded(root):
+                n, doing = nav.unfold_thread(root), "摊开"
+            else:
+                n, doing = nav.fold_thread(root), "折起"
+        if not n:
+            return False
+        log_event("社区：%s %d 楼（%s）" % (doing, n, "整页" if whole else getattr(root, "author", "")))
+        vis = nav.visible_comments()
+        ids = [c.id for c, _d, _p in vis]
+        if root is not None and root.id in ids:
+            nav.c_index = ids.index(root.id)
+        self.render_feed()
+        self.feed_highlight(ensure=True)      # 楼根要能看见（不然收了以后人找不到自己收的是哪一楼）
+        return True
+
     def feed_toggle_collapse(self):
         """折叠/展开当前这条评论，**屏幕上的位置不动**。
 
@@ -6961,7 +7001,7 @@ class StealthReader(QWidget):
             log_event(f"社区：打开原帖失败 {e}")
         return False                    # 窗口内容没变，不需要重画
 
-    def on_feed_key(self, key):
+    def on_feed_key(self, key, shift=False):
         """社区页的窗口内按键（和卡片页同一套机制：只在窗口是活动窗口时响应）。
 
         翻页键留给滚动——社区流是长文档，滚动比"整屏翻"更合用；书页那套切页逻辑不掺和。"""
@@ -7000,6 +7040,10 @@ class StealthReader(QWidget):
             # 挂成全局钩子的话，在任何程序里打出这个字母都会翻一次图。
             self.toggle_lowkey()
             return True
+        if key == Qt.Key_X:
+            # X = 折起/摊开**这一楼**的回复（评论本身照读）；Shift+X = 整页只看主楼。
+            # 真人 2026-10-23："希望能够有快速收起子评论的交互"
+            return self.feed_fold(whole=bool(shift))
         if key == Qt.Key_B:
             # B：直接到评论区顶部（正文再长也不用一段段滚）——原来是 E，E 让给无图开关了
             return self.feed_scroll_comments_top()
@@ -9078,7 +9122,8 @@ class StealthReader(QWidget):
         if self.feed_mode:
             # 社区页的键全在 on_feed_key 里；这里吃掉没处理的键，别让书页那套切页逻辑
             # 把社区流当成书来翻（两者是不同页面，滚动方式也不一样）
-            if plain and self.on_feed_key(key):
+            if plain and self.on_feed_key(
+                    key, shift=bool(event.modifiers() & Qt.ShiftModifier)):
                 event.accept()
             return
         if self.review_mode and not self.safe_mode:

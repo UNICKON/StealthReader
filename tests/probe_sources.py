@@ -1822,6 +1822,74 @@ check("接上之后占位还剩 31 条", bool(_left) and "31" in _left[0], _left
 check("按 id 找得到任意一层",
       _nv4.comment_by_id("s2").author == "丙" and _nv4.comment_by_id("nope") is None)
 
+# 真人 2026-10-23："希望能够有快速收起子评论的交互"。X = 折这一楼的回复（评论本身照读），
+# Shift+X = 整页只看主楼。实现就是 `child_show[root] = 0`——占位行自动变成"还有 N 条回复"，
+# 折之前的条数记进 `child_saved`，摊开时回到原值（不是回到 3）。
+def _mk_thread(root_id, n=5):
+    return feed_sources.Comment(
+        cid=root_id, author="楼主",
+        body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="正文")],
+        replies=[feed_sources.Comment(
+            cid="%s%d" % (root_id, i), author="甲%d" % i,
+            body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="回%d" % i)])
+            for i in range(n)])
+
+
+_t6 = _mk_thread("t6")
+_nv6 = feed_mod.FeedNav()
+_nv6.set_detail(feed_sources.Post(source="x", pid="1", title="t"), [_t6])
+_nv6.c_index = 2                                   # 站在子回复上按
+check("在子回复上折：折的是它所在的整楼", _nv6.thread_root(_nv6.current_comment()).id == "t6",
+      _nv6.thread_root(_nv6.current_comment()).id)
+check("折起这一楼：回复全收，只剩楼根和一行占位",
+      _nv6.fold_thread(_nv6.current_comment()) == 1
+      and [c.id for c, _d, _x in _nv6.visible_comments()] == ["t6", "__more__t6"],
+      [c.id for c, _d, _x in _nv6.visible_comments()])
+check("折起来的占位行就写「还有 5 条回复 · 点开」（界面不多一个词）",
+      [c.body[0].text for c, _d, _x in _nv6.visible_comments() if getattr(c, "more_for", "")]
+      == ["还有 5 条回复 · 点开"],
+      [c.body[0].text for c, _d, _x in _nv6.visible_comments() if getattr(c, "more_for", "")])
+check("折着的时候光标落在楼根上（不会消失在子回复里）", _nv6.current_comment().id == "t6")
+check("占位行本身也算「这一楼折着」（对它按 X 就是摊开）",
+      _nv6.folded(_nv6.visible_comments()[1][0]) is True)
+check("没回复的楼折不动（不吞键、不瞎折）",
+      _nv6.fold_thread(feed_sources.Comment(cid="solo", body=[])) == 0)
+_nv6.show_more_children("t6")                      # 折着的时候点占位行
+check("折着的时候点占位行：摊开 3 条（和分页同一套动作）",
+      _nv6.child_limit(_t6) == 3 and len(_nv6.visible_comments()) == 5,
+      (_nv6.child_limit(_t6), len(_nv6.visible_comments())))
+_nv6.show_more_children("t6")
+_nv6.show_more_children("t6")
+_nv6.fold_thread(_t6)
+_nv6.unfold_thread(_t6)
+check("摊开回到折之前摊开的条数（不是回到 3 条）", _nv6.child_limit(_t6) == 5,
+      _nv6.child_limit(_t6))
+check("摊开之后记忆表清干净了", _nv6.child_saved == {}, _nv6.child_saved)
+
+_nv7 = feed_mod.FeedNav()
+_nv7.set_detail(feed_sources.Post(source="x", pid="2", title="t"),
+                [_mk_thread("a"), _mk_thread("b"), feed_sources.Comment(cid="c", body=[])])
+_before7 = len(_nv7.visible_comments())
+_folded7 = _nv7.fold_all()
+check("整页只看主楼：有回复的楼都折起来，没回复的楼不受影响",
+      _folded7 == 2 and len(_nv7.visible_comments()) == 5,
+      (_folded7, _before7, len(_nv7.visible_comments())))
+check("整页都折着时再按一次 = 全摊开（各自回到折之前的条数）",
+      _nv7.fold_all() == 0 and _nv7.unfold_all() == 2
+      and len(_nv7.visible_comments()) == _before7,
+      (len(_nv7.visible_comments()), _before7))
+
+_leaf8 = feed_sources.Comment(cid="g", author="孙", body=[])
+_mid8 = feed_sources.Comment(cid="m", author="子", body=[], replies=[_leaf8])
+_top8 = feed_sources.Comment(cid="tp", author="楼主", body=[], replies=[_mid8])
+_nv8 = feed_mod.FeedNav()
+_nv8.set_detail(feed_sources.Post(source="x", pid="3", title="t"), [_top8])
+_nv8.c_index = 2                                   # 孙子上
+_nv8.fold_thread(_nv8.current_comment())
+check("三层树（知乎那样）在孙子上按：折的还是整楼",
+      _nv8.folded(_top8) and len(_nv8.visible_comments()) == 2,
+      len(_nv8.visible_comments()))
+
 # 真人："现在点击收起只收起子评论，应该多评论能也进行收缩，过长不全展示。"
 _leaf = feed_sources.Comment(
     cid="leaf", author="没回复的人", created="10-18", score=1,

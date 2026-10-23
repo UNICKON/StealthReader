@@ -622,6 +622,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         # 详情里还能再进一层时用它回退（知乎：某个回答 → 这个问题的全部回答）。
         # 退格先退栈，栈空了才回列表。
         self.stack = []
@@ -645,6 +646,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         self.stack = []
         self.stack_via = []     # 与 stack 同步：每层是"怎么进来的"
         if channel is not None:
@@ -692,6 +694,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         return True
 
     def open_detail(self, post, via=""):
@@ -716,6 +719,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         return True
 
     def set_detail(self, post, comments, cursor=None):
@@ -802,6 +806,96 @@ class FeedNav(object):
         self.child_show[cid] = new
         return got
 
+    def thread_root(self, c):
+        """这条评论所属那一楼的楼根（顶层评论）。子评论上按 X 也折整楼。"""
+        if c is not None and getattr(c, "more_for", ""):
+            # "还有 N 条回复"那一行本身不是评论：它代表的楼就是它挂着的那条
+            node = self.comment_by_id(c.more_for)
+            if node is not None:
+                c = node
+        node, seen = c, 0
+        while node is not None and seen < 20:
+            parent = self.parent_of(node)
+            if parent is None or parent is node:
+                return node
+            node, seen = parent, seen + 1
+        return node or c
+
+    def folded(self, c=None):
+        """这一楼是不是折着的（回复全收、只留楼根和"还有 N 条回复"那一行）。"""
+        root = self.thread_root(c if c is not None else self.current_comment())
+        if root is None:
+            return False
+        return root.id in self.child_saved or self.child_limit(root) <= 0
+
+    def fold_thread(self, c=None):
+        """把这一楼下面的回复折起来（评论本身照读）；折成功返回 1。
+
+        实现就是 `child_show[root] = 0`：`visible_comments` 里"没摆出来的"那一段会自动
+        变成「还有 N 条回复 · 点开」，点/回车摊开 3 条——和分页同一句话、同一套动作，
+        所以界面上不多一个词。折之前摊开几条记进 `child_saved`，摊开时回到原值。
+        """
+        root = self.thread_root(c if c is not None else self.current_comment())
+        if root is None or not root.replies:
+            return 0                       # 没有子回复：折不动，就当没这个动作
+        lim = self.child_limit(root)
+        if lim <= 0:
+            return 0                       # 本来就折着
+        self.child_saved[root.id] = lim
+        self.child_show[root.id] = 0
+        self._cursor_to(root)
+        return 1
+
+    def unfold_thread(self, c=None):
+        """把这一楼摊回折之前的样子；摊开成功返回 1。"""
+        root = self.thread_root(c if c is not None else self.current_comment())
+        if root is None or root.id not in self.child_saved:
+            return 0
+        lim = int(self.child_saved.pop(root.id) or CHILD_SHOW)
+        self.child_show[root.id] = max(CHILD_SHOW, lim)
+        self._cursor_to(root)
+        return 1
+
+    def _cursor_to(self, node):
+        """光标挪到这条上（它要是被折没了就退到还能看见的那一条）。"""
+        if node is None:
+            return
+        ids = [c.id for c, _d, _p in self.visible_comments()]
+        if node.id in ids:
+            self.c_index = ids.index(node.id)
+        else:
+            self._clamp_comment_index()
+
+    def fold_all(self):
+        """整页只看主楼：每一楼的回复都折起来；返回折了几楼（0 = 本来就都折着）。"""
+        n = 0
+        for root in self.roots:
+            if not root.replies:
+                continue
+            lim = self.child_limit(root)
+            if lim <= 0:
+                continue
+            self.child_saved[root.id] = lim
+            self.child_show[root.id] = 0
+            n += 1
+        if n:
+            self._clamp_comment_index()
+        return n
+
+    def unfold_all(self):
+        """把整页折起来的楼全摊回去（各自回到折之前摊开的条数）。"""
+        n = 0
+        for cid in list(self.child_saved):
+            node = self.comment_by_id(cid)
+            lim = int(self.child_saved.pop(cid) or CHILD_SHOW)
+            if node is None:
+                continue                   # 这条已经不在这棵树里了，记忆一起丢掉
+            self.child_show[cid] = max(CHILD_SHOW, lim)
+            n += 1
+        if n:
+            self._clamp_comment_index()
+        return n
+
     def back(self):
         if self.view == "list":
             return False
@@ -824,6 +918,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         self.stack = []
         self.stack_via = []     # 与 stack 同步：每层是"怎么进来的"
         return True

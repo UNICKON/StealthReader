@@ -1825,6 +1825,78 @@ finally:
         pass
     w._feed_children_busy = False
 
+print("\n=== 4f. X 折起/摊开这一楼的子评论，Shift+X 整页只看主楼 ===")
+_lk_bak = w.config.get("lowkey_key")
+w.config["lowkey_key"] = "e"          # 别让"无图键"把 X 抢走
+try:
+    def _mk_thread_page():
+        nav = w.feed_nav
+        nav.view = "detail"
+        nav.post = feed_mod.Post(source=getattr(w.feed_source(), "key", "demo"),
+                                 pid="7", title="t")
+        nav.roots = [feed_mod.Comment(
+            cid="x%d" % k, author="楼主%d" % k,
+            body=[feed_mod.Block(kind=feed_mod.BLOCK_P, text="楼%d 的正文。" % k)],
+            replies=[feed_mod.Comment(cid="x%d-%d" % (k, i), author="甲%d" % i,
+                                      body=[feed_mod.Block(kind=feed_mod.BLOCK_P, text="回复%d。" % i)])
+                     for i in range(6)]) for k in (0, 1)]
+        nav.flat = feed_mod.comment_forest(nav.roots)
+        nav.child_show = {}
+        nav.child_saved = {}
+        nav.collapsed = set()
+        nav.c_show = 50
+        nav.c_more = False
+        nav.detail_loaded = True
+        nav.c_index = 2               # 第 0 楼的第 2 条子回复
+        w.render_feed()
+        w.feed_scroll_top()
+        qapp.processEvents()
+
+    _mk_thread_page()
+    _root0 = w.feed_nav.roots[0]
+    _n_before = len(w.feed_nav.visible_comments())
+    _ok_x = w.on_feed_key(Qt.Key_X)
+    _settle()
+    _ids_x = [c.id for c, _d, _p in w.feed_nav.visible_comments()]
+    check("X：在子回复上按，折的是整楼（回复全收、楼根还在）",
+          _ok_x is True and w.feed_nav.folded(_root0) and _ids_x[:2] == ["x0", "__more__x0"], _ids_x)
+    check("折完光标落在楼根上，楼根还在屏幕里（收的是哪一楼找得着）",
+          w.feed_nav.current_comment().id == "x0" and (w._feed_comment_y(_root0) or -1) > 0,
+          (w.feed_nav.current_comment().id, w._feed_comment_y(_root0)))
+    _ok_x2 = w.on_feed_key(Qt.Key_X)
+    _settle()
+    check("再按一次 X：摊回折之前的条数（不是回到 3 条）",
+          _ok_x2 is True and not w.feed_nav.folded(_root0)
+          and len(w.feed_nav.visible_comments()) == _n_before,
+          (len(w.feed_nav.visible_comments()), _n_before))
+    _ok_all = w.on_feed_key(Qt.Key_X, shift=True)
+    _settle()
+    _ids_all = [c.id for c, _d, _p in w.feed_nav.visible_comments()]
+    check("Shift+X：整页只看主楼（两楼各剩一行「还有 N 条回复」）",
+          _ok_all is True and _ids_all == ["x0", "__more__x0", "x1", "__more__x1"], _ids_all)
+    _ok_all2 = w.on_feed_key(Qt.Key_X, shift=True)
+    _settle()
+    check("Shift+X 再来一次：都摊回去",
+          _ok_all2 is True and len(w.feed_nav.visible_comments()) == _n_before,
+          len(w.feed_nav.visible_comments()))
+    _child_cur = None
+    for _obj, _kind, _cur in w.feed_item_blocks():
+        if getattr(_obj, "id", "") == "x0-1":
+            _child_cur = _cur
+            break
+    check("（前置）屏幕上找得到 x0-1 这条子评论", _child_cur is not None)
+    if _child_cur is not None:
+        _clicked = w.feed_click(w.text_edit.cursorRect(_child_cur).center())
+        _settle()
+        check("点子评论：折的是它所在的整楼（不是只收这一条子回复）",
+              _clicked is True and w.feed_nav.folded(_root0)
+              and "x0-1" not in w.feed_nav.collapsed,
+              (w.feed_nav.folded(_root0), sorted(w.feed_nav.collapsed)))
+        check("点完光标回到楼根", w.feed_nav.current_comment().id == "x0",
+              w.feed_nav.current_comment().id)
+finally:
+    w.config["lowkey_key"] = _lk_bak
+
 # 详情：B 到评论区顶部（原来是 E，E 让给无图开关了）、Z 一口气回列表、
 # 知乎"回答→问题"的 Esc 也回列表
 def _fake_detail(via=""):
