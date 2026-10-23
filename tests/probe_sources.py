@@ -947,7 +947,42 @@ else:
     check("评论没取到时正文保持干净（原因进 last_error，不写进画面）",
           "406" not in d_txt and "按 O" not in d_txt and "签名" not in d_txt, d_txt[-80:])
     check("小红书的评论如实为空（接口要它的 x-s 签名，实测连插件自己算的也 406）",
-          xs3.comments(seed) == ([], None))
+          xs3.comments(seed) == ([], None))    # 子评论：首页只塞 1 条预览，剩下的走 `/api/sns/web/v2/comment/sub/page`
+    # （2026-10-23 实测：一页 5 条，`cursor` + `has_more` 翻页）。这里用假的
+    # `_signed_get` 验"路径对、游标接得上、按 id 去重"，不去真打站点。
+    _sub_pages = [
+        {"data": {"comments": [{"id": "x1", "content": "一", "user_info": {"nickname": "甲"}},
+                               {"id": "x2", "content": "二", "user_info": {"nickname": "乙"}}],
+                  "cursor": "c1", "has_more": True}},
+        {"data": {"comments": [{"id": "x2", "content": "二", "user_info": {"nickname": "乙"}},
+                               {"id": "x3", "content": "三", "user_info": {"nickname": "丙"}}],
+                  "cursor": "", "has_more": False}},
+    ]
+    _signed_calls = []
+
+    def _fake_signed(path, params):
+        _signed_calls.append((path, str(params.get("cursor") or ""),
+                              str(params.get("root_comment_id") or "")))
+        return _sub_pages[len(_signed_calls) - 1]
+
+    xs_sub = feed_sources.XhsSource(FakeHttp(cache=MemCache()), cred)
+    xs_sub._signed_get = _fake_signed
+    kids1, _t1 = xs_sub.children_page(seed, "root1", 1, want=2)
+    kids2, _t2 = xs_sub.children_page(seed, "root1", 3, want=2)
+    check("子评论走的是 sub/page 并带着父评论 id",
+          [c[0] for c in _signed_calls] == ["/api/sns/web/v2/comment/sub/page"] * 2
+          and all(c[2] == "root1" for c in _signed_calls), _signed_calls)
+    check("翻页游标接得上（第一次空游标、第二次用上次给的 cursor）",
+          [c[1] for c in _signed_calls] == ["", "c1"], [c[1] for c in _signed_calls])
+    check("两批子评论按 id 去重",
+          [c.id for c in kids1] == ["x1", "x2"] and [c.id for c in kids2] == ["x2", "x3"],
+          ([c.id for c in kids1], [c.id for c in kids2]))
+    _raw_one = feed_sources._xhs_comments({"data": {"comments": [{
+        "id": "p", "content": "主", "sub_comment_count": 33,
+        "sub_comments": [{"id": "s", "content": "子", "user_info": {"nickname": "丁"}}]}]}})[0]
+    check("首页只给 1 条预览，但记住站上总数（不然占位算成 0）",
+          len(_raw_one.replies) == 1 and _raw_one.n_replies == 33,
+          (len(_raw_one.replies), _raw_one.n_replies))
     # 详情和评论共用一次请求：第二次不该再去拉
     xs3.http.bytes_routes = {}
     xs3.http.fail = ["/explore/"]
@@ -1728,6 +1763,33 @@ check("折叠父节点：整棵子树一起收，表头写「▸ 2」",
 _nv.collapsed.discard("c1")
 check("展开状态下有回复的节点带 ▾",
       "▾ 父" in feed_mod.render_comment_tree(_nv, _th))
+
+# 小红书首页每条评论只给 1 条子评论预览（`sub_comment_count` 却写着 33）：占位要按
+# **站上总数**算，来源再取回来的要能接上树。真人："小红书的子评论只会加载一条吗"
+_p1 = feed_sources.Comment(cid="p1", author="甲",
+                           body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text="主评论")],
+                           replies=[feed_sources.Comment(cid="s1", author="乙", body=[])],
+                           n_replies=33)
+_nv4 = feed_mod.FeedNav()
+_nv4.set_detail(feed_sources.Post(source="xhs", pid="9", title="t"), [_p1])
+_vis = _nv4.visible_comments()
+_more = [c for c, _d, _p in _vis if getattr(c, "more_for", "")]
+check("子评论只到手 1 条时，占位按站上总数写「还有 32 条回复」",
+      bool(_more) and "32" in _more[0].body[0].text, [c.body[0].text for c in _more])
+check("占位挂在主评论下面一层",
+      len(_vis) == 3 and getattr(_vis[2][0], "more_for", "") == "p1",
+      [(c.id, d) for c, d, _x in _vis])
+_added = _nv4.add_children("p1", [feed_sources.Comment(cid="s2", author="丙", body=[]),
+                                 feed_sources.Comment(cid="s1", author="乙", body=[])],
+                           total=33)
+check("再取回来的一批接上树、按 id 去重", _added == 1 and len(_p1.replies) == 2, _added)
+check("新接上的直接摆出来（不用再按一次）",
+      _nv4.child_limit(_p1) == 2 and _nv4.hidden_children(_p1) == 0,
+      (_nv4.child_limit(_p1), _nv4.hidden_children(_p1)))
+_left = [c.body[0].text for c, _d, _x in _nv4.visible_comments() if getattr(c, "more_for", "")]
+check("接上之后占位还剩 31 条", bool(_left) and "31" in _left[0], _left)
+check("按 id 找得到任意一层",
+      _nv4.comment_by_id("s2").author == "丙" and _nv4.comment_by_id("nope") is None)
 
 # 真人："现在点击收起只收起子评论，应该多评论能也进行收缩，过长不全展示。"
 _leaf = feed_sources.Comment(

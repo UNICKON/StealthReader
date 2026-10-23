@@ -1775,6 +1775,56 @@ try:
 finally:
     w.feed_load = _reload_bak
 
+print("\n=== 4e. 子评论：占位行回车就去站上再取一批 ===")
+# 真人 2026-10-23："小红书的子评论只会加载一条吗"。它首页每条评论只塞 1 条预览
+# （`sub_comment_count` 却写着 33），所以"还有 N 条回复"回车要能真去问，不能点了没反应。
+_src_cur = w.feed_source()
+_had_cp = hasattr(_src_cur, "children_page")
+_cp_bak = getattr(_src_cur, "children_page", None)
+_cp_calls = []
+
+
+def _fake_children_page(post, cid, have=0, want=10):
+    _cp_calls.append((str(cid), int(have)))
+    return ([feed_mod.Comment(cid="extra1", author="后来的人",
+                              body=[feed_mod.Block(kind=feed_mod.BLOCK_P, text="补的一条")])], 0)
+
+
+try:
+    _src_cur.children_page = _fake_children_page
+    _nav = w.feed_nav
+    _p = feed_mod.Comment(cid="p9", author="主",
+                          body=[feed_mod.Block(kind=feed_mod.BLOCK_P, text="主评论")],
+                          replies=[feed_mod.Comment(cid="s9", author="早", body=[])],
+                          n_replies=33)
+    _nav.view = "detail"
+    _nav.post = feed_mod.Post(source=getattr(_src_cur, "key", "demo"), pid="9", title="t")
+    _nav.roots = [_p]
+    _nav.flat = feed_mod.comment_forest(_nav.roots)
+    _nav.child_show = {}
+    _nav.c_index = 2                  # 主评论 / 那 1 条子评论 / "还有…"占位
+    w.render_feed()
+    qapp.processEvents()
+    _tgt = _nav.current_comment()
+    check("（前置）回车停在「还有 N 条回复」那一行",
+          getattr(_tgt, "more_for", "") == "p9", getattr(_tgt, "more_for", ""))
+    w.feed_toggle_collapse()
+    pump(lambda: not w._feed_children_busy, 5)
+    check("占位回车：手里没有了就去站上问，带上父评论 id",
+          _cp_calls[:1] == [("p9", 1)], _cp_calls[:2])
+    check("取回来的接上树并直接摆出来",
+          any(c.id == "extra1" for c in _p.replies) and _nav.child_limit(_p) == 2,
+          [c.id for c in _p.replies])
+finally:
+    try:
+        if _had_cp:
+            _src_cur.children_page = _cp_bak
+        else:
+            delattr(_src_cur, "children_page")
+    except Exception:
+        pass
+    w._feed_children_busy = False
+
 # 详情：B 到评论区顶部（原来是 E，E 让给无图开关了）、Z 一口气回列表、
 # 知乎"回答→问题"的 Esc 也回列表
 def _fake_detail(via=""):

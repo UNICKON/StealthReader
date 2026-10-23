@@ -3038,6 +3038,7 @@ class StealthReader(QWidget):
         self.feed_sources = []          # 已登记的来源适配器（批次 B 起每加一个站就在这里多一个）
         self.feed_source_i = 0
         self.feed_busy = False          # 后台取数中（同一次取数不重复发）
+        self._feed_children_busy = False  # 子评论正在取（"还有 N 条回复"点开后）
         self.feed_more_armed = True     # 到底自动续页：一次到底只触发一次
         self.feed_pending = None        # 忙着的时候来的取数请求，等回来补上（见 feed_load）
         self.feed_board_pending = False  # 正在拉板块表（回来要弹选择器，见 feed_load_boards）
@@ -5736,6 +5737,10 @@ class StealthReader(QWidget):
 
     def on_feed_data(self, kind, payload):
         """取数回来了（QueuedConnection 保证这里是主线程）。"""
+        if kind == "children":
+            # 子评论只是"往这棵树里接一条"，不参与整页取数的 busy 标记和代次核对
+            self._on_feed_children(payload)
+            return
         self.feed_busy = False
         if kind == "list":
             posts, nxt, append, gen, tag = payload
@@ -6592,6 +6597,69 @@ class StealthReader(QWidget):
             return None
         return None
 
+    def feed_fetch_children(self, cid):
+        """把这条评论**还没到手**的回复从站上取回来。
+
+        小红书首页每条评论只给 1 条子评论预览（`sub_comment_count` 却写着 33/19/21），
+        剩下的要单独问 `/api/sns/web/v2/comment/sub/page`。这里只取一批（一页几条由来源定），
+        接在树上直接摆出来；再按一次回车再取一批。请求走后台线程，
+        结果落在 `on_feed_data("children", ...)`。
+        """
+        nav = self.feed_nav
+        src = self.feed_source()
+        fn = getattr(src, "children_page", None) if src is not None else None
+        if nav is None or nav.view != "detail" or fn is None or self._feed_children_busy:
+            return False
+        node = nav.comment_by_id(cid)
+        if node is None:
+            return False
+        total = int(getattr(node, "n_replies", 0) or 0)
+        if total and len(node.replies) >= total:
+            return False                    # 站上那几条全在手上了
+        self._feed_children_busy = True
+        self.review_hint("取回复…", 800)
+        post, gen, tag = nav.post, self.feed_gen, getattr(src, "key", "")
+        have = len(node.replies)
+
+        def work():
+            try:
+                kids, total_n = fn(post, cid, have)
+            except Exception as e:
+                kids, total_n = [], 0
+                log_event("社区：取回复失败（%s）：%s" % (cid, str(e)[:120]))
+            try:
+                self.feed_data_signal.emit("children", (str(cid), kids, total_n, gen, tag))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _on_feed_children(self, payload):
+        """子评论回来了：接到树上、摆出来（来源/代次对不上就丢掉）。"""
+        self._feed_children_busy = False
+        cid, kids, total_n, gen, tag = payload
+        nav = self.feed_nav
+        src = self.feed_source()
+        if (not self.feed_mode or nav is None or nav.view != "detail" or gen != self.feed_gen
+                or (tag and tag != (getattr(src, "key", "") if src is not None else ""))):
+            return
+        got = nav.add_children(cid, kids or [], total_n or 0)
+        log_event("社区：这条评论的回复又取回 %d 条" % got)
+        if not got:
+            self.review_hint("这条的回复就这些了", 1400)
+            return
+        self.feed_detail_top = False        # 版面变高也别把屏幕拽回顶部
+        self.render_feed()                  # 位置由 render_feed 按像素差保住
+        # 光标落在**刚接上的第一条**上：占位行要是正好消失了（这批就是最后几条），
+        # 不挪的话高亮会凭空跳到下一条评论，看着像"点了以后跑到别处去了"。
+        if kids:
+            _ids = [c.id for c, _d, _p in nav.visible_comments()]
+            _first = str(kids[0].id)
+            if _first in _ids:
+                nav.c_index = _ids.index(_first)
+                self.feed_highlight()
+
     def feed_toggle_collapse(self):
         """折叠/展开当前这条评论，**屏幕上的位置不动**。
 
@@ -6606,9 +6674,13 @@ class StealthReader(QWidget):
             return False
         target = nav.current_comment()
         if getattr(target, "more_for", ""):
-            # 这行是"还有 N 条回复"：回车/点击 = 摊开下一批（数据就在手边，不发请求）
+            # 这行是"还有 N 条回复"：回车/点击 = 摊开下一批。
+            # 手里还有就直接摆（不发请求）；手里没有了（小红书首页只给 1 条预览，
+            # 站上还压着几十条）就当场问来源再取一页。
             if nav.show_more_children(target.more_for):
                 self.render_feed()
+            else:
+                self.feed_fetch_children(target.more_for)
             return True
         y_before = self._feed_comment_y(target)
         if not nav.toggle_collapse():

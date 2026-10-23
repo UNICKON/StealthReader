@@ -1988,6 +1988,8 @@ def _xhs_comments(obj):
             score=int(it.get("like_count") or 0),
             body=blocks,
             replies=subs,
+            # 它给的**总数**：首页 sub_comments 只塞 1 条预览，剩下几十条要另外问
+            n_replies=int(it.get("sub_comment_count") or 0),
         ))
     return out
 
@@ -2032,6 +2034,7 @@ class XhsSource(RealSource):
         RealSource.__init__(self, http, auth)
         self._notes = {}               # note id -> (note, comments, 说明)：详情和评论共用一次请求
         self._cmts = {}                # note id -> (评论表, 拿不到的原因)
+        self._sub_cursor = {}          # (note id, 父评论 id) -> 子评论翻页游标
 
     def channels(self):
         return list(self.CHANNELS)
@@ -2230,6 +2233,41 @@ class XhsSource(RealSource):
 
     def comments(self, post, cursor=None):
         return self._comments_of(post)[0], None
+
+    SUB_API = "/api/sns/web/v2/comment/sub/page"
+
+    def children_page(self, post, cid, have=0, want=10):
+        """这条评论的**下一批**子评论（首页只给 1 条预览，剩下的单独问这个接口）。
+
+        2026-10-23 实测：`/api/sns/web/v2/comment/page` 里每条顶层评论的
+        `sub_comments` 恒为 1 条，`sub_comment_count` 却写着 33/19/21；
+        `/api/sns/web/v2/comment/sub/page?note_id=&root_comment_id=` 签同一套 x-s 就能拿到，
+        一页 5 条、`cursor` + `has_more` 管翻页。返回 (子评论表, 0)；0 = 总数不知道，
+        沿用首页那次 `sub_comment_count`。
+        """
+        nid = str(post.id or "")
+        key = (nid, str(cid))
+        cursor = self._sub_cursor.get(key, "")
+        token = self._token_of(post)
+        got, seen = [], set()
+        _want = max(1, int(want or 10))
+        for _ in range(6):                     # 最多翻六页，别一口气把站点点爆
+            params = {"note_id": nid, "root_comment_id": str(cid), "num": "10",
+                      "cursor": cursor, "image_formats": "jpg,webp,avif"}
+            if token:
+                params["xsec_token"] = token
+            obj = self._signed_get(self.SUB_API, params)
+            data = ((obj or {}).get("data") or {}) if isinstance(obj, dict) else {}
+            rows = data.get("comments") or []
+            for c in _xhs_comments({"data": {"comments": rows}}):
+                if c.id not in seen:
+                    seen.add(c.id)
+                    got.append(c)
+            cursor = str(data.get("cursor") or "")
+            self._sub_cursor[key] = cursor
+            if len(got) >= _want or not rows or not data.get("has_more") or not cursor:
+                break
+        return got, 0
 
 
 HUPU_BOARDS = (

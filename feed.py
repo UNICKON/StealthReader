@@ -70,10 +70,11 @@ class Comment(object):
     深度不写死在数据里，由 comment_forest 按树算出来——来源给的层级结构各不相同，
     统一在渲染前算好，就不会每个来源一套缩进。"""
 
-    __slots__ = ("id", "author", "created", "score", "body", "replies", "reply_to", "more_for")
+    __slots__ = ("id", "author", "created", "score", "body", "replies", "reply_to", "more_for",
+                 "n_replies")
 
     def __init__(self, cid, author="", created="", score=0, body=None, replies=None,
-                 reply_to="", more_for=""):
+                 reply_to="", more_for="", n_replies=0):
         self.id = str(cid)
         self.author = author or ""
         self.created = created or ""
@@ -85,18 +86,24 @@ class Comment(object):
         self.reply_to = reply_to or ""
         # 非空 = 这行是"还有 N 条回复"的占位（`cid` 指向父评论），不是真评论
         self.more_for = more_for or ""
+        # 站上这条评论**总共**有多少条回复（0 = 不知道，就按本地取到的算）。
+        # 小红书首页只给 1 条预览，`sub_comment_count` 却写着 33——不记这个数，
+        # "还有 N 条回复"就会算成 0，人也点不出更多的来。
+        self.n_replies = int(n_replies or 0)
 
     @classmethod
     def from_dict(cls, d):
         if isinstance(d, Comment):      # 同上：适配器直接给 Comment 也收
             return cls(d.id, d.author, d.created, d.score, d.body, d.replies,
-                       getattr(d, "reply_to", ""), getattr(d, "more_for", ""))
+                       getattr(d, "reply_to", ""), getattr(d, "more_for", ""),
+                       getattr(d, "n_replies", 0))
         d = d or {}
         return cls(
             d.get("id", ""), d.get("author", ""), d.get("created", ""), d.get("score", 0),
             d.get("body", []),
             [cls.from_dict(r) for r in (d.get("replies") or [])],
             d.get("reply_to", ""), d.get("more_for", ""),
+            d.get("n_replies", 0),
         )
 
     def to_dict(self):
@@ -106,6 +113,7 @@ class Comment(object):
             "replies": [r.to_dict() for r in self.replies],
             "reply_to": self.reply_to,
             "more_for": self.more_for,
+            "n_replies": self.n_replies,
         }
 
     def total(self):
@@ -758,6 +766,29 @@ class FeedNav(object):
         self.c_show = min(len(self.roots), self.c_show + COMMENT_PAGE)
         return self.c_show - before
 
+    def add_children(self, cid, children, total=0):
+        """来源又取回来几条子评论：接到这条底下（按 id 去重），新回来的直接摆出来。
+
+        小红书一页只给 1 条预览，剩下的得单独问——所以光靠 `child_show` 摊开手里那一条
+        是不够的，树本身要能长。"""
+        node = self.comment_by_id(cid)
+        if node is None:
+            return 0
+        have = set(x.id for x in node.replies)
+        new = [c for c in (children or []) if c.id not in have]
+        if not new:
+            return 0
+        node.replies.extend(new)
+        if total:
+            node.n_replies = max(int(total), len(node.replies))
+        self.child_show[str(cid)] = len(node.replies)   # 新取回来的一次全摆出来
+        self.flat = comment_forest(self.roots)
+        return len(new)
+
+    def comment_by_id(self, cid):
+        """按 id 找一条评论（顶层或任意深）。"""
+        return self._node_by_id(str(cid))
+
     def show_more_children(self, cid):
         """把这条评论**已经取回来**的下一批回复摆出来；返回多摆了几条。"""
         node = self._node_by_id(cid)
@@ -877,7 +908,10 @@ class FeedNav(object):
                     continue
                 lim = self.child_limit(c)
                 walk(list(c.replies[:lim]), depth + 1, c)
-                rest = len(c.replies) - lim
+                # N 要算**站上真实还剩多少**：小红书首页只给 1 条预览，`n_replies` 是它给的
+                # 总数（33 之类），本地拿到的比它多就按本地算（别的来源不填这个字段）。
+                total = max(len(c.replies), int(getattr(c, "n_replies", 0) or 0))
+                rest = total - min(lim, len(c.replies))
                 if rest > 0:
                     out.append((Comment(
                         cid="__more__" + c.id,
