@@ -6696,8 +6696,28 @@ class StealthReader(QWidget):
         ids = [c.id for c, _d, _p in vis]
         if root is not None and root.id in ids:
             nav.c_index = ids.index(root.id)
+        anchor = root if root is not None else cur
+        y_before = self._feed_comment_y(anchor)
+        vh = max(1, self.text_edit.viewport().height())
+        # 位置**自己算**，不要 render_feed 那条"保持旧像素位置"的排单：它是
+        # `QTimer.singleShot(0, ...)` 事后执行的，会把下面这次定位盖回去——人看到的就是
+        # 有时停在原处、有时又跳走（真人报的"定位不受控"）。
+        self.feed_restore_pos = 0
         self.render_feed()
-        self.feed_highlight(ensure=True)      # 楼根要能看见（不然收了以后人找不到自己收的是哪一楼）
+        y_zero = self._feed_comment_y(anchor)      # 重画后滚动条被 setHtml 打回 0，这就是绝对高度
+        if y_zero is not None:
+            # 楼根原来在屏幕上就留在原来的高度；本来在视口外（点的是屏幕里靠下的回复）
+            # 就摆到视口 25% 处——和方向键换条目是同一套规矩，人不会觉得"乱跑"。
+            keep = (y_before if (y_before is not None and 0 <= y_before <= vh - 40)
+                    else int(vh * 0.25))
+            try:
+                sb = self.text_edit.verticalScrollBar()
+                sb.setValue(int(max(sb.minimum(), min(sb.maximum(), y_zero - keep))))
+            except Exception:
+                pass
+            self.feed_highlight()          # 已经定位好了，不要再 ensure（那会二次滚动）
+        else:
+            self.feed_highlight(ensure=True)
         return True
 
     def feed_toggle_collapse(self):

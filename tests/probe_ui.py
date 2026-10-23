@@ -1959,6 +1959,104 @@ try:
 finally:
     w.config["lowkey_key"] = _lk_bak2
 
+print("\n=== 4h. 折起之后楼根落在哪儿：受控 ===")
+_lk_bak3 = w.config.get("lowkey_key")
+w.config["lowkey_key"] = "e"
+try:
+    def _mk_page3():
+        nav = w.feed_nav
+        nav.view = "detail"
+        nav.post = feed_mod.Post(source="demo", pid="9", title="t")
+        nav.roots = [feed_mod.Comment(
+            cid="z%d" % k, author="楼主%d" % k,
+            body=[feed_mod.Block(kind=feed_mod.BLOCK_P, text=("楼%d 的正文。" % k) * 30)],
+            replies=[feed_mod.Comment(cid="z%d-%d" % (k, i), author="甲%d" % i,
+                                      body=[feed_mod.Block(kind=feed_mod.BLOCK_P,
+                                                           text=("回复%d 的内容。" % i) * 20)])
+                     for i in range(10)]) for k in range(3)]
+        nav.flat = feed_mod.comment_forest(nav.roots)
+        nav.child_show = {}
+        nav.child_saved = {}
+        nav.collapsed = set()
+        nav.c_show = 50
+        nav.c_more = False
+        nav.detail_loaded = True
+        nav.c_index = 0
+        w.render_feed()
+        w.feed_scroll_top()
+        qapp.processEvents()
+
+    def _sb3():
+        return w.text_edit.verticalScrollBar()
+
+    def _y3(cid):
+        for obj, _kind, cur in w.feed_item_blocks():
+            if getattr(obj, "id", "") == cid:
+                return w.text_edit.cursorRect(cur).top()
+        return None
+
+    def _scroll_to_root3(target_y, cid="z0"):
+        for _ in range(8):
+            y = _y3(cid)
+            if y is None or abs(y - target_y) <= 8:
+                break
+            _sb3().setValue(max(0, min(_sb3().maximum(), _sb3().value() + (y - target_y))))
+            qapp.processEvents()
+
+    def _click3(cid):
+        for obj, _kind, cur in w.feed_item_blocks():
+            if getattr(obj, "id", "") == cid:
+                w.feed_click(w.text_edit.cursorRect(cur).center())
+                _settle()
+                qapp.processEvents()
+                time.sleep(0.05)
+                qapp.processEvents()      # 让 QTimer(0) 那些排单都跑完
+                return True
+        return False
+
+    def _victim3(prefix):
+        vh = w.text_edit.viewport().height()
+        for obj, _kind, cur in w.feed_item_blocks():
+            oid = str(getattr(obj, "id", ""))
+            if oid.startswith(prefix) and 60 <= w.text_edit.cursorRect(cur).top() <= vh - 60:
+                return oid
+        return None
+
+    vh3 = w.text_edit.viewport().height()
+    _mk_page3()
+    check("（前置）这一页够长，能滚（不然下面几条测不出来）",
+          _sb3().maximum() > 400, _sb3().maximum())
+
+    _mk_page3()
+    _scroll_to_root3(120, "z0")
+    _y0 = _y3("z0")
+    _v = _victim3("z0-")
+    check("楼根就在视口上方时：折起后它还在原来的高度（页面不跳）",
+          _click3(_v) and _y3("z0") is not None and abs(_y3("z0") - _y0) <= 10,
+          (_v, _y0, _y3("z0")))
+
+    _mk_page3()
+    _scroll_to_root3(-260, "z0")
+    _v2 = _victim3("z0-")
+    _sb_before = _sb3().value()
+    check("楼根已经滚出视口上方时：点屏幕里的回复折起，楼根被拉回屏幕（25% 处，顶到 0 就夹住）",
+          _click3(_v2) and _y3("z0") is not None
+          and 0 <= _y3("z0") <= vh3
+          and (abs(_y3("z0") - int(vh3 * 0.25)) <= 45 or _sb3().value() == _sb3().minimum()),
+          (_v2, _sb_before, _sb3().value(), _y3("z0")))
+    check("定位不会被事后那次「恢复旧位置」盖回去（滚完再跑一遍事件循环还是那个位置）",
+          (_y3("z0") is not None and 0 <= _y3("z0") <= vh3), _y3("z0"))
+
+    _mk_page3()
+    _scroll_to_root3(120, "z1")
+    _v3 = _victim3("z1-")
+    _y3_before = _y3("z1")
+    check("第二楼同理：折起后楼根还在原来的高度",
+          _click3(_v3) and _y3("z1") is not None and abs(_y3("z1") - _y3_before) <= 10,
+          (_v3, _y3_before, _y3("z1")))
+finally:
+    w.config["lowkey_key"] = _lk_bak3
+
 # 详情：B 到评论区顶部（原来是 E，E 让给无图开关了）、Z 一口气回列表、
 # 知乎"回答→问题"的 Esc 也回列表
 def _fake_detail(via=""):
