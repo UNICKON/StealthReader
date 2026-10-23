@@ -983,6 +983,37 @@ else:
     check("首页只给 1 条预览，但记住站上总数（不然占位算成 0）",
           len(_raw_one.replies) == 1 and _raw_one.n_replies == 33,
           (len(_raw_one.replies), _raw_one.n_replies))
+    # "回复 X"要写**真收件人**：小红书的子评论是平铺的，一条回复的收件人常常是别的
+    # 子评论作者（target_comment 指过去），不是楼主。真人："子评论的回复都是评论者，
+    # 实际上不是"——以前一律按树里的父节点算，于是每条都写"回复 <楼主>"。
+    _two = feed_sources._xhs_comments({"data": {"comments": [{
+        "id": "p", "content": "主评论", "user_info": {"nickname": "楼主"},
+        "sub_comment_count": 2,
+        "sub_comments": [
+            {"id": "a", "content": "回楼主", "user_info": {"nickname": "甲"},
+             "target_comment": {"id": "p", "user_info": {"nickname": "楼主"}}},
+            {"id": "b", "content": "回另一个人", "user_info": {"nickname": "乙"},
+             "target_comment": {"id": "a", "user_info": {"nickname": "甲"}}},
+        ]}]}})
+    check("子评论的收件人取 target_comment（不是一律算成楼主）",
+          _two[0].replies[0].reply_to == "楼主" and _two[0].replies[1].reply_to == "甲",
+          [_r.reply_to for _r in _two[0].replies])
+    _nv5 = feed_mod.FeedNav()
+    _nv5.set_detail(feed_sources.Post(source="xhs", pid="1", title="t"), _two)
+    check("表头写的是真收件人：回楼主 / 回子评论里的另一个人",
+          _nv5.reply_to_of(_two[0].replies[0]) == "楼主"
+          and _nv5.reply_to_of(_two[0].replies[1]) == "甲",
+          (_nv5.reply_to_of(_two[0].replies[0]), _nv5.reply_to_of(_two[0].replies[1])))
+    _no_tc = feed_sources._xhs_comments({"data": {"comments": [{
+        "id": "p2", "content": "主", "user_info": {"nickname": "楼主2"},
+        "sub_comments": [{"id": "c", "content": "没给收件人",
+                          "user_info": {"nickname": "丙"}}]}]}})
+    check("没给 target_comment 时如实留空（不编一个收件人出来）",
+          _no_tc[0].replies[0].reply_to == "", _no_tc[0].replies[0].reply_to)
+    check("收件人字段缺胳膊少腿也不炸",
+          feed_sources._xhs_target_name({}) == ""
+          and feed_sources._xhs_target_name({"target_comment": None}) == ""
+          and feed_sources._xhs_target_name({"target_comment": {"user_info": None}}) == "")
     # 详情和评论共用一次请求：第二次不该再去拉
     xs3.http.bytes_routes = {}
     xs3.http.fail = ["/explore/"]

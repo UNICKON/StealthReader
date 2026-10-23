@@ -1952,6 +1952,20 @@ def _xhs_cover(cover):
     return ""
 
 
+def _xhs_target_name(row):
+    """这条子评论在回谁：小红书把收件人写在 `target_comment.user_info.nickname`。
+
+    实测（2026-10-23）：子评论是**平铺**的，一条回复的收件人常常是**别的子评论作者**
+    （`target_comment.id` 指向别的那条），只有直接回楼主的才指回顶层评论。
+    以前一律按"树里的父节点"算，于是每条子评论都写着"回复 <楼主>"——真人：
+    "子评论的回复都是评论者，实际上不是"。
+    """
+    tc = row.get("target_comment") if isinstance(row, dict) else None
+    if not isinstance(tc, dict):
+        return ""
+    return str(((tc.get("user_info") or {}).get("nickname")) or "").strip()
+
+
 def _xhs_comments(obj):
     """把 `/api/sns/web/v2/comment/page` 的返回翻成 Comment。
 
@@ -1980,6 +1994,8 @@ def _xhs_comments(obj):
                 created=feed_mod.human_time(int(sub.get("create_time") or 0) / 1000.0),
                 score=int(sub.get("like_count") or 0),
                 body=sblocks,
+                # 收件人：target_comment 指谁就是谁（指回楼主时等于父节点作者，不会重复显示）
+                reply_to=_xhs_target_name(sub),
             ))
         out.append(Comment(
             cid=str(it.get("id") or ("c%d" % i)),
