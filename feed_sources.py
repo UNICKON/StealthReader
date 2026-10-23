@@ -677,6 +677,9 @@ class ZhihuSource(RealSource):
     # 后 3 条永远是空的——真人 2026-10-19 报的就是这个"有些回答的评论好像不会加载"。
     ANSWERS_WITH_COMMENTS = 6
     CHILD_COMMENTS_LIMIT = 12    # 每条评论再带几条子评论（先摆 3 条，其余"继续加载"）
+    # 一页里最多给几条评论各补一次子评论（并发）。顶层接口自带的 2 条预览是白送的，
+    # 所以这个数是"想多摆几条"的量，不是"能不能摆"的门槛。
+    CHILDREN_THREADS = 6
     ANSWER_COMMENTS_LIMIT = 8
     # 一条回答最多摆多少块（一块 = 一个段落或一张图）。
     # **帖子正文那一份不设小上限**：真人要的就是"能读完一条长回答"，按 40 块截断等于又省略了
@@ -694,6 +697,7 @@ class ZhihuSource(RealSource):
     def __init__(self, http, auth=None):
         RealSource.__init__(self, http, auth)
         self._ans = {}          # 问题 id -> (回答列表, 失败原因, 取到的时刻)：详情和评论共用一次请求
+        self._page_meta = {}    # "c:<aid>:<offset>" -> (这一页原始行数, 是不是最后一页)
 
     def channels(self):
         return list(self.CHANNELS)
@@ -948,29 +952,33 @@ class ZhihuSource(RealSource):
             data = {}
         rows = (data or {}).get("data") if isinstance(data, dict) else None
         for i, it in enumerate([r for r in (rows or []) if isinstance(r, dict)]):
-            body = feed_mod.blocks_from_html(str(it.get("content") or ""), max_blocks=4)
-            if not body:
-                continue
-            out.append(Comment(
-                cid=str(it.get("id") or ("zcc%d" % i)),
-                author=_zhihu_name(it.get("author")) or "匿名",
-                created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
-                score=int(it.get("vote_count") or it.get("like_count") or 0),
-                body=body,
-                # 子评论里既有"回这条评论的"也有"回另一个子评论那人的"；
-                # 接口给了 `reply_to_author`，照它写才不会全标成父评论作者
-                reply_to=_zhihu_name(it.get("reply_to_author")),
-            ))
+            # 子评论里既有"回这条评论的"也有"回另一个子评论那人的"；
+            # 接口给了 `reply_to_author`，照它写才不会全标成父评论作者
+            c = _zhihu_comment(it, i, "zcc")
+            if c is not None:
+                out.append(c)
         self._ans[key] = (out, "", time.time())
         return out
 
     def _answer_comments(self, aid, limit=None, children=True, offset=0):
-        """一条回答底下的评论（知乎的"评论"就是这一层，挂在回答下面当子节点）。
+        """一条回答底下的**顶层评论**（连着它的子评论一层）。
 
-        `children=True` 时再给前几条有回复的评论各取一层子评论（真三层树：
-        回答 → 评论 → 子评论）。问题页那种"一屏摆 6 条回答"的场景传 `children=False`：
-        那里要的是广度，为每条回答再补子评论只会把一页拖成十几秒。
-        `author` 是 `{role, member:{name}}` 那种嵌一层的形状，`_zhihu_name` 认得出。
+        **必须走 `/api/v4/answers/<aid>/root_comments`**（2026-10-23 实测）：
+        `/comments` 那个接口把整条回答的评论**平铺**回来——20 条里 17 条带
+        `reply_to_author`，也就是"回复"混在顶层里，于是观感是"很多评论的层级不对"
+        （它们被摆成了独立评论，而不是某条评论下面的回复）。`root_comments` 只给顶层，
+        每条还自带 `child_comment_count`（站上总数）和 `child_comments`（前 2 条预览），
+        层级天然是对的，拿它算"还有 N 条回复"也是真数。
+
+        但 `root_comments` 也不是百分百干净：它**偶尔仍会**把一条"回复某条顶层评论"的
+        条目放回顶层（实测一条回答 20 条顶层里有 1 条，而且同一条 id 又出现在那一楼的
+        子评论里）。所以按 `reply_to_author.member.id` 认父：只有**唯一一楼**的作者对得上
+        才挪进去（已经在那楼里就只留嵌套那一份）；认不准就留在顶层，表头照样写"回复 X"——
+        宁可多一行顶层，也不瞎猜它属于谁。
+
+        `children=True` 时再给前几条有回复的评论各补一次
+        `/api/v4/comments/<cid>/child_comments`（一页 12 条，并发的），有"回复某楼"的
+        那几楼排在最前面；`children=False`（问题页那一层，一屏 6 条回答）只吃白送的预览。
         """
         aid = str(aid).lstrip("a")
         key = "c:%s:%d" % (aid, int(offset or 0))
@@ -980,8 +988,7 @@ class ZhihuSource(RealSource):
             if items or (time.time() - when) < self.RETRY_AFTER:
                 return list(items)
         limit = int(limit or self.ANSWER_COMMENTS_LIMIT)
-        url = ("%s/api/v4/answers/%s/comments?limit=%d&offset=%d&order=normal"
-               "&include=data[*].content,like_count,created_time,author.name,child_comment_count"
+        url = ("%s/api/v4/answers/%s/root_comments?limit=%d&offset=%d"
                % (self.base_url, aid, limit, int(offset or 0)))
         out = []
         try:
@@ -991,31 +998,57 @@ class ZhihuSource(RealSource):
         except Exception:
             data = {}
         rows = [r for r in ((data or {}).get("data") or []) if isinstance(r, dict)]
-        out = []
-        built = {}
+        paging = ((data or {}).get("paging") or {}) if isinstance(data, dict) else {}
+        # 翻页按**原始行数**推进（有的行没正文会被跳过，按摆出来的条数推会原地打转）；
+        # 停不停看接口自己的 `paging.is_end`。
+        self._page_meta[key] = (len(rows), bool(paging.get("is_end")))
+
+        def _mid(author):
+            """`author` 里那个 member id：判断"回复的是哪一楼"只认它（名字会重）。"""
+            if not isinstance(author, dict):
+                return ""
+            member = author.get("member")
+            if not isinstance(member, dict):
+                return ""
+            return str(member.get("id") or "")
+
+        entries = []            # (原始行号, Comment, 是不是顶层, 它回的楼的 member id)
+        mid_roots = {}
         for i, it in enumerate(rows):
-            body = feed_mod.blocks_from_html(str(it.get("content") or ""), max_blocks=6)
-            if not body:
+            c = _zhihu_comment(it, i, "zc")
+            if c is None:
                 continue
-            c = Comment(
-                cid=str(it.get("id") or ("zc%d" % i)),
-                author=_zhihu_name(it.get("author")) or "匿名",
-                created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
-                score=int(it.get("vote_count") or it.get("like_count") or 0),
-                body=body,
-                reply_to=_zhihu_name(it.get("reply_to_author")),
-            )
-            out.append(c)
-            built[i] = c
+            rmid = _mid(it.get("reply_to_author"))
+            if rmid:
+                entries.append((i, c, False, rmid))      # 混进顶层的回复，先挂着
+                continue
+            kids = []
+            for j, k in enumerate([x for x in (it.get("child_comments") or [])
+                                   if isinstance(x, dict)]):
+                kc = _zhihu_comment(k, j, "zcc")
+                if kc is not None:
+                    kids.append(kc)
+            c.replies = kids
+            c.n_replies = int(it.get("child_comment_count") or 0)
+            entries.append((i, c, True, ""))
+            mid = _mid(it.get("author"))
+            if mid:
+                mid_roots.setdefault(mid, []).append(c)
+        built = dict((i, c) for i, c, is_root, _r in entries if is_root)
         if children and built:
-            # 这份接口**不给** `child_comment_count`（字段清单里根本没有），所以没法"只问有回复的"：
-            # 老老实实给前三条各问一次子评论，问空就是没有（三个请求并发，约 200 毫秒）。
+            # 有"回复某楼"的那几楼先补（那几楼才可能重复），再按行序补其余的。
+            want = set()
+            for _i, _c, is_root, rmid in entries:
+                if not is_root:
+                    for node in mid_roots.get(rmid, []):
+                        want.add(id(node))
             need = []
             for i in sorted(built):
                 cid = str(rows[i].get("id") or "") if i < len(rows) else ""
-                if cid:
-                    need.append((i, cid))
-            need = need[:3]              # 一页只补前三条：再多就是拿等待换密度
+                node = built[i]
+                if cid and int(node.n_replies or 0) > len(node.replies):
+                    need.append((0 if id(node) in want else 1, i, cid))
+            need = [(i, cid) for _p, i, cid in sorted(need)[:self.CHILDREN_THREADS]]
             if need:
                 got = {}
 
@@ -1026,15 +1059,30 @@ class ZhihuSource(RealSource):
                         got[idx] = []
 
                 with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=min(3, len(need))) as ex:
+                        max_workers=min(4, len(need))) as ex:
                     for _f in [ex.submit(one, i, c) for i, c in need]:
                         try:
                             _f.result(timeout=15)
                         except Exception:
                             pass
                 for idx, reps in got.items():
-                    if idx in built and reps:
-                        built[idx].replies = reps
+                    node = built.get(idx)
+                    if node is None or not reps:
+                        continue
+                    have = set(x.id for x in node.replies)
+                    node.replies = list(node.replies) + [r for r in reps if r.id not in have]
+        drop = set()            # 这些 id 不再作为顶层出现
+        for _i, c, is_root, rmid in entries:
+            if is_root:
+                continue
+            cands = mid_roots.get(rmid) or []
+            if len(cands) != 1:
+                continue                          # 认不准：留在顶层（表头写"回复 X"）
+            node = cands[0]
+            if not any(r.id == c.id for r in node.replies):
+                node.replies = list(node.replies) + [c]   # 那一楼没取到它，就自己挪进去
+            drop.add(c.id)
+        out = [c for _i, c, _root, _r in sorted(entries) if c.id not in drop]
         self._ans[key] = (out, "", time.time())
         return out
 
@@ -1050,13 +1098,12 @@ class ZhihuSource(RealSource):
             items, why = self.comments(post)
             return items, why, None
         off = max(0, int(cursor or 0))
-        cmts = self._answer_comments(post.id, offset=off)
-        # 下一页游标 = 已经读到的条数。**不能拿"这一页够不够 limit"判断**：
-        # 实测接口一次只回 7 条（limit 写 8），按 limit 判就永远以为没有下一页。
-        # 知道总数（post.n_comments）就按总数停；不知道就让下一页空着回来（空页即到头）。
-        total = int(getattr(post, "n_comments", 0) or 0)
-        got = off + len(cmts)
-        nxt = got if (cmts and (total <= 0 or got < total)) else None
+        aid = str(post.id).lstrip("a")
+        cmts = self._answer_comments(aid, offset=off)
+        # 下一页游标 = 已经翻过的**原始行数**；停不停看接口自己的 `paging.is_end`
+        #（`post.n_comments` 是"评论 + 回复"的总数，拿它跟顶层条数比会永远以为还有下一页）。
+        n_rows, is_end = self._page_meta.get("c:%s:%d" % (aid, off), (len(cmts), True))
+        nxt = (off + n_rows) if (n_rows and not is_end) else None
         return cmts, None, nxt
 
     def _answers(self, qid):
@@ -1187,6 +1234,21 @@ def _zhihu_why(why):
     if "超时" in s or "timeout" in low:
         return "请求超时（网络或者对面慢了）：" + s
     return s
+
+
+def _zhihu_comment(it, i=0, prefix="zc"):
+    """一条知乎评论的原始 JSON → Comment（没正文就返回 None，不摆空壳）。"""
+    body = feed_mod.blocks_from_html(str(it.get("content") or ""), max_blocks=6)
+    if not body:
+        return None
+    return Comment(
+        cid=str(it.get("id") or ("%s%d" % (prefix, i))),
+        author=_zhihu_name(it.get("author")) or "匿名",
+        created=feed_mod.human_time(feed_mod.parse_time(it.get("created_time"))),
+        score=int(it.get("vote_count") or it.get("like_count") or 0),
+        body=body,
+        reply_to=_zhihu_name(it.get("reply_to_author")),
+    )
 
 
 def _zhihu_name(author):

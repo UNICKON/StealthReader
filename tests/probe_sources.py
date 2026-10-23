@@ -2101,29 +2101,70 @@ _off = feed_sources.build_real_sources(cache_root=TMP_CACHE, log=None, config={
     "feed_sources": [], "feed_rss": ["我的博客|https://example.com/feed.xml"]})
 check("内置来源全关时不硬塞自己加的订阅（关就是关）", _off == [], [s.key for s in _off])
 
-# 知乎：评论底下再一层子评论（真三层树的第二层）
+# 知乎：评论底下再一层子评论（真三层树的第二层）。
+# 2026-10-23 实测的教训：`/answers/<aid>/comments` 会把"回复"**平铺**进顶层（一页 20 条里
+# 17 条带 reply_to_author），于是它们被摆成独立评论——真人那句"很多评论显示的层级不对"。
+# 必须走 `root_comments`：只给顶层，还自带 child_comment_count 和 2 条预览子评论；
+# 但它偶尔仍把一条"回复某楼"的条目放回顶层（实测 20 条里 1 条），所以按 member id 归位。
+_ZC_FLAT = {"data": [                                    # 诱饵：平铺接口（不该再被调用）
+    {"id": 999, "content": "<p>平铺进来的回复</p>", "author": {"name": "丁"},
+     "reply_to_author": {"role": "normal", "member": {"name": "甲"}}}]}
 _ZC_PARENT = {"data": [
-    {"id": 11, "content": "<p>父评论</p>", "author": {"name": "甲"},
-     "created_time": 1700000000, "vote_count": 3},
-    {"id": 12, "content": "<p>第二条父评论</p>", "author": {"name": "乙"},
-     "created_time": 1700000000}]}
+    {"id": 11, "content": "<p>父评论</p>", "author": {"name": "甲", "member": {"id": "m-a"}},
+     "created_time": 1700000000, "vote_count": 3, "child_comment_count": 5,
+     "child_comments": [
+         {"id": 111, "content": "<p>子评论一</p>", "author": {"name": "丙"},
+          "created_time": 1700000000,
+          "reply_to_author": {"role": "normal", "member": {"name": "甲"}}},
+         {"id": 112, "content": "<p>子评论二</p>", "author": {"name": "丁"},
+          "created_time": 1700000000,
+          "reply_to_author": {"role": "normal", "member": {"name": "丙"}}}]},
+    {"id": 12, "content": "<p>第二条父评论</p>", "author": {"name": "乙", "member": {"id": "m-b"}},
+     "created_time": 1700000000, "child_comment_count": 0, "child_comments": []},
+    # 混进顶层的回复：回的是 11（member id 对得上），子评论那一页里没有它 → 要挪进 11
+    {"id": 13, "content": "<p>我回甲</p>", "author": {"name": "己", "member": {"id": "m-f"}},
+     "created_time": 1700000000, "child_comment_count": 0,
+     "reply_to_author": {"role": "normal", "member": {"id": "m-a", "name": "甲"}}},
+    # 同一条 id 又出现在 11 的子评论里（接口重复给）：只留嵌套那一份
+    {"id": 113, "content": "<p>子评论三</p>", "author": {"name": "戊", "member": {"id": "m-e"}},
+     "created_time": 1700000000, "child_comment_count": 0,
+     "reply_to_author": {"role": "normal", "member": {"id": "m-a", "name": "甲"}}}],
+    "paging": {"is_end": True, "totals": 0}}
 _ZC_CHILD = {"data": [
     {"id": 111, "content": "<p>子评论一</p>", "author": {"name": "丙"},
      "created_time": 1700000000,
      "reply_to_author": {"role": "normal", "member": {"name": "甲"}}},
-    {"id": 112, "content": "<p>子评论二</p>", "author": {"name": "丁"},
+    {"id": 113, "content": "<p>子评论三</p>", "author": {"name": "戊"},
      "created_time": 1700000000,
-     "reply_to_author": {"role": "normal", "member": {"name": "丙"}}}]}
+     "reply_to_author": {"role": "normal", "member": {"name": "甲"}}}]}
 _zc = feed_sources.ZhihuSource(FakeHttp({
-    "answers/9/comments": _ZC_PARENT,          # 注意：`a9` 会被 lstrip("a") 成 `9`
+    "answers/9/root_comments": _ZC_PARENT,
+    "answers/9/comments": _ZC_FLAT,            # 平铺接口：留着当诱饵
     "comments/11/child_comments": _ZC_CHILD}, cache=MemCache()), {"cookie": "x"})
 _zc.images_off = True
 _zrows = _zc._answer_comments("a9")
-check("知乎：回答的评论能带出一层子评论",
-      len(_zrows) == 2 and len(_zrows[0].replies) == 2 and _zrows[0].replies[0].author == "丙",
-      [(c.author, len(c.replies)) for c in _zrows])
-check("知乎：没有子评论的那条就是空列表（不塞占位）", _zrows[1].replies == [],
-      _zrows[1].replies)
+_calls = [str(u) for u in _zc.http.calls]
+check("知乎：顶层评论走 root_comments（平铺接口会把回复混进顶层，不能再用）",
+      any("answers/9/root_comments" in u for u in _calls)
+      and not any("answers/9/comments" in u for u in _calls), _calls)
+check("知乎：回复不再被摆成独立评论（顶层就这两条）",
+      [c.id for c in _zrows] == ["11", "12"], [c.id for c in _zrows])
+check("知乎：混进顶层的那条按 member id 挪进它回的楼（不留在顶层）",
+      "13" not in [c.id for c in _zrows]
+      and [r.id for r in _zrows[0].replies if r.id == "13"] == ["13"]
+      and [r.author for r in _zrows[0].replies if r.id == "13"] == ["己"],
+      [r.id for r in _zrows[0].replies])
+check("知乎：同一条 id 接口重复给了（顶层 + 子评论）时只留嵌套那一份",
+      [r.id for r in _zrows[0].replies].count("113") == 1
+      and "113" not in [c.id for c in _zrows],
+      [r.id for r in _zrows[0].replies])
+check("知乎：顶层接口自带的预览子评论直接用上，再来一页也接在同一层",
+      [c.id for c in _zrows[0].replies] == ["111", "112", "113", "13"],
+      [c.id for c in _zrows[0].replies])
+check("知乎：站上总数记成 n_replies（占位行才是真数）",
+      _zrows[0].n_replies == 5 and _zrows[1].n_replies == 0,
+      (_zrows[0].n_replies, _zrows[1].n_replies))
+check("知乎：没有子评论的那条就是空列表（不塞占位）", _zrows[1].replies == [], _zrows[1].replies)
 check("知乎：子评论“回复谁”照接口的 reply_to_author 写（不是一律父评论作者）",
       _zrows[0].replies[0].reply_to == "甲" and _zrows[0].replies[1].reply_to == "丙",
       [c.reply_to for c in _zrows[0].replies])
@@ -2133,12 +2174,43 @@ check("知乎：回另一个子评论的人时，表头写的是那个人",
 _check = feed_mod.FeedNav()
 _check.set_detail(feed_mod.Post(source="zhihu", pid="a9", title="t"), _zrows)
 _depths = [d for _c, d, _p in _check.visible_comments()]
-check("知乎：三层树在导航里是 甲(0) → 丙(1) → 丁(1) → 乙(0)（深度优先，子评论真缩进一层）",
-      _depths == [0, 1, 1, 0], _depths)
+check("知乎：层级是真缩进（甲 0 → 先摆的 3 条子评论 1 → 占位行 1 → 乙 0）",
+      _depths == [0, 1, 1, 1, 1, 0], _depths)
+_ph = [c.body[0].text for c, _d, _p in _check.visible_comments() if getattr(c, "more_for", "")]
+check("知乎：占位行写「还有 2 条回复 · 点开」（5 条里摆 3 条，按站上总数算）",
+      _ph == ["还有 2 条回复 · 点开"], _ph)
+_check.show_more_children("11")            # 摊开一页：挪进来的那条也在同一层
+_depths2 = [d for _c, d, _p in _check.visible_comments()]
+check("知乎：摊开后挪进来的那条回复也在同一层（不是又冒出一行顶层）",
+      _depths2 == [0, 1, 1, 1, 1, 1, 0]
+      and [c.id for c, _d, _p in _check.visible_comments()][:5] == ["11", "111", "112", "113", "13"],
+      (_depths2, [c.id for c, _d, _p in _check.visible_comments()]))
 _check.collapsed.add(_zrows[0].id)
-check("收掉父评论：它下面那条子评论也跟着不显示（子树一起收）",
+check("收掉父评论：它下面那几条子评论也跟着不显示（子树一起收）",
       [c.id for c, _d, _p in _check.visible_comments()] == ["11", "12"],
       [c.id for c, _d, _p in _check.visible_comments()])
+# 认不准就不猜：两楼作者是同一个账号时，混进顶层的那条留在顶层（表头写"回复 X"）
+_ZC_AMB = {"data": [
+    {"id": 21, "content": "<p>甲的第一条</p>", "author": {"name": "甲", "member": {"id": "m-a"}},
+     "child_comment_count": 0, "child_comments": []},
+    {"id": 22, "content": "<p>甲的第二条</p>", "author": {"name": "甲", "member": {"id": "m-a"}},
+     "child_comment_count": 0, "child_comments": []},
+    {"id": 23, "content": "<p>回甲的</p>", "author": {"name": "庚", "member": {"id": "m-g"}},
+     "child_comment_count": 0,
+     "reply_to_author": {"role": "normal", "member": {"id": "m-a", "name": "甲"}}}],
+    "paging": {"is_end": True}}
+_za = feed_sources.ZhihuSource(FakeHttp({"answers/8/root_comments": _ZC_AMB},
+                                       cache=MemCache()), {"cookie": "x"})
+_za.images_off = True
+_zarows = _za._answer_comments("a8")
+check("知乎：分不清是哪一楼时就留在顶层（不瞎猜、不吞内容）",
+      [c.id for c in _zarows] == ["21", "22", "23"] and _zarows[2].reply_to == "甲",
+      [(c.id, c.reply_to) for c in _zarows])
+# 翻页：说了算的是 paging.is_end（post.n_comments 是"评论+回复"的总数，不能拿来判顶层）
+_np = feed_mod.Post(source="zhihu", pid="a9", title="t", n_comments=45)
+_zpage, _zwhy, _znxt = _zc.comments_page(_np)
+check("知乎：顶层一页翻完就停（不拿'评论+回复'总数当下一页依据）",
+      bool(_zpage) and _znxt is None, (len(_zpage or []), _znxt))
 
 
 # ---------------------------------------------------------------- 收尾
