@@ -1963,13 +1963,13 @@ print("\n=== 4h. 折起之后楼根落在哪儿：受控 ===")
 _lk_bak3 = w.config.get("lowkey_key")
 w.config["lowkey_key"] = "e"
 try:
-    def _mk_page3():
+    def _mk_page3(reps=30):
         nav = w.feed_nav
         nav.view = "detail"
         nav.post = feed_mod.Post(source="demo", pid="9", title="t")
         nav.roots = [feed_mod.Comment(
             cid="z%d" % k, author="楼主%d" % k,
-            body=[feed_mod.Block(kind=feed_mod.BLOCK_P, text=("楼%d 的正文。" % k) * 30)],
+            body=[feed_mod.Block(kind=feed_mod.BLOCK_P, text=("楼%d 的正文。" % k) * reps)],
             replies=[feed_mod.Comment(cid="z%d-%d" % (k, i), author="甲%d" % i,
                                       body=[feed_mod.Block(kind=feed_mod.BLOCK_P,
                                                            text=("回复%d 的内容。" % i) * 20)])
@@ -2022,38 +2022,149 @@ try:
                 return oid
         return None
 
+    def _span3(cid):
+        """这条评论自己那段的 (top, bottom)：底部 = 文档里紧跟它的那条定位文本。"""
+        items = list(w.feed_item_blocks())
+        for k, (obj, _kind, cur) in enumerate(items):
+            if str(getattr(obj, "id", "")) != cid:
+                continue
+            top = w.text_edit.cursorRect(cur).top()
+            if k + 1 < len(items):
+                return top, w.text_edit.cursorRect(items[k + 1][2]).top()
+            return top, top
+        return None, None
+
     vh3 = w.text_edit.viewport().height()
-    _mk_page3()
-    check("（前置）这一页够长，能滚（不然下面几条测不出来）",
-          _sb3().maximum() > 400, _sb3().maximum())
 
-    _mk_page3()
+    # ---- 短楼：底部本来就在屏幕上 -> 折起之后一动不动
+    _mk_page3(reps=3)
     _scroll_to_root3(120, "z0")
-    _y0 = _y3("z0")
     _v = _victim3("z0-")
-    check("楼根就在视口上方时：折起后它还在原来的高度（页面不跳）",
-          _click3(_v) and _y3("z0") is not None and abs(_y3("z0") - _y0) <= 10,
-          (_v, _y0, _y3("z0")))
+    _b0 = _span3("z0")[1]
+    check("（前置）短评论：楼根底部就在屏幕里", _v is not None and 0 <= _b0 <= vh3 - 40,
+          (_v, _b0))
+    check("短评论：底部在屏幕上时，折起之后它停在同一高度（页面不跳）",
+          _click3(_v) and _span3("z0")[1] is not None
+          and abs(_span3("z0")[1] - _b0) <= 10,
+          (_v, _b0, _span3("z0")))
 
-    _mk_page3()
-    _scroll_to_root3(-260, "z0")
-    _v2 = _victim3("z0-")
-    _sb_before = _sb3().value()
-    check("楼根已经滚出视口上方时：点屏幕里的回复折起，楼根被拉回屏幕（25% 处，顶到 0 就夹住）",
-          _click3(_v2) and _y3("z0") is not None
-          and 0 <= _y3("z0") <= vh3
-          and (abs(_y3("z0") - int(vh3 * 0.25)) <= 45 or _sb3().value() == _sb3().minimum()),
-          (_v2, _sb_before, _sb3().value(), _y3("z0")))
-    check("定位不会被事后那次「恢复旧位置」盖回去（滚完再跑一遍事件循环还是那个位置）",
-          (_y3("z0") is not None and 0 <= _y3("z0") <= vh3), _y3("z0"))
+    # ---- 已经翻进回复里：楼根底部在屏幕上方 -> 定位到楼根底部（75%），不拽回开头
+    _mk_page3(reps=120)                    # 长楼：楼根自己就比一屏高
+    w.feed_nav.child_show = {"z0": 10, "z1": 10, "z2": 10}
+    w.render_feed()
+    qapp.processEvents()
+    _sb3().setValue(min(_sb3().maximum(), _sb3().value() + 1300))   # 一眼在回复中段
+    qapp.processEvents()
+    _vb = _victim3("z0-")
+    _bb = _span3("z0")[1]
+    check("（前置）人已经翻进回复里，楼根底部滚到了屏幕上方", _vb is not None and _bb < 0,
+          (_vb, _bb))
+    _okb = _click3(_vb)
+    _yb, _bab = _span3("z0")
+    qapp.processEvents()
+    check("点子回复折起：定位到**这条评论的底部**（75% 处）",
+          _okb and _bab is not None
+          and (abs(_bab - int(vh3 * 0.75)) <= 40 or _sb3().value() <= _sb3().minimum() + 2),
+          (_vb, _bb, _bab, int(vh3 * 0.75)))
+    check("…没有把这条评论的开头拽回来（真人报的「现在是顶部」）",
+          _yb is not None and _yb < 0, (_yb, _bab))
+    check("定位不会被事后那次「恢复旧位置」盖回去（滚完再跑事件循环还是那个位置）",
+          abs(_span3("z0")[1] - _bab) <= 2, (_bab, _span3("z0")[1]))
 
-    _mk_page3()
+    # ---- 第二楼同理
+    _mk_page3(reps=3)
     _scroll_to_root3(120, "z1")
     _v3 = _victim3("z1-")
-    _y3_before = _y3("z1")
-    check("第二楼同理：折起后楼根还在原来的高度",
-          _click3(_v3) and _y3("z1") is not None and abs(_y3("z1") - _y3_before) <= 10,
-          (_v3, _y3_before, _y3("z1")))
+    _b3 = _span3("z1")[1]
+    check("第二楼同理：折起后底部还在原来的高度",
+          _click3(_v3) and _span3("z1")[1] is not None and abs(_span3("z1")[1] - _b3) <= 10,
+          (_v3, _b3, _span3("z1")))
+
+    # ================================================================ 4i
+    print("\n=== 4i. 楼里有 3、4 层「之评论」：动作和两层时同一套 ===")
+
+    def _mk_deep(long_root=False):
+        def mk(cid, depth, reps):
+            kids = []
+            if depth < 3:
+                kids = [mk(cid + "-%d" % k, depth + 1, 1) for k in range(2)]
+            return feed_mod.Comment(
+                cid=cid, author="甲" + cid,
+                body=[feed_mod.Block(kind=feed_mod.BLOCK_P,
+                                     text=("%s 的正文。" % cid) * reps)],
+                replies=kids)
+
+        nav = w.feed_nav
+        nav.view = "detail"
+        nav.post = feed_mod.Post(source="demo", pid="d9", title="t")
+        nav.roots = [mk("d0", 0, 200 if long_root else 3)]
+        nav.flat = feed_mod.comment_forest(nav.roots)
+        nav.child_show = {}
+        nav.child_saved = {}
+        nav.collapsed = set()
+        nav.c_show = 50
+        nav.c_more = False
+        nav.detail_loaded = True
+        nav.c_index = 0
+        w.render_feed()
+        w.feed_scroll_top()
+        qapp.processEvents()
+
+    _mk_deep()
+    _vis = w.feed_nav.visible_comments()
+    check("树里真有 4 层（0..3）——知乎那种「之评论的之评论」",
+          sorted(set(d for _c, d, _p in _vis)) == [0, 1, 2, 3],
+          sorted(set(d for _c, d, _p in _vis)))
+    _all_ids = [c.id for c, _d, _p in w.feed_nav.visible_comments()]
+    _deep_id = "d0-0-1-0"
+    w.feed_nav.c_index = _all_ids.index(_deep_id)
+    check("（前置）光标落在第 3 层那条上", _deep_id.count("-") == 3, _deep_id)
+    _click3(_deep_id)
+    _nav = w.feed_nav
+    check("点第 4 层那条：折的是**整楼楼根**（和点两层时同一套规矩）",
+          _nav.child_limit(_nav.roots[0]) == 0 and _nav.roots[0].id in _nav.child_saved,
+          (_nav.child_limit(_nav.roots[0]), list(_nav.child_saved)))
+    check("折完光标回到楼根", _nav.current_comment() is not None
+          and _nav.current_comment().id == "d0", getattr(_nav.current_comment(), "id", None))
+    check("折起来只剩楼根 + 一行「还有 N 条回复」",
+          len(_nav.visible_comments()) == 2,
+          [c.id for c, _d, _p in _nav.visible_comments()])
+    w.feed_fold()                          # 楼根上再折一次 = 摊开
+    check("再折一次摊回折之前的条数（15 条，不是只摊 3 条）",
+          _nav.child_limit(_nav.roots[0]) >= 3 and len(_nav.visible_comments()) == 15,
+          (_nav.child_limit(_nav.roots[0]), len(_nav.visible_comments())))
+
+    # 深楼（楼根很长、点的是最深那条）:定位到楼根底部，不拽回楼根开头
+    _mk_deep(long_root=True)
+    _nav = w.feed_nav
+    _vis = _nav.visible_comments()
+    _deep = [c.id for c, d, _p in _vis if d == 3]
+    check("（前置）第 4 层那条在文档里", bool(_deep), _deep)
+    if _deep:
+        _sb3().setValue(min(_sb3().maximum(), int(_span3(_deep[0])[0]) - int(vh3 * 0.4)))
+        qapp.processEvents()
+        _click3(_deep[0])
+        _y4, _b4 = _span3("d0")
+        check("长楼里点最深那条：还是定位到楼根底部（75% 处），不是楼根开头",
+              _b4 is not None and (abs(_b4 - int(vh3 * 0.75)) <= 70
+                                   or _sb3().value() >= _sb3().maximum() - 2),
+              (_b4, int(vh3 * 0.75)))
+        check("…楼根开头确实在屏幕外（没被拽回去）", _y4 is not None and _y4 < 0, _y4)
+
+    # 第 3 层的「还有 N 条回复」照样能摊开
+    _mk_deep()
+    _nav = w.feed_nav
+    _nav.child_show["d0-0-1"] = 1          # 第 2 层那条只摆 1 条，留一条在占位行里
+    w.render_feed()
+    qapp.processEvents()
+    _rows = [(c.id, d) for c, d, _p in _nav.visible_comments()]
+    check("（前置）第 3 层那条的回复被收成了一行占位",
+          ("__more__d0-0-1", 3) in _rows, [r for r in _rows if r[0].startswith("__more__")])
+    _click3("__more__d0-0-1")
+    check("点第 3 层那行「还有 N 条回复」：照常摊开（不再只是顶层能用）",
+          _nav.child_limit(_nav.comment_by_id("d0-0-1")) >= 2,
+          _nav.child_show.get("d0-0-1"))
+
 finally:
     w.config["lowkey_key"] = _lk_bak3
 

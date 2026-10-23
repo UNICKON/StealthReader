@@ -6597,15 +6597,40 @@ class StealthReader(QWidget):
 
     def _feed_comment_y(self, comment):
         """这条评论的表头在**视口里的高度**（找不到就 None）。"""
+        return self._feed_comment_span(comment)[0]
+
+    def _feed_comment_span(self, comment):
+        """这条评论**自己那段**（表头 + 正文）在视口里的 (上沿, 下沿)。
+
+        下沿取的是文档里紧跟着它的那条定位文本的高度：展开时是它的第一条回复，
+        折着时是「还有 N 条回复」那一行，都没有就是下一楼——三者都正好压在它自己
+        那段的下沿上。所以这里说的是"这条评论收在哪儿"，**不含**它下面的回复。
+
+        为什么要下沿：收起的是它下面的回复，人在读的往往就是这条评论的尾巴
+        （长评论的顶部早滚出屏幕了）。按顶部定位会把人拽回这条评论的开头——
+        真人 2026-10-23 的原话就是「应该定位到该评论的底部,现在是顶部」。
+        """
         if comment is None:
-            return None
+            return None, None
         try:
-            for obj, kind, cur in self.feed_item_blocks():
-                if kind == "comment" and obj is comment:
-                    return self.text_edit.cursorRect(cur).top()
+            items = self.feed_item_blocks()
+            for i, (obj, _kind, cur) in enumerate(items):
+                if obj is not comment:
+                    continue
+                top = self.text_edit.cursorRect(cur).top()
+                if i + 1 < len(items):
+                    bot = self.text_edit.cursorRect(items[i + 1][2]).top()
+                else:
+                    # 最后一楼：文档末尾就是它的下沿（视口坐标 = 文档高 − 当前滚动）
+                    try:
+                        sb = self.text_edit.verticalScrollBar()
+                        bot = (self.text_edit.document().size().height() - sb.value())
+                    except Exception:
+                        bot = top
+                return top, bot
         except Exception:
-            return None
-        return None
+            return None, None
+        return None, None
 
     def feed_fetch_children(self, cid):
         """把这条评论**还没到手**的回复从站上取回来。
@@ -6682,6 +6707,11 @@ class StealthReader(QWidget):
             return False
         cur = nav.current_comment()
         root = nav.thread_root(cur) if cur is not None else None
+        anchor = root if root is not None else cur
+        # 下沿必须**折之前**量：折完 `nav` 变了、文档还是旧的，两边对不上——
+        # `feed_item_blocks` 是从"现在的 nav"出发去旧文档里找定位文本的，折叠掉的回复
+        # 在 needle 表里没了，于是"下一条"直接跳到下一楼，量出来的底边能差出半屏。
+        _top_before, bot_before = self._feed_comment_span(anchor)
         if whole:
             n = nav.fold_all()
             doing = "折起"
@@ -6701,23 +6731,25 @@ class StealthReader(QWidget):
         ids = [c.id for c, _d, _p in vis]
         if root is not None and root.id in ids:
             nav.c_index = ids.index(root.id)
-        anchor = root if root is not None else cur
-        y_before = self._feed_comment_y(anchor)
         vh = max(1, self.text_edit.viewport().height())
         # 位置**自己算**，不要 render_feed 那条"保持旧像素位置"的排单：它是
         # `QTimer.singleShot(0, ...)` 事后执行的，会把下面这次定位盖回去——人看到的就是
         # 有时停在原处、有时又跳走（真人报的"定位不受控"）。
         self.feed_restore_pos = 0
         self.render_feed()
-        y_zero = self._feed_comment_y(anchor)      # 重画后滚动条被 setHtml 打回 0，这就是绝对高度
-        if y_zero is not None:
-            # 楼根原来在屏幕上就留在原来的高度；本来在视口外（点的是屏幕里靠下的回复）
-            # 就摆到视口 25% 处——和方向键换条目是同一套规矩，人不会觉得"乱跑"。
-            keep = (y_before if (y_before is not None and 0 <= y_before <= vh - 40)
-                    else int(vh * 0.25))
+        # 重画后滚动条被 setHtml 打回 0，这就是这条评论底部的绝对高度
+        _top_zero, bot_zero = self._feed_comment_span(anchor)
+        if bot_zero is not None:
+            # 定位到**这条评论的底部**（真人 2026-10-23：「点击收起子评论区的时候,应该定位到
+            # 该评论的底部,现在是顶部」）：收起的是它下面的回复，该留住的是它自己收在哪儿。
+            # 底部本来就在屏幕上（短评论、或人正读到它尾巴上）= 一动不动；底部在视口外
+            # （长评论读到一半、或者人已经在回复深处）就把它摆到视口 75% 处——上面是这条
+            # 评论的尾段，下面是折起来之后那行「还有 N 条回复」和下一楼。
+            keep = (bot_before if (bot_before is not None and 0 <= bot_before <= vh - 40)
+                    else int(vh * 0.75))
             try:
                 sb = self.text_edit.verticalScrollBar()
-                sb.setValue(int(max(sb.minimum(), min(sb.maximum(), y_zero - keep))))
+                sb.setValue(int(max(sb.minimum(), min(sb.maximum(), bot_zero - keep))))
             except Exception:
                 pass
             self.feed_highlight()          # 已经定位好了，不要再 ensure（那会二次滚动）
