@@ -786,6 +786,7 @@ class FeedNav(object):
         if total:
             node.n_replies = max(int(total), len(node.replies))
         self.child_show[str(cid)] = len(node.replies)   # 新取回来的一次全摆出来
+        self.child_saved.pop(str(cid), None)            # 摊开了就不是折着的
         self.flat = comment_forest(self.roots)
         return len(new)
 
@@ -804,6 +805,7 @@ class FeedNav(object):
         new = min(len(node.replies), lim + CHILD_SHOW)
         got = new - lim
         self.child_show[cid] = new
+        self.child_saved.pop(str(cid), None)     # 手动摊开过了，旧记忆作废
         return got
 
     def thread_root(self, c):
@@ -826,7 +828,10 @@ class FeedNav(object):
         root = self.thread_root(c if c is not None else self.current_comment())
         if root is None:
             return False
-        return root.id in self.child_saved or self.child_limit(root) <= 0
+        # 只认**当前**摆了几条，不认 `child_saved` 里那份"折之前的记忆"：
+        # 折起来之后点「还有 N 条回复」摊开 3 条，这一楼其实已经摊开了，
+        # 再按 X 该是"折"，不能因为记忆表里还有条目就反过来"摊"（真人报的冲突）。
+        return self.child_limit(root) <= 0
 
     def fold_thread(self, c=None):
         """把这一楼下面的回复折起来（评论本身照读）；折成功返回 1。

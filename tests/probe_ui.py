@@ -1897,6 +1897,68 @@ try:
 finally:
     w.config["lowkey_key"] = _lk_bak
 
+print("\n=== 4g. 点「还有 N 条回复」与点子评论不打架 ===")
+_lk_bak2 = w.config.get("lowkey_key")
+w.config["lowkey_key"] = "e"
+try:
+    def _mk_page2(n_reps=8):
+        nav = w.feed_nav
+        nav.view = "detail"
+        nav.post = feed_mod.Post(source="demo", pid="8", title="t")
+        nav.roots = [feed_mod.Comment(
+            cid="y0", author="楼主",
+            body=[feed_mod.Block(kind=feed_mod.BLOCK_P, text="楼正文。")],
+            replies=[feed_mod.Comment(cid="y0-%d" % i, author="甲%d" % i,
+                                      body=[feed_mod.Block(kind=feed_mod.BLOCK_P,
+                                                           text="回复%d。" % i)])
+                     for i in range(n_reps)])]
+        nav.flat = feed_mod.comment_forest(nav.roots)
+        nav.child_show = {}
+        nav.child_saved = {}
+        nav.collapsed = set()
+        nav.c_show = 50
+        nav.c_more = False
+        nav.detail_loaded = True
+        nav.c_index = 0
+        w.render_feed()
+        w.feed_scroll_top()
+        qapp.processEvents()
+
+    def _ids2():
+        return [c.id for c, _d, _p in w.feed_nav.visible_comments()]
+
+    def _click2(obj_id):
+        for obj, _kind, cur in w.feed_item_blocks():
+            if getattr(obj, "id", "") == obj_id:
+                r = w.feed_click(w.text_edit.cursorRect(cur).center())
+                _settle()
+                return r
+        return None
+
+    _mk_page2()
+    _root2 = w.feed_nav.roots[0]
+    check("点「还有 5 条回复」那一行：摊开下一批 3 条",
+          _click2("__more__y0") is True
+          and _ids2()[:8] == ["y0", "y0-0", "y0-1", "y0-2", "y0-3", "y0-4", "y0-5", "__more__y0"],
+          _ids2())
+    check("摊开之后这一楼就**不算**折着了（不然按 X 的方向会反过来）",
+          w.feed_nav.folded(_root2) is False and w.feed_nav.child_saved == {},
+          (w.feed_nav.folded(_root2), w.feed_nav.child_saved))
+    check("摊开之后再点子评论：还是折起来（不是原地不动）",
+          _click2("y0-1") is True and w.feed_nav.folded(_root2)
+          and _ids2() == ["y0", "__more__y0"], (w.feed_nav.folded(_root2), _ids2()))
+    check("折着的时候点那一行：摊开 3 条（不被折抢走）",
+          _click2("__more__y0") is True
+          and _ids2() == ["y0", "y0-0", "y0-1", "y0-2", "__more__y0"], _ids2())
+    check("摊开后按 X：折起来（不是又摊回去）",
+          w.on_feed_key(Qt.Key_X) is True and w.feed_nav.folded(_root2)
+          and _ids2() == ["y0", "__more__y0"], _ids2())
+    check("再按 X：摊回 3 条（不是跳回 8 条）",
+          w.on_feed_key(Qt.Key_X) is True and not w.feed_nav.folded(_root2)
+          and _ids2() == ["y0", "y0-0", "y0-1", "y0-2", "__more__y0"], _ids2())
+finally:
+    w.config["lowkey_key"] = _lk_bak2
+
 # 详情：B 到评论区顶部（原来是 E，E 让给无图开关了）、Z 一口气回列表、
 # 知乎"回答→问题"的 Esc 也回列表
 def _fake_detail(via=""):
