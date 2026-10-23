@@ -1754,6 +1754,27 @@ check("重画之后还能落回刚才那一行（不是永远顶部）",
       w.text_edit.verticalScrollBar().value() == _want,
       (_want, w.text_edit.verticalScrollBar().value()))
 
+# 刷新（R）＝从头看：当场回到顶部，不等数据回来
+# 真人 2026-10-22："刷新的时候应该自动跳到顶部"。以前只发请求，滚动位置被
+# render_feed 当成"同一屏重画"保住了：列表换了一页内容，屏幕还停在旧偏移上。
+_reload_bak = w.feed_load
+_calls = []
+w.feed_load = lambda what, post=None, fresh=False: _calls.append((what, fresh))
+try:
+    _was = w.text_edit.verticalScrollBar().value()
+    check("（前置）这会儿在下面，有得回", _was > 0, _was)
+    w._feed_pending_scroll = 4242            # 排队中的"恢复旧位置"应该被作废
+    _ok_reload = w.feed_reload()
+    check("刷新当场回到顶部（不等数据回来）",
+          _ok_reload and w.text_edit.verticalScrollBar().value() == 0,
+          (_ok_reload, _was, w.text_edit.verticalScrollBar().value()))
+    check("刷新照旧不吃缓存（fresh=True），且刷的是列表",
+          _calls[-1:] == [("list", True)], _calls[-1:])
+    check("排队中的旧位置恢复作废（别把屏幕拽回去）", w._feed_pending_scroll is None,
+          w._feed_pending_scroll)
+finally:
+    w.feed_load = _reload_bak
+
 # 详情：B 到评论区顶部（原来是 E，E 让给无图开关了）、Z 一口气回列表、
 # 知乎"回答→问题"的 Esc 也回列表
 def _fake_detail(via=""):

@@ -6639,6 +6639,13 @@ class StealthReader(QWidget):
         self.feed_error = ""
         self.feed_gen += 1
         what = "detail" if nav.view == "detail" else "list"
+        # 刷新＝从头看：**当场**回到顶部，不等数据回来。
+        # 以前这里只发了请求：列表回来 `nav.reset()` 把选中项打回第一条、详情整页重排，
+        # 可滚动位置被 render_feed 当成"同一屏重画"保住了——列表于是换了一页内容、
+        # 屏幕上还是旧偏移，高亮那条更飘到看不见的地方（真人："刷新的时候应该自动跳到顶部"）。
+        # 现在就 setValue(0)：数据回来那次重排抓到 `before=0`，自然也停在顶部，
+        # 不用往 feed_restore_pos 里写 0（那个 0 会留给下一次"保持位置"的重画，见 feed_scroll_top）。
+        self.feed_scroll_top()
         self.review_hint("刷新中…", 900)
         self.feed_load(what, fresh=True)
         log_event("社区：刷新（%s，不吃缓存）" % what)
