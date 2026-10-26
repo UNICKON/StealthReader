@@ -15,6 +15,7 @@ import queue
 import zipfile
 import threading
 import subprocess
+import shutil
 import time
 import keyboard
 import ctypes
@@ -9341,10 +9342,7 @@ class StealthReader(QWidget):
         try:
             log_event("重新启动（%s）" % (reason or "托盘"))
             self.save_before_restart()
-            exe = sys.executable
-            pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
-            if not getattr(sys, "frozen", False) and os.path.exists(pyw):
-                exe = pyw
+            exe = self._restart_exe()
             args = [exe]
             if not getattr(sys, "frozen", False):
                 args.append(os.path.join(APP_DIR, "main.py"))
@@ -9356,7 +9354,7 @@ class StealthReader(QWidget):
             proc = subprocess.Popen(args, cwd=APP_DIR, close_fds=True,
                                     creationflags=0x00000008)      # DETACHED_PROCESS
             self._restart_pid = int(getattr(proc, "pid", 0) or 0)
-            log_event("新进程已拉起：%s" % " ".join(args[1:]))
+            log_event("新进程已拉起：%s（%s）" % (" ".join(args[1:]), exe))
         except Exception as e:
             log_event(f"重新启动失败: {e}")
             try:
@@ -9368,6 +9366,41 @@ class StealthReader(QWidget):
             QMessageBox.warning(self, "提示", "重新启动失败：%s" % e)
             return
         QTimer.singleShot(1200, self._finish_restart)
+
+    def _restart_exe(self):
+        """重启时用哪个解释器：优先启动器特意挑好的那个，其次同目录的 pythonw，再其次 PATH。
+
+        2026-10-26 真出过一次：`%APPDATA%/WPS 灵犀/python-env` 被换成了半截解压
+        （连 `python312.dll` 都没了、pythonw.exe 也消失）。那时 `sys.executable` 指向的
+        就是一个已经不存在的 pythonw，`Popen` 报 WinError 2——解锁自动重启、托盘「重新启动」
+        全都起不来，人看到的就是「怎么启动不了了」。所以别把命押在一条路径上。
+        """
+        if getattr(sys, "frozen", False):
+            return sys.executable
+        cands = []
+        env_pyw = os.environ.get("STEALTHREADER_PYW", "")
+        if env_pyw:
+            cands.append(env_pyw)                       # 启动器挑的那个（run_stealthreader.cmd）
+        try:
+            cands.append(os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                                      "pythonw.exe"))
+        except Exception:
+            pass
+        for name in ("pythonw", "python"):
+            try:
+                hit = shutil.which(name)
+            except Exception:
+                hit = None
+            if hit:
+                cands.append(hit)
+        cands.append(sys.executable)                    # 兜底：至少还是它
+        for c in cands:
+            try:
+                if c and os.path.isfile(c):
+                    return c
+            except Exception:
+                continue
+        return sys.executable
 
     def _finish_restart(self):
         """新进程活着才退出自己——它要是起不来（改坏了之类），就留在这儿，别把程序弄没了。"""
@@ -9439,4 +9472,7 @@ if __name__ == '__main__':
         QTimer.singleShot(400, ex.ensure_on_screen)
     # 日志照实写：只说自己知道的事——这次起来是隐藏的，别替用户认定"为什么隐藏"
     log_event("应用启动" + ("（起来后保持隐藏）" if _hidden else ""))
+    # 顺带记下这次是哪个解释器跑起来的：2026-10-26 灵犀的 python-env 被换掉那次，
+    # "起不来"和"起来了但用的是别的环境"在外头看不出来，有了这行一看就知道。
+    log_event("解释器 %s（%s）" % (sys.version.split()[0], sys.executable))
     sys.exit(app.exec_())

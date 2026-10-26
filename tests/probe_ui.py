@@ -2345,6 +2345,24 @@ w.config["show_corners"] = True
 w.apply_style()
 qapp.processEvents()
 
+# 重启用哪个解释器（2026-10-26：灵犀的 python-env 被换成半截解压，pythonw 直接没了，
+# 托盘「重新启动」和解锁自动重启全都 WinError 2 —— 别再把命押在一个固定路径上）
+_exe0 = w._restart_exe()
+check("重启解释器：挑出来的那个真的在硬盘上", bool(_exe0) and os.path.isfile(_exe0), _exe0)
+_old_env = os.environ.get("STEALTHREADER_PYW")
+os.environ["STEALTHREADER_PYW"] = _exe0
+check("重启解释器：启动器挑好的那个排第一（STEALTHREADER_PYW）",
+      w._restart_exe() == _exe0, w._restart_exe())
+_dead = os.path.join(os.path.dirname(_exe0), "nope_pythonw.exe")
+os.environ["STEALTHREADER_PYW"] = _dead
+_fb = w._restart_exe()
+check("重启解释器：启动器给的那个已经不在了，就退到还活着的那个（不拿死路径去起进程）",
+      os.path.isfile(_fb) and _fb != _dead, (_dead, _fb))
+if _old_env is None:
+    os.environ.pop("STEALTHREADER_PYW", None)
+else:
+    os.environ["STEALTHREADER_PYW"] = _old_env
+
 
 _rm_before = w.review_mode
 w.review_mode = True

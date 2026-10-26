@@ -222,6 +222,13 @@ python main.py
 
 `cryptography` 或 `pycryptodome` 为可选依赖，仅用于解密 Chromium 系浏览器的 Cookie。
 
+`run_stealthreader.cmd` 是日常用的启动器（桌面快捷方式指向它）。它不假定 Python 装在哪，
+而是挨个试：`%APPDATA%\WPS*\python-env` 里的 pythonw/python、`%LOCALAPPDATA%\Programs\*`
+自带 office runtime 的解释器、以及 PATH 上的 pythonw/python。每个候选都要**真的跑**一次
+`import PyQt5.QtWidgets, requests` 并写出一个标记文件，写不出来的跳过——只看"文件在不在"
+是不够的（见 `docs/community-feed-design.md` 9.aq）。选中哪个会在窗口里回显一行
+`[StealthReader] using …`，程序自己的"重新启动"也复用这个选择。
+
 ## 使用
 
 首次运行会在程序目录生成 `config.json`，各项设置保存在其中，也可以在设置界面修改。

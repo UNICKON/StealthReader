@@ -1930,6 +1930,35 @@ n_replies 是真数 / 空楼不塞占位 / 「回复谁」照 reply_to_author / 
 凑近左上 → 左上 32 个、右下 0；凑近右下 → 反过来；挪回中间 → 又是 0；关掉角标 / 退出融景 →
 定时器停、状态清零。
 
+## 9.aq（2026-10-26）起不来了：解释器被换掉，而启动器只看"文件在不在"
+
+**真人**：「怎么启动不了了」。
+
+**真因**：`%APPDATA%\WPS 灵犀\python-env` 被换成了一棵半截解压的树——根目录的
+`python312.dll` 和 `pythonw.exe` 都没了，只剩一堆 163 字节的 `._*`（macOS 压缩包里的
+AppleDouble 占位）和一个跑不起来的 `python.exe`（退出码 `0xC0000135` = 找不到 DLL）。
+启动器 `run_stealthreader.cmd` 当年的判据是"`pythonw.exe` 存在就用它"，于是它选中了这个
+坏掉的 `python.exe`，`start` 一闪而过，什么都没有——桌面快捷方式、托盘重启、解锁自动重启
+三条路全哑。日志里只剩一句 `重新启动失败: [WinError 2] 系统找不到指定的文件。`
+（那时 `sys.executable` 指向的 pythonw 已经不在了）。
+
+**改了两处**：
+- 启动器：不假定装在哪，按顺序试 `%APPDATA%\WPS*\python-env`、`%LOCALAPPDATA%\Programs\*`
+  自带 office runtime 的解释器、PATH 上的 pythonw/python；**每个候选都要真跑一次
+  `import PyQt5.QtWidgets, requests` 并写出标记文件**才算数。这一条是必需的：cmd 的
+  `if errorlevel 1` 用一个有符号数和 1 比，`0xC0000135` 是负数，永远判"没出错"，
+  所以"看退出码"和"看文件在不在"一样靠不住。pythonw 是 GUI 子系统，cmd 不等它，
+  所以那一支用 `start /wait`。选中哪个会回显一行 `[StealthReader] using …`，
+  并通过 `STEALTHREADER_PYW` 传给程序。
+- `StealthReader._restart_exe()`：重启时优先用启动器挑的那个（`STEALTHREADER_PYW`），
+  再退到 `sys.executable` 同目录的 pythonw、PATH 上的 pythonw/python，最后才用自己。
+  日志里记下"新进程已拉起：…（<解释器>）"，启动时也记一行"解释器 3.12.x（<路径>）"——
+  下次再被换掉，一眼就能看出跑的是哪个环境。
+
+**验收**：在坏掉的 灵犀 env 还在的情况下，桌面快捷方式指向的 `run_stealthreader.cmd`
+选中 `%LOCALAPPDATA%\Programs\DSH Desktop\…\pythonw.exe`（3.12.14 + 仓库 `libs/`
+里的 PyQt5 5.15.11）并把程序拉起来；托盘「重新启动」能起来；四个探针在这套解释器上全绿。
+
 ## 10. 我替你定的、你可能想改的
 
 1. 键位那一套（尤其 `Ctrl+Alt+F`）。
