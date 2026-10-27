@@ -2080,6 +2080,32 @@ try:
           _click3(_v3) and _span3("z1")[1] is not None and abs(_span3("z1")[1] - _b3) <= 10,
           (_v3, _b3, _span3("z1")))
 
+    # ---- 长回答：自己的正文比一屏还长，人正读着它 -> 折起之后一动不动
+    #      真人 2026-10-27：「收起回答的定位不控制」——长回答读到一半按 X，
+    #      人被甩到它尾巴上去了；该留在回答的开头继续读。
+    _mk_page3(reps=400)                    # 楼根自己比一屏高得多：底边落在屏幕下方
+    w.feed_nav.child_show = {"z0": 10}
+    w.render_feed()
+    qapp.processEvents()
+    _sb3().setValue(600)
+    qapp.processEvents()
+    _top_l0, _bot_l0 = _span3("z0")
+    _sb_l0 = _sb3().value()
+    check("（前置）长回答：头在屏幕上方外面、底边在屏幕下方外面",
+          _top_l0 is not None and _top_l0 < 0 and _bot_l0 > vh3, (_top_l0, _bot_l0))
+    _vis_l = [c.id for c, _d, _p in w.feed_nav.visible_comments()]
+    w.feed_nav.c_index = _vis_l.index("z0")
+    _folded_l = w.feed_fold()
+    qapp.processEvents()
+    _top_l1, _bot_l1 = _span3("z0")
+    check("长回答读到一半按 X：屏幕一动不动（还停在回答的开头那一段）",
+          _folded_l is True and _top_l1 is not None and abs(_top_l1 - _top_l0) <= 4
+          and abs(_sb3().value() - _sb_l0) <= 4,
+          (_folded_l, _top_l0, _top_l1, _sb_l0, _sb3().value()))
+    _ids_l = [c.id for c, _d, _p in w.feed_nav.visible_comments()]
+    check("…而且真的折起来了（回复收走、只剩占位行）",
+          _ids_l[:2] == ["z0", "__more__z0"], _ids_l[:4])
+
     # ================================================================ 4i
     print("\n=== 4i. 楼里有 3、4 层「之评论」：动作和两层时同一套 ===")
 

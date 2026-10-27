@@ -6814,6 +6814,12 @@ class StealthReader(QWidget):
         折起来 = 这条评论照常读、下面所有回复一起收（占位行自动写「还有 N 条回复 · 点开」，
         点/回车摊开 3 条）；摊开 = 回到折之前摊开的条数，不是回到 3 条。
         光标落在**楼根**上：人在子回复里按 X 收的是整楼，跟着回到楼顶才找得着东西。
+
+        位置怎么给：折起来只拿走这条评论**下面**的回复，
+        - 它的底边还在屏幕上/更低（在读它自己的正文，哪怕底下还有半屏没读到）→ **一动不动**，
+          把滚动条按折之前的原值还原（真人 2026-10-27：「收起回答的定位不控制」——长回答
+          读到中间按 X，人被甩到它尾巴上去了）；
+        - 底边已经滚出屏幕上方（人翻进了要收走的那些回复里）→ 把底边摆回视口 75%。
         """
         nav = self.feed_nav
         if nav is None or nav.view != "detail":
@@ -6825,6 +6831,7 @@ class StealthReader(QWidget):
         # `feed_item_blocks` 是从"现在的 nav"出发去旧文档里找定位文本的，折叠掉的回复
         # 在 needle 表里没了，于是"下一条"直接跳到下一楼，量出来的底边能差出半屏。
         _top_before, bot_before = self._feed_comment_span(anchor)
+        _sb_before = self.text_edit.verticalScrollBar().value()
         if whole:
             n = nav.fold_all()
             doing = "折起"
@@ -6852,14 +6859,22 @@ class StealthReader(QWidget):
         self.render_feed()
         # 重画后滚动条被 setHtml 打回 0，这就是这条评论底部的绝对高度
         _top_zero, bot_zero = self._feed_comment_span(anchor)
-        if bot_zero is not None:
-            # 定位到**这条评论的底部**（真人 2026-10-23：「点击收起子评论区的时候,应该定位到
-            # 该评论的底部,现在是顶部」）：收起的是它下面的回复，该留住的是它自己收在哪儿。
-            # 底部本来就在屏幕上（短评论、或人正读到它尾巴上）= 一动不动；底部在视口外
-            # （长评论读到一半、或者人已经在回复深处）就把它摆到视口 75% 处——上面是这条
-            # 评论的尾段，下面是折起来之后那行「还有 N 条回复」和下一楼。
-            keep = (bot_before if (bot_before is not None and 0 <= bot_before <= vh - 40)
-                    else int(vh * 0.75))
+        if bot_zero is not None and bot_before is not None and bot_before >= 0:
+            # 这条评论的底边还在屏幕上（或者更低，人正在读它自己的正文）：折起来只拿走
+            # 它**下面**的东西，屏幕上能看见的一个像素都没变——原样还原滚动条就是对的。
+            # 以前这里只要"底边不在 0..vh-40 这一段"就把它摆到 75%，于是长回答读到一半
+            # 按 X 会被甩到尾巴上（真人 2026-10-27「收起回答的定位不控制」）。
+            try:
+                sb = self.text_edit.verticalScrollBar()
+                sb.setValue(int(max(sb.minimum(), min(sb.maximum(), _sb_before))))
+            except Exception:
+                pass
+            self.feed_highlight()          # 已经定位好了，不要再 ensure（那会二次滚动）
+        elif bot_zero is not None:
+            # 底边已经滚出屏幕上方：屏幕上看见的全在要收走的那一段里，只能重新落脚——
+            # 把这条评论的底边摆回视口 75%（真人 2026-10-23：「应该定位到该评论的底部」）：
+            # 上面是它的尾段，下面就是那行「还有 N 条回复」和下一楼。
+            keep = int(vh * 0.75)
             try:
                 sb = self.text_edit.verticalScrollBar()
                 sb.setValue(int(max(sb.minimum(), min(sb.maximum(), bot_zero - keep))))
