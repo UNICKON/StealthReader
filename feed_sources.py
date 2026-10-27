@@ -1411,6 +1411,12 @@ class WeiboSource(RealSource):
 
     所以：**热搜榜免登录，词条正文/评论要 Cookie**。详情 = 热度 + 这个词条下的微博。
 
+    2026-10-27 补「关注」这一栏时实测：`ajax/feed/allGroups` 不校验登录、能拿到自己的 uid；
+    但 `ajax/feed/following`（时间线）、`ajax/statuses/mymblog`、`ajax/setting/getUserInfo`
+    全都回 `{"ok":-100,"url":"…login.php…"}`，`s.weibo.com/weibo?q=` 也换成了
+    「新浪通行证」验证页（retcode=6102）。也就是说**这份 Cookie 现在等于没登录**，
+    「关注」这一栏会照实说没登录，等重新登录后再贴一次就能取到。
+
     **默认关闭**（设计文档里微博属于"单独开关"的那一档）：`feed_sources` 里写
     `["ithome","v2ex","linuxdo","zhihu","weibo"]` 才会出现在来源列表里。
     """
@@ -1419,7 +1425,11 @@ class WeiboSource(RealSource):
     base_url = "https://weibo.com"
     # 热搜榜免登录，**词条正文/评论要 Cookie**：页脚那句"这个来源要 Cookie"对正文是真的。
     needs_auth = True
-    CHANNELS = ("热搜",)
+    # 2026-10-27 真人要「微博加帖子板块」：多一栏 **关注**（关注时间线，一条是一条微博）。
+    # 这一栏**必须有有效登录态**：`ajax/feed/following` 没登录就回 `{"ok":-100,...}`。
+    CHANNELS = ("热搜", "关注")
+    GROUPS_URL = "https://weibo.com/ajax/feed/allGroups?is_new_segment=1"
+    TIMELINE_URL = "https://weibo.com/ajax/feed/following?uid=%s&page=%d&group_id=0"
     HOT_URL = "https://weibo.com/ajax/side/hotSearch"
     UA_PC = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36")
@@ -1432,6 +1442,89 @@ class WeiboSource(RealSource):
         return self.http.cache.img_dir if self.http.cache is not None else ""
 
     def list(self, channel=None, cursor=None):
+        """两个栏目：热搜（榜单词条）/ 关注（时间线里的帖子）。"""
+        ch = str(channel or self.CHANNELS[0])
+        if ch == "关注":
+            return self._timeline(cursor)
+        return self._hot(cursor)
+
+    # -- 关注时间线（帖子） -------------------------------------------------
+    def _uid(self):
+        """自己的 uid 从 `ajax/feed/allGroups` 里抠：没登录它也给一份（分组里的 uid）。
+
+        实测（2026-10-27）：这条接口**不校验登录**，18KB 真 JSON 里带着
+        `{"title":"默认分组","group":[{"uid":"1641537045",…}]}`。"""
+        cached = str(getattr(self, "_uid_cache", "") or "")
+        if cached:
+            return cached
+        data = self._get(self.GROUPS_URL, TTL_FOREVER, "微博分组", timeout=LIST_TIMEOUT)
+        uid = ""
+        for grp in ((data or {}).get("groups") or []):
+            if not isinstance(grp, dict):
+                continue
+            for item in (grp.get("group") or []):
+                cand = str((item or {}).get("uid") or "")
+                if cand.isdigit():
+                    uid = cand
+                    break
+            if uid:
+                break
+        if not uid:
+            raise FeedNetError("微博没给出自己的 uid——「关注」这一栏要有效登录态")
+        self._uid_cache = uid
+        return uid
+
+    def _timeline(self, cursor=None):
+        """关注时间线一页（一条 = 一条微博）。没登录就照实说没登录。"""
+        page = max(1, int(cursor or 0) + 1)
+        uid = self._uid()
+        data = self._get(self.TIMELINE_URL % (uid, page), TTL_LIST, "微博关注",
+                         timeout=LIST_TIMEOUT)
+        if not isinstance(data, dict) or data.get("ok") != 1:
+            code = data.get("ok") if isinstance(data, dict) else "?"
+            raise FeedNetError(
+                "微博说没登录（ok=%s）——「关注」这一栏要一份**当前有效**的登录 Cookie；"
+                "weibo.com 让走「新浪通行证」验证的时候，就等于没登录" % code)
+        rows = data.get("statuses")
+        if not rows:
+            rows = (data.get("data") or {}).get("list") or []
+        posts = [p for p in (self._status_post(it) for it in rows if isinstance(it, dict))
+                 if p is not None]
+        nxt = page if len(posts) >= 8 else None      # 一页给个七八条就算还有下一页
+        return posts, nxt
+
+    def _status_post(self, it):
+        """一条微博 → Post。正文整段塞进 excerpt（列表会自己截，详情页拿全文）。"""
+        text = feed_mod.strip_html(it.get("text_raw") or it.get("text") or "").strip()
+        if not text:
+            return None
+        user = it.get("user") or {}
+        author = feed_mod.strip_html(str(user.get("screen_name") or "")).strip()
+        mid = str(it.get("mid") or it.get("id") or "")
+        mblogid = str(it.get("mblogid") or "")
+        created = str(it.get("created_at") or "").strip()
+        ts = feed_mod.parse_time(created)
+        head = text.split("\n", 1)[0].strip()
+        title = head[:60] + ("…" if len(head) > 60 else "")
+        tags = []
+        reposts = int(it.get("reposts_count") or 0)
+        if reposts:
+            tags.append("转发%d" % reposts)
+        url = ""
+        if mblogid and str(user.get("id") or "").isdigit():
+            url = "https://weibo.com/%s/%s" % (user.get("id"), mblogid)
+        elif mid:
+            url = "https://weibo.com/detail/%s" % mid
+        return Post(
+            source=self.key, source_label=self.label, channel="关注", pid=mid or title,
+            title=title, author=author, created=created, ts=ts,
+            score=int(it.get("attitudes_count") or 0), score_label="赞",
+            n_comments=int(it.get("comments_count") or 0),
+            comment_label="评论", excerpt=text, url=url, tags=tags,
+        )
+
+    # -- 热搜榜（词条） -----------------------------------------------------
+    def _hot(self, cursor=None):
         data = self._get(self.HOT_URL, TTL_LIST, "微博热搜", timeout=LIST_TIMEOUT)
         items = ((data or {}).get("data") or {}).get("realtime") or []
         now = time.time()
@@ -1489,7 +1582,11 @@ class WeiboSource(RealSource):
         return items
 
     def detail(self, post, cursor=None):
-        """热搜词条点进去：热度 + 这个词条下的微博（配了 Cookie 才有正文）。"""
+        """关注那栏点进去：正文就是这条微博本身（列表里已经给全了，不重复去要）。
+
+        热搜词条点进去：热度 + 这个词条下的微博（配了 Cookie 才有正文）。"""
+        if str(getattr(post, "channel", "")) == "关注":
+            return self._status_detail(post), None
         out = Post.from_dict(post.to_dict())
         word = str(post.title or post.id or "").strip()
         body = []
@@ -1519,6 +1616,25 @@ class WeiboSource(RealSource):
                               text="热搜榜是公开的，正文要登录：设置 → 社区 → 登录 → 微博 贴一次 Cookie。"))
         out.body = body
         return out, None
+
+    def _status_detail(self, post):
+        """一条微博的正文：列表里那份全文 + 一句老实话（评论/长文/图这一版没接）。"""
+        out = Post.from_dict(post.to_dict())
+        body = []
+        text = str(post.excerpt or "").strip()
+        if text:
+            body.append(Block(kind=BLOCK_P, text=text))
+        author = str(post.author or "").strip()
+        if author:
+            head = " · ".join([x for x in (author, str(post.created or "").strip()) if x])
+            body.append(Block(kind=BLOCK_P, text=head))
+        body.append(Block(kind=BLOCK_P,
+                          text="（这是「关注」时间线里的一条。微博的评论和长文正文要单独的登录接口，"
+                               "这一版没接；要看全部内容按 O 打开原帖。）"))
+        if not text:
+            body = [Block(kind=BLOCK_P, text="这条没取到正文——按 O 打开原帖看。")]
+        out.body = body
+        return out
 
     def comments(self, post, cursor=None):
         return [], None                           # 拿不到就是拿不到，不造评论
@@ -4099,9 +4215,14 @@ class MixSource(SourceAdapter):
     label = "全部来源"
     needs_auth = False
 
-    def __init__(self, sources):
+    def __init__(self, sources, channel_of=None):
         self.sources = [s for s in (sources or []) if s is not None]
         self.by_key = dict((s.key, s) for s in self.sources)
+        # 每个来源"现在选的是哪一栏"（key -> 栏目名）。以前混流一律拿 channels()[0]，
+        # 于是 NGA 抓步行街、虎扑抓战绩——人明明在别的板块里看，混流却只抽第一栏。
+        # 2026-10-27 真人问「全部展示现在的逻辑是什么，只抽取各个社区当前选定板块」，
+        # 所以这里改成问"你上次停在哪一栏"（main.py 存在 feed_board_<key> 里）。
+        self.channel_of = channel_of
         self.last_error = ""
         self.errors = []
         self._skip_until = {}       # key -> 到什么时候为止先别碰它（刚失败过）
@@ -4122,7 +4243,7 @@ class MixSource(SourceAdapter):
         """取一个来源的第一页。跑在自己的线程里，所以异常必须在这里收干净。"""
         try:
             self._skip_until.pop(src.key, None)
-            channel = src.channels()[0] if src.channels() else None
+            channel = self._channel_for(src)
             posts, _nxt = src.list(channel, 0)
             out[idx] = posts
             if getattr(src, "served_stale", False):
@@ -4137,6 +4258,22 @@ class MixSource(SourceAdapter):
             with self._lock:
                 self._skip_until[src.key] = time.time() + FAIL_COOLDOWN
             out[idx] = ("err", "%s：%s" % (src.label, type(e).__name__))
+
+    def _channel_for(self, src):
+        """这一家该抽哪一栏：**人上次停在的那一栏**，没有（或已失效）才退回第一栏。"""
+        try:
+            chans = list(src.channels() or [])
+        except Exception:
+            chans = []
+        want = ""
+        if callable(self.channel_of):
+            try:
+                want = str(self.channel_of(src.key) or "")
+            except Exception:
+                want = ""
+        if want and (not chans or want in chans):
+            return want
+        return chans[0] if chans else None
 
     def list(self, channel=None, cursor=None):
         """并行问所有来源，再合页。
@@ -4299,7 +4436,15 @@ def build_real_sources(cache_root=None, config=None, log=None):
     if not made:
         return []
     off = bool(config.get("feed_lowkey", False))
-    mix = MixSource(made)
+
+    def _channel_of(key, _cfg=config):
+        """这个来源现在选的是哪一栏（main.py 记在 config 的 feed_board_<key>）。"""
+        try:
+            return str((_cfg or {}).get("feed_board_%s" % key) or "")
+        except Exception:
+            return ""
+
+    mix = MixSource(made, channel_of=_channel_of)
     for src in [mix] + made:
         try:
             src.images_off = off          # 低调模式：封面和正文图都不落地（渲染层画 [图]）

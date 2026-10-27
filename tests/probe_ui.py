@@ -174,12 +174,14 @@ def pump(until, seconds=8.0):
 
 # 注意：on_feed_key 收的是**键码**（int），不是 QKeyEvent——这条是踩过的坑，
 # 包成 QKeyEvent 传进去会静默什么都不做（探针里表现为"按键没反应"）。
-EXPECT_KEYS = ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "weibo", "demo"]
+# 2026-10-27「示例社区」下架了：列表最后不再挂 demo，真来源之后直接回到混流
+EXPECT_KEYS = ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "weibo"]
 
 print("=== 1. 来源登记与默认落点 ===")
 keys = [s.key for s in w.feed_sources]
 ORIG_SOURCES = list(w.feed_sources)          # 第 6 节会把来源换成替身，第 9 节要还原
-check("顺序：混流 / IT之家 / V2EX / linux.do / 知乎 / 微博 / 示例", keys == EXPECT_KEYS, keys)
+check("顺序：混流 / IT之家 / V2EX / linux.do / 知乎 / 微博（没有示例了）",
+      keys == EXPECT_KEYS, keys)
 check("默认落在混流上", w.feed_source().key == "mix", w.feed_source().key)
 check("启动时按 config 里记的来源恢复（没记过、或记的那个这次没登记，就是混流）",
       STARTUP_SOURCE == (REMEMBERED_SOURCE if REMEMBERED_SOURCE in keys else "mix"),
@@ -213,7 +215,7 @@ for _ in range(len(EXPECT_KEYS) - 1):
     w.feed_cycle_source(1)
     pump(lambda: not w.feed_busy)
     seq.append(w.feed_source().key)
-check("六个来源都轮到了", seq == EXPECT_KEYS[1:], seq)
+check("五个来源都轮到了", seq == EXPECT_KEYS[1:], seq)
 w.feed_cycle_source(1)
 pump(lambda: not w.feed_busy)
 check("轮回到混流", w.feed_source().key == "mix", w.feed_source().key)

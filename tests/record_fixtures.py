@@ -691,6 +691,15 @@ def record(which):
         print("微博")
         save("weibo_hotsearch.json", "https://weibo.com/ajax/side/hotSearch",
              headers={"Referer": "https://weibo.com/", "User-Agent": MOBILE_UA})
+        # 「关注」那一栏要的两份真响应：
+        #   allGroups     —— 不校验登录，18KB，里面有我们自己的 uid（验"怎么拿 uid"）
+        #   following     —— 没登录时 {"ok":-100,"url":…login.php…}（验"没登录照实说"）
+        # 真登录之后 following 会给 200 条帖子，那时这份夹具会被换成有内容的版本。
+        save("weibo_allgroups.json", "https://weibo.com/ajax/feed/allGroups?is_new_segment=1",
+             headers={"Referer": "https://weibo.com/"})
+        save("weibo_login_required.json",
+             "https://weibo.com/ajax/feed/following?uid=1641537045&page=1&group_id=0",
+             headers={"Referer": "https://weibo.com/"})
     if which in ("", "douban"):
         print("豆瓣（讨论精选免登录；话题正文/回复要登录）")
         save("douban_explore.html", "https://www.douban.com/group/explore")

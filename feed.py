@@ -559,25 +559,25 @@ class DemoSource(SourceAdapter):
 
 
 def build_sources(demo_root, cache_root=None, config=None, log=None):
-    """登记所有来源：**混流打头**（默认落在它上面），然后是各真实来源，最后是离线示例。
+    """登记所有来源：**混流打头**（默认落在它上面），后面是各真实来源。
 
-    真实来源住在 feed_sources.py：那个文件（或它依赖的 requests）出问题时**只退回示例源**，
-    社区页照样打得开——一个站改接口不该把整页弄瘫。"""
-    sources = [DemoSource(demo_root)]
+    2026-10-27 真人要求「去掉示例社区」：菜单里不再有「示例（离线）」这一项。
+    离线示例只在**真实来源整个加载不起来**（feed_sources.py 坏了 / 缺 requests）时兜底——
+    那时候页面还能打开，人能看到一句"现在是示例"，总比一片空白强。
+    自己在设置里把来源全关掉 = 真的一个都没有（返回空表，不是把示例塞回来）。"""
     if cache_root is None:
         cache_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "feed")
     try:
         import feed_sources
         real = feed_sources.build_real_sources(cache_root=cache_root, config=config, log=log)
-        if real:
-            sources = list(real) + sources
+        return list(real)
     except Exception as e:
         if log:
             try:
                 log("社区真实来源加载失败，只用离线示例: %s" % e)
             except Exception:
                 pass
-    return sources
+        return [DemoSource(demo_root)]
 
 
 # --------------------------------------------------------------------------- 导航（纯逻辑）

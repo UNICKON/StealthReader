@@ -322,7 +322,8 @@ if not raw_w:
     skip("微博", "缺夹具")
 else:
     ws = feed_sources.WeiboSource(FakeHttp({"hotSearch": raw_w}, cache=MemCache()))
-    check("栏目只有 热搜", ws.channels() == ["热搜"], ws.channels())
+    check("栏目是 热搜 / 关注（2026-10-27 加了帖子流）",
+          ws.channels() == ["热搜", "关注"], ws.channels())
     wp, wn = ws.list("热搜", 0)
     check("拿到条目", len(wp) >= 30, len(wp))
     check("没有分页", wn is None, wn)
@@ -345,6 +346,33 @@ else:
           and any("Cookie" in b.text for b in wd.body),
           [b.text[:24] for b in wd.body])
     check("微博评论如实为空", ws.comments(wp[0]) == ([], None))
+
+    # 「关注」这一栏：真夹具（allGroups 18KB 真响应；following 那份 ok=-100 也是真响应）
+    wgrp = fixture("weibo_allgroups.json")
+    wneed = fixture("weibo_login_required.json")
+    if not (wgrp and wneed):
+        skip("微博关注", "缺 weibo_allgroups.json / weibo_login_required.json")
+    else:
+        wt = feed_sources.WeiboSource(
+            FakeHttp({"allGroups": wgrp, "following": wneed}, cache=MemCache()),
+            auth={"cookie": "SUB=test"})
+        check("uid 从 allGroups 里抠（这条接口不校验登录）",
+              wt._uid() == "1641537045", wt._uid())
+        werr = ""
+        try:
+            wt.list("关注", 0)
+        except FeedNetError as e:
+            werr = str(e)
+        check("没登录时「关注」照实说没登录（还带着微博给的 ok 码）",
+              "没登录" in werr and "-100" in werr, werr)
+        check("也不赖成「改版了」（这不是解析挂了）", "改版" not in werr, werr)
+        wdp = feed_mod.Post(source="weibo", channel="关注", pid="1", title="一条微博",
+                            excerpt="正文全文在这里", author="某某", created="2026-10-27")
+        wdd, _ = wt.detail(wdp)
+        check("「关注」的详情：正文给全 + 一句老实话（评论/长文这版没接）",
+              any(b.text == "正文全文在这里" for b in wdd.body)
+              and any("按 O 打开原帖" in b.text for b in wdd.body),
+              [b.text[:18] for b in wdd.body])
 
     # 带 Cookie：正文来自 s.weibo.com 搜索页（夹具按真页面结构裁的三张卡，其中一张没有正文）
     wpage = fixture_bytes("weibo_search.html")
@@ -453,6 +481,42 @@ if raw_i and raw_z:
     check("一个站连不上，另一个站的内容照常出", len(dp2) >= 6, len(dp2))
     check("连不上的站写进 errors（页脚会说出来）", len(dead.errors) == 1, dead.errors)
     check("页脚那句话是人话", "V2EX" in dead.last_error, dead.last_error)
+
+    # 2026-10-27 真人问「全部展示现在的逻辑是什么，只抽取各个社区当前选定板块」——
+    # 以前混流一律拿 channels()[0]（NGA 抓步行街、虎扑抓战绩），人换过板块它照旧抽第一栏。
+    class _TwoBoard(object):
+        """一个有两栏的假来源：只记"被问了哪一栏"。"""
+        key = "stub2"
+        label = "两栏假来源"
+        images_off = False
+        served_stale = False
+        last_error = ""
+
+        def __init__(self):
+            self.asked = []
+
+        def channels(self):
+            return ["甲板", "乙板"]
+
+        def list(self, channel=None, cursor=None):
+            self.asked.append(channel)
+            return [feed_mod.Post(source="stub2", channel=channel, pid="%s" % channel,
+                                  title="帖子 %s" % channel, ts=2000 - int(cursor or 0))], None
+
+        def image_base(self):
+            return ""
+
+    _s1 = _TwoBoard()
+    feed_sources.MixSource([_s1], channel_of=lambda k: "乙板").list("全部", 0)
+    check("混流抽的是这个来源**当前选的那一栏**（不是永远第一栏）",
+          _s1.asked == ["乙板"], _s1.asked)
+    _s1.asked = []
+    feed_sources.MixSource([_s1], channel_of=lambda k: "早就没了的板").list("全部", 0)
+    check("记住的那一栏已经不存在了，退回第一栏（不会把整家弄挂）",
+          _s1.asked == ["甲板"], _s1.asked)
+    _s1.asked = []
+    feed_sources.MixSource([_s1]).list("全部", 0)
+    check("没给 channel_of 时还是第一栏（老行为不变）", _s1.asked == ["甲板"], _s1.asked)
 else:
     skip("混流", "缺 IT之家或知乎夹具")
 
@@ -470,9 +534,20 @@ on = feed_sources.build_real_sources(
                                  "feed_sources_seen": ["douban", "ithome", "weibo"]}, log=None)
 check("写进 feed_sources 才出现（微博是单独开关那一档）",
       [s.key for s in on] == ["mix", "ithome", "weibo"], [s.key for s in on])
-check("全关掉返回空（由 build_sources 补离线示例）",
+check("build_real_sources 全关掉就是空表",
       feed_sources.build_real_sources(cache_root=TMP_CACHE,
                                       config={"feed_sources": []}, log=None) == [])
+# 2026-10-27 真人要求「去掉示例社区」：菜单里不该再有「示例（离线）」这一项
+_m_demo = os.path.join(SR, "feed_demo")
+_built = feed_mod.build_sources(_m_demo, cache_root=TMP_CACHE,
+                                config={"feed_sources": ["ithome"],
+                                        "feed_sources_seen": ["douban", "ithome"]}, log=None)
+check("菜单里没有「示例（离线）」了（只剩混流 + 真来源）",
+      [s.key for s in _built] == ["mix", "ithome"], [s.key for s in _built])
+_built_off = feed_mod.build_sources(_m_demo, cache_root=TMP_CACHE,
+                                    config={"feed_sources": []}, log=None)
+check("来源全关就是空表（不把示例塞回来）",
+      _built_off == [], [getattr(s, "key", "?") for s in _built_off])
 check("写单个字符串也认",
       [s.key for s in feed_sources.build_real_sources(
           cache_root=TMP_CACHE, config={"feed_sources": "zhihu"}, log=None)] == ["mix", "zhihu"])
