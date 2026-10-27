@@ -6878,6 +6878,11 @@ class StealthReader(QWidget):
         于是人点一下"收起"，整页往上/往下跳一截——真人报的就是这个。
         现在先记下这条评论表头此刻的屏幕高度，重画完再按差值把滚动条挪回去：
         被折叠的那一条留在原地，其余内容在它下面收起/展开。
+
+        例外是**表头已经滚出屏幕上方**（知乎热榜那种长回答，正文好几屏，人点在正文里
+        收起它，或者读到一半按 Z）：这时候"留在原地"没有意义——原地早就不在屏幕上了，
+        照差值挪等于把人甩到这条后面的内容上。这种情况改成把这条的**顶部**摆到视口顶上，
+        收起之后从它的头开始看（真人 2026-10-27：「知乎热榜的长回答，收起时」定位不受控）。
         """
         nav = self.feed_nav
         if nav is None or nav.view != "detail":
@@ -6900,11 +6905,17 @@ class StealthReader(QWidget):
         self.feed_restore_pos = 0
         self.render_feed()              # 折叠改变了文档结构，只能重画
         y_after = self._feed_comment_y(target)
-        if y_before is not None and y_after is not None and y_after != y_before:
+        if y_before is not None and y_after is not None:
             try:
                 sb = self.text_edit.verticalScrollBar()
-                sb.setValue(int(max(sb.minimum(), min(sb.maximum(),
-                                                    sb.value() + (y_after - y_before)))))
+                if y_before < 0:
+                    # 表头在屏幕上方：对准**它自己的顶部**（留 6px 边，别贴着框线）
+                    want = 6
+                    sb.setValue(int(max(sb.minimum(), min(sb.maximum(),
+                                                sb.value() + (y_after - want)))))
+                elif y_after != y_before:
+                    sb.setValue(int(max(sb.minimum(), min(sb.maximum(),
+                                                        sb.value() + (y_after - y_before)))))
             except Exception:
                 pass
         return True

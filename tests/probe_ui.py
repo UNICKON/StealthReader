@@ -1669,6 +1669,47 @@ if _cursor0 is not None:
     check("再点一下就展开", w.feed_click(_pt) is True
           and _first.id not in w.feed_nav.collapsed, w.feed_nav.collapsed)
 
+# === 14b. 知乎热榜那种长「回答」：点在正文里收起，要落到这条回答自己的顶部 ===
+print("\n=== 14b. 长回答收起：落到它自己的顶部 ===")
+_LBODY = "很长的回答。" * 600
+_LROOTS = [feed_sources.Comment(
+    cid="L0", author="长回答的人", created="10-27", score=9,
+    body=[feed_sources.Block(kind=feed_sources.BLOCK_P, text=_LBODY)]),
+    ] + [feed_sources.Comment(cid="L%d" % i, author="后面的回答%d" % i, created="10-27", score=1,
+                              body=[feed_sources.Block(kind=feed_sources.BLOCK_P,
+                                                       text=("后面的回答 %d 的正文。" % i) * 30)])
+         for i in range(1, 9)]
+w.feed_nav.view = "detail"
+w.feed_nav.stack = []
+w.feed_nav.set_detail(_ans_post, _LROOTS)
+w.feed_nav.collapsed = set()
+w.feed_nav.c_index = 0
+w.render_feed()
+_settle()
+_sbL = w.text_edit.verticalScrollBar()
+check("（前置）长回答这页滚得动", _sbL.maximum() > 1200, _sbL.maximum())
+_sbL.setValue(1200)                  # 读到回答中间：表头早就滚出屏幕
+_settle()
+_L0 = w.feed_nav.roots[0]
+_yL_before = w._feed_comment_y(_L0)
+check("（前置）长回答：表头在屏幕上方、正文铺满屏幕",
+      _yL_before is not None and _yL_before < -400, _yL_before)
+w.feed_nav.c_index = [c.id for c, _d, _p in w.feed_nav.visible_comments()].index("L0")
+_lock = w.feed_toggle_collapse()
+_settle()
+_yL_after = w._feed_comment_y(_L0)
+check("长回答点在正文里收起：落到**它自己的顶部**（视口顶上）",
+      _lock is True and _yL_after is not None and abs(_yL_after - 6) <= 12,
+      (_yL_before, _yL_after))
+check("…而且是真收起来了（整段长正文不再铺开，只留一行摘要）",
+      "L0" in w.feed_nav.collapsed and _LBODY not in w.text_edit.toPlainText(),
+      (sorted(w.feed_nav.collapsed), len(w.text_edit.toPlainText())))
+_yL_2 = w._feed_comment_y(_L0)
+check("…再点一下展开：还停在它自己的顶部（不往回跳）",
+      w.feed_toggle_collapse() is True and w._feed_comment_y(_L0) is not None
+      and abs(w._feed_comment_y(_L0) - _yL_2) <= 12,
+      (_yL_2, w._feed_comment_y(_L0)))
+
 w.feed_sources = list(ORIG_SOURCES)          # 把第 6 节换掉的替身来源还原回来
 w.feed_source_i = [i for i, s in enumerate(w.feed_sources) if s.key == "demo"][0] \
     if any(s.key == "demo" for s in w.feed_sources) else 0
