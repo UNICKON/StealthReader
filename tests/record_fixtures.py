@@ -706,6 +706,24 @@ def record(which):
         # 小组 = 豆瓣的板块：热门小组页给板块表，讨论页给一页话题（都是匿名 200）
         save("douban_hot_groups.html", "https://www.douban.com/group/explore/hot_groups")
         save("douban_group.html", "https://www.douban.com/group/13232/discussion?start=0")
+    # 话题广场 = 豆瓣 App 的 rexxar 接口（**只认手机 UA**；网页 /gallery/、/explore/ 匿名 403）：
+    #   /search/hots → 20 个话题；/gallery/topic/<id>/items?start=0&count=20&tab=hot → 动态
+    if save("douban_hot_topics.json", "https://m.douban.com/rexxar/api/v2/search/hots",
+            headers={"User-Agent": MOBILE_UA, "Accept": "application/json",
+                     "Referer": "https://m.douban.com/"}):
+        try:
+            with open(os.path.join(OUT, "douban_hot_topics.json"), "r", encoding="utf-8") as f:
+                _ht = json.load(f)
+            _tid = str(((_ht.get("gallery_topics") or [{}])[0]).get("id") or "")
+        except Exception:
+            _tid = ""
+        if _tid:
+            # 夹具里那份动态就取这个话题的（探针按"第一个话题"验，两边对得上）
+            save("douban_topic_items.json",
+                 "https://m.douban.com/rexxar/api/v2/gallery/topic/%s/items"
+                 "?start=0&count=20&tab=hot" % _tid,
+                 headers={"User-Agent": MOBILE_UA, "Accept": "application/json",
+                          "Referer": "https://m.douban.com/"})
         tid = ""
         try:
             with open(os.path.join(OUT, "douban_explore.html"), "r", encoding="utf-8") as f:

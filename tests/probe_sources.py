@@ -2460,8 +2460,8 @@ else:
     db = feed_sources.DoubanSource(
         FakeHttp(bytes_routes={"group/explore": raw_db, "group/topic/": raw_db403},
                  cache=MemCache()), {})
-    check("豆瓣的板块 = 讨论精选 + 六个小组",
-          db.channels() == ["讨论精选", "职场吐槽大会", "下厨房", "极简生活",
+    check("豆瓣的板块 = 讨论精选 + 话题广场 + 六个小组",
+          db.channels() == ["讨论精选", "话题广场", "职场吐槽大会", "下厨房", "极简生活",
                             "迷恋植物的人", "社畜买房共进会", "火花四射观察室"],
           db.channels())
 
@@ -2516,6 +2516,65 @@ else:
             berr = str(e)
         check("小组页被挡时说是风控（不赖成 Cookie 不对）",
               ("挡" in berr or "风控" in berr) and "Cookie 不对" in berr, berr)
+
+    # 话题广场（2026-10-27 真人：「不能拿到浏览发现和话题广场的吗」）：
+    # 网页 `/gallery/`、`/explore/` 对匿名一律 403，手机站的 HTML 也 403，
+    # **但手机 App 用的 rexxar 接口匿名就通**（20 个话题 8600 字节、
+    # 一个话题 20 条动态 68887 字节），所以这一路单独走手机 UA + JSON
+    dbhot = fixture_bytes("douban_hot_topics.json")
+    dbti = fixture_bytes("douban_topic_items.json")
+    if not (dbhot and dbti):
+        skip("豆瓣话题广场", "缺 douban_hot_topics.json / douban_topic_items.json")
+    else:
+        tht = json.loads(dbhot.decode("utf-8"))
+        tits = json.loads(dbti.decode("utf-8"))
+        tops = feed_sources.parse_douban_hot_topics(tht)
+        check("话题广场解析出 20 个话题（id / 标题 / 篇数都在）",
+              len(tops) == 20 and tops[0]["id"] == "3667687"
+              and "篇内容" in tops[0]["subtitle"] and tops[0]["read_count"] > 0, tops[0])
+        titems = feed_sources.parse_douban_topic_items(tits)
+        check("话题下的动态：正文 / 作者 / 时间都拆得开",
+              len(titems) == 20 and titems[0]["author"] == "是许小白啊"
+              and titems[0]["text"].startswith("到了三十多岁") and titems[0]["ts"] > 0,
+              titems[0])
+        tsrc = feed_sources.DoubanSource(
+            FakeHttp({"search/hots": tht, "gallery/topic/": tits}, cache=MemCache()), {})
+        tp, tn = tsrc.list("话题广场")
+        check("「话题广场」是能刷的一栏（20 张卡片，单位「浏览」）",
+              len(tp) == 20 and tn is None and tp[0].score_label == "浏览"
+              and tp[0].channel == "话题广场", (len(tp), tn))
+        check("卡片副标题（3390篇内容 · 618.9万次浏览）进了摘要",
+              "篇内容" in (tp[0].excerpt or ""), tp[0].excerpt)
+        ip, inx = tsrc.list(tp[0].title)
+        check("挑一个话题 = 只看这个话题下的动态（一页 20，按 20 翻）",
+              len(ip) == 20 and inx == 20 and ip[0].channel == tp[0].title, (len(ip), inx))
+        check("动态列表：作者在、正文在、没有标题（广播本来就没标题）",
+              ip[0].author == "是许小白啊" and ip[0].title == ""
+              and ip[0].excerpt.startswith("到了三十多岁"), (ip[0].author, ip[0].title))
+        card = tsrc.detail(tp[0])[0]
+        check("点开话题：20 条动态平铺在正文里（一条一行作者）",
+              sum(1 for b in card.body if (b.text or "").startswith("· ")) == 20,
+              len(card.body))
+        one = tsrc.detail(ip[0])[0]
+        check("点开话题里的一条：正文照给，并说清评论没接、按 O 看原帖",
+              any("按 O 打开原帖" in (b.text or "") for b in one.body), len(one.body))
+        check("话题没有回复层（接口里就是空的，不编一条出来）",
+              tsrc.comments_page(tp[0]) == ([], "", None))
+        check("话题也能当板块（accepts_channel 认，且不用联网）",
+              tsrc.accepts_channel("话题广场") and tsrc.accepts_channel(tp[0].title))
+        t403 = feed_sources.DoubanSource(
+            FakeHttp(status={"search/hots": 403}, cache=MemCache()), {})
+        terror = ""
+        try:
+            t403.list("话题广场")
+        except FeedNetError as e:
+            terror = str(e)
+        check("话题接口被挡时也说是风控，不糊成「改版了」",
+              ("挡" in terror or "风控" in terror) and "改版" not in terror, terror)
+        boards_t = tsrc.boards()
+        check("板块选择器里话题和小组一起列（话题那一组在）",
+              any(b["group"] == "话题广场" for b in boards_t)
+              and any(b["group"] == "常看的" for b in boards_t), len(boards_t))
     posts, nxt = db.list()
     check("讨论精选一页至少解析出 20 条", len(posts) >= 20, len(posts))
     check("每条都齐：标题 / 原帖地址 / 时间 / 喜欢数 / 来自哪个小组",

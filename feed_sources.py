@@ -3850,7 +3850,20 @@ DOUBAN_GROUP_DISCUSSION = "https://www.douban.com/group/%s/discussion"
 DOUBAN_GROUPS = (("职场吐槽大会", "13232"), ("下厨房", "596337"),
                  ("极简生活", "385172"), ("迷恋植物的人", "49635"),
                  ("社畜买房共进会", "677158"), ("火花四射观察室", "661193"))
-DOUBAN_GROUP_PAGE = 30        # 小组讨论页一页 30 条（另加置顶，「?start=」按 30 走）                 # 讨论精选一页 29~30 条；游标按"这次真拿回几条"走
+DOUBAN_GROUP_PAGE = 30         # 小组讨论页一页 30 条（另加置顶，「?start=」按 30 走）
+# 「话题广场」= 豆瓣的话题（网页 `/gallery/topic/<id>/`）。网页端 `/gallery/`、`/explore/`
+# 对匿名一律 403，手机站 `m.douban.com` 的 HTML 也 403，**但手机 App 用的 rexxar 接口匿名就通**
+# （2026-10-27 实测，不带任何 Cookie、不用 apikey）：
+#   GET /rexxar/api/v2/search/hots                              → 20 个话题，8600 字节
+#   GET /rexxar/api/v2/gallery/topic/<id>/items?start=0&count=20&tab=hot → 那个话题下的动态
+# rexxar 只在手机 UA 下给（PC UA 会 403 或空），所以这一路单独一个"手机匿名取数器"。
+DOUBAN_REXXAR = "https://m.douban.com/rexxar/api/v2"
+DOUBAN_HOT_TOPICS = DOUBAN_REXXAR + "/search/hots"
+DOUBAN_TOPIC_ITEMS = DOUBAN_REXXAR + "/gallery/topic/%s/items?start=%d&count=%d&tab=%s"
+DOUBAN_TOPIC_PAGE_SIZE = 20       # items 接口默认一页 20 条
+DOUBAN_UA_M = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+               "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+DOUBAN_PAGE = 30                  # 讨论精选一页 29~30 条；游标按"这次真拿回几条"走
 DOUBAN_PAGE_MIN = 20             # 一页拿回大半页才算"后面还有"
 DOUBAN_REPLIES_PAGE = 100        # 话题的回复一页 100 条
 DOUBAN_REPLIES_MIN = 60          # 回复同理：大半页才认为后面还有
@@ -4150,6 +4163,75 @@ def parse_douban_hot_groups(html):
     return out
 
 
+def parse_douban_hot_topics(data):
+    """话题广场 → 话题卡片。`{"gallery_topics": [{id, title, card_subtitle, read_count}]}`
+    （2026-10-27 实测 20 个，`card_subtitle` 是「3390篇内容 · 618.9万次浏览」）。"""
+    out = []
+    for t in ((data or {}).get("gallery_topics") or []):
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or "").strip()
+        title = str(t.get("title") or "").strip()
+        if not tid.isdigit() or not title:
+            continue
+        try:
+            reads = int(t.get("read_count") or 0)
+        except (TypeError, ValueError):
+            reads = 0
+        out.append({"id": tid, "title": title,
+                    "subtitle": str(t.get("card_subtitle") or "").strip(),
+                    "read_count": reads,
+                    "url": "https://www.douban.com/gallery/topic/%s/" % tid})
+    return out
+
+
+def parse_douban_topic_items(data):
+    """话题下的动态。一条的形状：
+
+        {"target_type": "topic",
+         "abstract": "正文……",                       ← 广播正文就在这一层
+         "target": {"id", "author": {"name"}, "create_time", "url",
+                    "likers_count", "comments_count", "photos": [], "cover_url"}}
+
+    正文优先取 item 的 `abstract`，没有才落到 `target.abstract` / `target.title`
+    （实测 20 条里 20 条都在 item 这一层）。"""
+    out = []
+    for it in ((data or {}).get("items") or []):
+        if not isinstance(it, dict):
+            continue
+        t = it.get("target") if isinstance(it.get("target"), dict) else {}
+        text = str(it.get("abstract") or t.get("abstract") or t.get("title") or "").strip()
+        url = str(t.get("url") or "").strip()
+        pid = str(t.get("id") or it.get("id") or "").strip()
+        if not pid or (not text and not url):
+            continue
+        author = ""
+        au = t.get("author")
+        if isinstance(au, dict):
+            author = str(au.get("name") or "").strip()
+        when = str(t.get("create_time") or "").strip()
+        images = []
+        for ph in (t.get("photos") or []):
+            if isinstance(ph, dict) and ph.get("url"):
+                images.append(str(ph["url"]))
+            elif isinstance(ph, str) and ph.startswith("http"):
+                images.append(ph)
+        if not images and str(t.get("cover_url") or "").startswith("http"):
+            images.append(str(t["cover_url"]))
+        try:
+            likes = int(t.get("likers_count") or 0)
+        except (TypeError, ValueError):
+            likes = 0
+        try:
+            replies = int(t.get("comments_count") or 0)
+        except (TypeError, ValueError):
+            replies = 0
+        out.append({"id": pid, "text": text, "author": author, "created": when,
+                    "ts": feed_mod.parse_time(when), "likes": likes, "replies": replies,
+                    "url": url.split("?")[0], "images": images[:3]})
+    return out
+
+
 class DoubanSource(RealSource):
     """豆瓣（小组「讨论精选」）。**列表免登录；正文和回复要登录。**
 
@@ -4178,13 +4260,18 @@ class DoubanSource(RealSource):
     MAX_PAGE_BYTES = 2000000
     MAX_BLOCKS = 300
 
+    TOPICS_LABEL = "话题广场"
+
     def __init__(self, http, auth):
         RealSource.__init__(self, http, auth)
         self._board_cache = None        # 热门小组拉回来的那份（板块选择器用）
+        self._topic_map = {}            # 话题名 -> 话题 id（话题也能当板块）
+        self._m_http = None             # 手机 UA 的匿名取数器（rexxar 只认手机 UA）
 
     def channels(self):
-        """讨论精选 + 六个小组（小组就是豆瓣的板块）。"""
-        return [self.EXPLORE_LABEL] + [name for name, _gid in DOUBAN_GROUPS]
+        """讨论精选 + 话题广场 + 六个小组（小组和话题都是豆瓣的板块）。"""
+        return ([self.EXPLORE_LABEL, self.TOPICS_LABEL]
+                + [name for name, _gid in DOUBAN_GROUPS])
 
     def boards(self, force=False):
         """板块表：六个常用的 + 热门小组那一页里的（去重）。
@@ -4196,6 +4283,13 @@ class DoubanSource(RealSource):
         out = [{"label": name, "fid": gid, "group": "常看的"}
                for name, gid in DOUBAN_GROUPS]
         seen = set(gid for _n, gid in DOUBAN_GROUPS)
+        # 话题广场那 20 个话题也能直接当板块（挑一个 = 只看这个话题下的动态）
+        try:
+            topic_posts, _tn = self._topics_list(None)
+            for t in (topic_posts or []):
+                out.append({"label": t.title, "fid": str(t.id), "group": self.TOPICS_LABEL})
+        except Exception:
+            pass
         try:
             html = self._page(DOUBAN_HOT_GROUPS, TTL_LIST, http=self._anon())
             for gid, name in parse_douban_hot_groups(html):
@@ -4218,7 +4312,11 @@ class DoubanSource(RealSource):
         name = str(channel or "").strip()
         if not name:
             return False
+        if name == self.TOPICS_LABEL or name == self.EXPLORE_LABEL:
+            return True
         if any(label == name for label, _gid in DOUBAN_GROUPS):
+            return True
+        if name in self._topic_map:
             return True
         return any(str(b.get("label") or "") == name for b in (self._board_cache or []))
 
@@ -4301,7 +4399,7 @@ class DoubanSource(RealSource):
     def list(self, channel=None, cursor=None):
         ch = str(channel or self.EXPLORE_LABEL)
         if ch != self.EXPLORE_LABEL:
-            return self._group_list(ch, cursor)
+            return self._channel_list(ch, cursor)
         start = int(cursor or 0)
         url = DOUBAN_EXPLORE if not start else "%s?start=%d" % (DOUBAN_EXPLORE, start)
         html = self._page(url, TTL_LIST, http=self._anon())
@@ -4330,6 +4428,104 @@ class DoubanSource(RealSource):
         # 卡死 30 会漏掉页尾那一条，走 len(rows) 才既不漏也不重。
         nxt = start + len(rows) if len(rows) >= DOUBAN_PAGE_MIN else None
         return posts, nxt
+
+    def _m_anon(self):
+        """手机 UA 的匿名取数器：rexxar 接口只认手机 UA（PC UA 会 403/空）。
+
+        缓存另开一间 `mannon/`，跟网页那两路互不污染。"""
+        if self._m_http is None:
+            cache = getattr(self.http, "cache", None)
+            root = getattr(cache, "root", "") if cache is not None else ""
+            m_cache = feed_net.Cache(os.path.join(root, "mannon")) if root else None
+            try:
+                self._m_http = type(self.http)(
+                    cache=m_cache,
+                    headers={"Referer": "https://m.douban.com/"},
+                    cookies=None, user_agent=DOUBAN_UA_M,
+                    min_interval=max(1.2, float(getattr(self.http, "min_interval", 0.0) or 0.0)))
+            except TypeError:
+                self._m_http = self.http
+        return self._m_http
+
+    def _api(self, url):
+        """打 rexxar（返回 JSON）。403/风控和"没给 JSON"都翻成人话。"""
+        client = self._m_anon()
+        try:
+            return client.get_json(url, ttl=TTL_LIST,
+                                   headers={"Referer": "https://m.douban.com/"},
+                                   what="豆瓣话题接口")
+        except FeedNetError as e:
+            msg = str(e)
+            if "403" in msg or "禁止访问" in msg:
+                raise FeedNetError(self.GROUP_BLOCK_SAY)
+            if "解析失败" in msg or "JSON" in msg:
+                raise FeedNetError("豆瓣的话题接口没给 JSON（可能改版了）：%s" % msg[:80])
+            raise
+
+    def _topics_list(self, cursor=None):
+        """话题广场：20 个话题卡片（就这一页，没有下一页）。"""
+        if cursor:
+            return [], None
+        rows = parse_douban_hot_topics(self._api(DOUBAN_HOT_TOPICS))
+        if not rows:
+            raise FeedNetError("豆瓣话题广场没取到话题（可能改版了）")
+        posts = []
+        for r in rows:
+            self._topic_map[r["title"]] = r["id"]
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=self.TOPICS_LABEL,
+                pid=r["id"], title=r["title"], author="", created="", ts=0,
+                score=r["read_count"], score_label="浏览",
+                n_comments=0, comment_label="动态",
+                excerpt=r["subtitle"], url=r["url"], tags=[],
+            ))
+        return posts, None
+
+    def _topic_id_of(self, channel):
+        """话题名 → 话题 id。表里没有就补拉一次话题广场（在后台线程里调用）。"""
+        name = str(channel or "").strip()
+        if not name:
+            return ""
+        if name in self._topic_map:
+            return self._topic_map[name]
+        try:
+            self._topics_list(None)
+        except Exception:
+            return ""
+        return self._topic_map.get(name, "")
+
+    def _topic_items_list(self, channel, cursor=None):
+        """某个话题下的动态（`tab=hot`，一页 20 条）。"""
+        tid = self._topic_id_of(channel)
+        if not tid:
+            raise FeedNetError("豆瓣没有这个话题了：%s（用板块选择器挑一个）" % channel)
+        start = int(cursor or 0)
+        data = self._api(DOUBAN_TOPIC_ITEMS % (tid, start, DOUBAN_TOPIC_PAGE_SIZE, "hot"))
+        rows = parse_douban_topic_items(data)
+        if not rows:
+            if start:
+                return [], None
+            raise FeedNetError("豆瓣话题「%s」这一页没取到动态（可能改版了）" % channel)
+        posts = []
+        for r in rows:
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=channel,
+                pid=r["id"], title="", author=r["author"], created=r["created"],
+                ts=r["ts"], score=r["likes"], score_label="喜欢",
+                n_comments=r["replies"], comment_label="回应",
+                excerpt=r["text"], url=r["url"], tags=[],
+            ))
+        nxt = start + DOUBAN_TOPIC_PAGE_SIZE if len(rows) >= DOUBAN_TOPIC_PAGE_SIZE else None
+        return posts, nxt
+
+    def _channel_list(self, channel, cursor=None):
+        """栏目路由：话题广场 → 话题 → 小组。**话题要在小组前面**：板块表里两边
+        都可能有同名的条目，先按话题认（话题 id 是 `/gallery/topic/` 那一套）。"""
+        if channel == self.TOPICS_LABEL:
+            return self._topics_list(cursor)
+        if self._topic_id_of(channel):
+            return self._topic_items_list(channel, cursor)
+        return self._group_list(channel, cursor)
 
     def _group_list(self, channel, cursor=None):
         """一个小组的讨论列表（这一页更新得快，按 R 刷新才有意义）。"""
@@ -4370,6 +4566,11 @@ class DoubanSource(RealSource):
         return posts, nxt
 
     def detail(self, post, cursor=None):
+        ch = str(getattr(post, "channel", "") or "").strip()
+        if ch == self.TOPICS_LABEL:
+            return self._topic_card_detail(post), None
+        if self._topic_id_of(ch):
+            return self._topic_item_detail(post), None
         html = self._topic_page(post.id)
         parsed = parse_douban_topic(html)
         out = Post.from_dict(post.to_dict())
@@ -4385,11 +4586,52 @@ class DoubanSource(RealSource):
         out.body = blocks
         return out, None
 
+    def _topic_card_detail(self, post):
+        """点开一个话题：把这个话题下的热门动态平铺出来（一条一段，带作者）。"""
+        out = Post.from_dict(post.to_dict())
+        rows = parse_douban_topic_items(
+            self._api(DOUBAN_TOPIC_ITEMS % (str(post.id), 0, DOUBAN_TOPIC_PAGE_SIZE, "hot")))
+        if not rows:
+            raise FeedNetError("豆瓣这个话题下没取到动态（可能改版了）：%s" % post.id)
+        blocks = []
+        if post.excerpt:
+            blocks.append(Block(kind=BLOCK_P, text=post.excerpt))
+        for r in rows:
+            line = "· %s" % (r["author"] or "豆瓣用户")
+            if r["created"]:
+                line += "   " + r["created"]
+            blocks.append(Block(kind=BLOCK_P, text=line))
+            if r["text"]:
+                blocks.append(Block(kind=BLOCK_P, text=r["text"]))
+            for src in r["images"]:
+                blocks.append(Block(kind=BLOCK_IMG, text=src))
+        out.body = self._localize_images(blocks, limit=20)
+        out.comment_label = "回应"
+        return out
+
+    def _topic_item_detail(self, post):
+        """点开话题里的一条广播：正文就在列表里那份（接口没给更长的），评论这一版没接。"""
+        out = Post.from_dict(post.to_dict())
+        blocks = []
+        text = str(getattr(post, "excerpt", "") or "")
+        if text:
+            blocks.append(Block(kind=BLOCK_P, text=text))
+        else:
+            blocks.append(Block(kind=BLOCK_P, text="（这一条只有图，按 O 打开原帖看）"))
+        blocks.append(Block(kind=BLOCK_P, text="（这是话题里的一条广播。豆瓣的评论不在这"
+                                               "个接口里，要看全部内容和图片按 O 打开原帖。）"))
+        out.body = self._localize_images(blocks, limit=12)
+        return out
+
     def comments(self, post, cursor=None):
         items, why, _nxt = self.comments_page(post, cursor)
         return items, why
 
     def comments_page(self, post, cursor=None):
+        ch = str(getattr(post, "channel", "") or "").strip()
+        if ch == self.TOPICS_LABEL or self._topic_id_of(ch):
+            # 话题卡片和话题里的广播都没有"回复"这一层（接口里 comments 是空的）
+            return [], "", None
         start = int(cursor or 0)
         html = self._topic_page(post.id, start)
         rows = parse_douban_replies(html)
