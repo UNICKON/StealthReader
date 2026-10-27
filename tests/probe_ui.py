@@ -2538,8 +2538,9 @@ check("点子评论那行「还有 N 条回复」就展开（不用回车）",
 
 _set4 = app_mod.SettingsDialog(w.config, w)
 qapp.processEvents()
-check("设置里能挑哪些社区来源生效（10 个来源各一个勾）",
-      len(_set4.source_checks) == 10 and "weibo" in _set4.source_checks,
+check("设置里能挑哪些社区来源生效（11 个来源各一个勾）",
+      len(_set4.source_checks) == 11 and "weibo" in _set4.source_checks
+      and "douban" in _set4.source_checks,
       list(_set4.source_checks))
 _set4.source_checks["weibo"].setChecked(True)
 _set4.source_checks["xhs"].setChecked(False)

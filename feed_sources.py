@@ -12,6 +12,8 @@
   （含 cf_clearance，且 UA 要一致）才能过；
 - **知乎**：免登录只能拿热榜（移动端 `api.zhihu.com/topstory/hot-list`），正文/评论要登录；
 - **微博**：免登录只能拿热搜榜，正文/评论要登录（**默认关闭**，属于"单独开关"那一档）；
+- **豆瓣**：免登录能刷「讨论精选」（跨小组的热帖列表，`?start=` 真能翻页），
+  点进话题要登录（话题页匿名一律 403「没有访问权限」）；
 - **混流**：把上面几个合页成一条，"混流为主"就靠它。
 另有 feed.py 里的 DemoSource（离线示例）垫底。
 
@@ -55,6 +57,7 @@ SOURCE_CHOICES = (
     ("nga", "NGA", True),
     ("xhs", "小红书", True),
     ("hupu", "虎扑", False),
+    ("douban", "豆瓣", True),
     ("github", "GitHub 趋势", False),
     ("medium", "Medium / RSS", False),
 )
@@ -3717,6 +3720,292 @@ def _hupu_name(author):
     return str(author.get("puname") or author.get("name") or "").strip()
 
 
+# ---------------------------------------------------------------- 豆瓣（小组「讨论精选」）
+
+DOUBAN_EXPLORE = "https://www.douban.com/group/explore"
+DOUBAN_GROUP = "https://www.douban.com/group/"
+DOUBAN_TOPIC = "https://www.douban.com/group/topic/%s/"
+DOUBAN_PAGE = 30                 # 讨论精选一页 29~30 条；游标按"这次真拿回几条"走
+DOUBAN_PAGE_MIN = 20             # 一页拿回大半页才算"后面还有"
+DOUBAN_REPLIES_PAGE = 100        # 话题的回复一页 100 条
+DOUBAN_REPLIES_MIN = 60          # 回复同理：大半页才认为后面还有
+DOUBAN_LOGIN_MARKS = ("没有访问权限", "请登录后重试", "你没有权限访问这个页面")
+
+
+def _douban_rel_time(text, now=None):
+    """豆瓣列表的时间是「刚刚 / 43分钟前 / 今天14:07 / 昨天14:36 / 10-23」这一套。
+
+    换算不出来就返回 0（混流里排最后）——宁可让它靠后，也不瞎编一个时刻。"""
+    s = str(text or "").strip()
+    if not s:
+        return 0.0
+    now = time.time() if now is None else float(now)
+    if s in ("刚刚", "刚才"):
+        return now
+    m = re.match(r"^(\d+)\s*(秒|分钟|小时|天)前$", s)
+    if m:
+        unit = {"秒": 1, "分钟": 60, "小时": 3600, "天": 86400}[m.group(2)]
+        return now - int(m.group(1)) * unit
+    # 实测写的是「今天14:07 / 昨天14:36」——**中间没有空格**（夹具 29 条里 8 条这样）
+    m = re.match(r"^(今天|昨天|前天)\s*(\d{1,2}):(\d{2})$", s)
+    if m:
+        back = {"今天": 0, "昨天": 1, "前天": 2}[m.group(1)]
+        lt = time.localtime(now - back * 86400)
+        try:
+            return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday,
+                                int(m.group(2)), int(m.group(3)), 0, 0, 0, -1))
+        except Exception:
+            return 0.0
+    # 「10-19」「10-19 20:11」：没有年份，按今年算
+    m = re.match(r"^(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?$", s)
+    if m:
+        lt = time.localtime(now)
+        try:
+            return time.mktime((lt.tm_year, int(m.group(1)), int(m.group(2)),
+                                int(m.group(3) or 0), int(m.group(4) or 0), 0, 0, 0, -1))
+        except Exception:
+            return 0.0
+    return feed_mod.parse_time(s)
+
+
+def _douban_div_inner(html, start_pat):
+    """从 `start_pat` 命中的那个 <div> 开始按 div 配平，取出它的内层 HTML。
+
+    豆瓣的正文包在 `<div id="link-report"><div class="topic-content">…` 里，正文自己
+    也带 div——用正则取到下一个 </div> 必然截断，所以这里把标签数一遍。"""
+    text = str(html or "")
+    m = re.search(start_pat, text)
+    if not m:
+        return ""
+    i = m.end()
+    depth = 1
+    for tag in re.finditer(r"<(/?)div\b[^>]*>", text[i:], re.I):
+        if tag.group(1):
+            depth -= 1
+            if depth == 0:
+                return text[i:i + tag.start()]
+        else:
+            depth += 1
+    return text[i:]
+
+
+def parse_douban_explore(html):
+    """讨论精选一页 → 列表。纯字符串处理，夹具原样喂进来就能验。"""
+    text = str(html or "")
+    out = []
+    for chunk in re.split(r'<div\s+class="channel-item"', text)[1:]:
+        hit = re.search(r'<h3>\s*<a\s+href="([^"]+)"[^>]*>(.*?)</a>', chunk, re.S)
+        if not hit:
+            continue
+        url = html_unescape(hit.group(1))
+        tid = re.search(r"/group/topic/(\d+)", url)
+        if not tid:
+            continue
+        title = feed_mod.strip_html(hit.group(2))
+        if not title:
+            continue
+        liked = re.search(r'<div\s+class="likes">\s*([\d,]+)', chunk)
+        cover = re.search(r'<img\s+src="([^"]+)"', chunk)
+        # 豆瓣的摘要是 `<p>…</div>`——**没有闭合的 </p>**（实测 2026-10-27，29 条全这样）
+        excerpt = re.search(r"<p\s*>(.*?)(?:</p>|</div>)", chunk, re.S)
+        group = re.search(r'<span\s+class="from">.*?<a\s+href="([^"]+)"[^>]*>(.*?)</a>',
+                          chunk, re.S)
+        when = re.search(r'<span\s+class="pubtime">(.*?)</span>', chunk, re.S)
+        gid = re.search(r"/group/(\d+)", group.group(1)) if group else None
+        out.append({
+            "id": tid.group(1),
+            "url": url.split("?")[0],
+            "title": title,
+            "likes": int((liked.group(1) if liked else "0").replace(",", "") or 0),
+            "cover": html_unescape(cover.group(1)) if cover else "",
+            "excerpt": feed_mod.strip_html(excerpt.group(1)) if excerpt else "",
+            "group": feed_mod.strip_html(group.group(2)) if group else "",
+            "group_id": gid.group(1) if gid else "",
+            "created": feed_mod.strip_html(when.group(1)) if when else "",
+        })
+    return out
+
+
+def parse_douban_topic(html):
+    """话题页 → {title, body_html, replies}。
+
+    三种写法都认（豆瓣改过版）：`#link-report > .topic-content`、`.topic-richtext`、
+    直接 `#link-report` 里那一坨。都认不出来就返回空串，由调用方照实说。"""
+    text = str(html or "")
+    title = ""
+    m = re.search(r'<div\s+id="content"[^>]*>.*?<h1[^>]*>(.*?)</h1>', text, re.S)
+    if m:
+        title = feed_mod.strip_html(m.group(1))
+    if not title:
+        m = re.search(r'<h1[^>]*>(.*?)</h1>', text, re.S)
+        title = feed_mod.strip_html(m.group(1)) if m else ""
+    if not title:
+        m = re.search(r"<title>(.*?)</title>", text, re.S)
+        title = feed_mod.strip_html(m.group(1)) if m else ""
+    body = ""
+    for pat in (r'<div\s+class="topic-richtext[^"]*"[^>]*>',
+                r'<div\s+class="topic-content"[^>]*>'):
+        body = _douban_div_inner(text, pat)
+        if body.strip():
+            break
+    if not body.strip():
+        body = _douban_div_inner(text, r'<div\s+id="link-report"[^>]*>')
+    return {"title": title, "body_html": body, "replies": parse_douban_replies(text)}
+
+
+def parse_douban_replies(html):
+    """话题页里的回复：`class="comment-item"` 一段一段切（li / div 两种写法都认）。"""
+    text = str(html or "")
+    marks = [m.start() for m in re.finditer(r'class="comment-item"', text)]
+    out = []
+    for k, pos in enumerate(marks):
+        chunk = text[pos:marks[k + 1] if k + 1 < len(marks) else len(text)]
+        cid = re.search(r'data-cid="(\d+)"', chunk)
+        author = ""
+        for a in re.finditer(r'<a\s+href="[^"]*?/people/[^"]*"[^>]*>(.*?)</a>', chunk, re.S):
+            author = feed_mod.strip_html(a.group(1))
+            if author:
+                break
+        when = re.search(r'class="comment-time"[^>]*title="([^"]+)"', chunk)
+        if not when:
+            when = re.search(r'class="comment-time"[^>]*>(.*?)</span>', chunk, re.S)
+        votes = re.search(r'class="vote-count"[^>]*>\s*(-?[\d,]+)', chunk)
+        body = ""
+        m = re.search(r'<p\s+class="reply-content"[^>]*>(.*?)</p>', chunk, re.S)
+        if m:
+            body = m.group(1)
+        if not body.strip():
+            m = re.search(r'<span\s+class="reply-content"[^>]*>(.*?)</span>', chunk, re.S)
+            body = m.group(1) if m else ""
+        # 豆瓣长回复是「短的可见 + 全文藏在 .all.hidden 里」，两份都留着会重复一遍
+        body = re.sub(r'<span\s+class="all\s+hidden"[^>]*>.*?</span>', "", body, flags=re.S)
+        body = re.sub(r'<span\s+class="short"[^>]*>', "", body)
+        plain = feed_mod.strip_html(body)
+        if not plain:
+            continue
+        out.append({
+            "id": cid.group(1) if cid else "d%d" % (len(out) + 1),
+            "author": author,
+            "created": (html_unescape(when.group(1)).strip() if when else ""),
+            "score": int((votes.group(1) if votes else "0").replace(",", "") or 0),
+            "body_html": body,
+        })
+    return out
+
+
+class DoubanSource(RealSource):
+    """豆瓣（小组「讨论精选」）。**列表免登录；正文和回复要登录。**
+
+    2026-10-27 本机实测（不带任何 Cookie，两个网络都试过）：
+      - `https://www.douban.com/group/explore` 是服务端渲染的 HTML（约 44KB），一页 30 条，
+        翻页 `?start=30/60/…`（第 3 页、第 5 页都 200，不是摆设）。每条 `div.channel-item`：
+        `h3 a` 标题+话题地址、`.likes` 喜欢数、`.block img` 封面、`.block p` 摘要、
+        `.source .from a` 来自哪个小组、`.pubtime` 相对时间；
+      - 话题页 `/group/topic/<id>/` **不给看**：HTTP 403、标题「没有访问权限」、正文
+        「你没有权限访问这个页面。请登录后重试。」——换三个不同小组、换 Googlebot 的 UA、
+        换一台机器的出口 IP，结果一样。所以正文和回复必须有 Cookie；
+      - 小组页 `/group/<gid>/` 是 200（能看话题列表），但点进话题一样 403。
+
+    定位：没贴 Cookie 也能刷豆瓣的社区热帖（点进去照实说"要登录"），贴了 Cookie 正文
+    和回复才取得回来——跟知乎那条一模一样的分层，界面上会写「Cookie 未配置（这个来源
+    要登录）」，不假装成功。
+    """
+
+    key = "douban"
+    label = "豆瓣"
+    base_url = "https://www.douban.com"
+    needs_auth = True
+    EXPLORE_LABEL = "讨论精选"
+    MAX_PAGE_BYTES = 2000000
+    MAX_BLOCKS = 300
+
+    def channels(self):
+        return [self.EXPLORE_LABEL]
+
+    def _page(self, url, ttl):
+        raw = self.http.get_bytes(url, ttl=ttl, headers={"Referer": DOUBAN_GROUP},
+                                  max_bytes=self.MAX_PAGE_BYTES, timeout=LIST_TIMEOUT)
+        self.served_stale = bool(getattr(self.http, "served_stale", False))
+        return raw.decode("utf-8", "replace")
+
+    LOGIN_SAY = ("豆瓣说「没有访问权限」——话题的正文和回复要登录才能看。"
+                 "在本机浏览器登录豆瓣，把这个来源的 Cookie 贴进来就行（列表本来不用登录）")
+
+    def _topic_page(self, tid, start=0):
+        url = DOUBAN_TOPIC % str(tid).strip()
+        if start:
+            url += "?start=%d" % int(start)
+        try:
+            html = self._page(url, TTL_DETAIL)
+        except FeedNetError as e:
+            if "403" in str(e) or "要登录" in str(e):
+                raise FeedNetError("%s（HTTP 403）" % self.LOGIN_SAY)
+            raise
+        if any(mark in html for mark in DOUBAN_LOGIN_MARKS):
+            raise FeedNetError(self.LOGIN_SAY)
+        return html
+
+    def list(self, channel=None, cursor=None):
+        start = int(cursor or 0)
+        url = DOUBAN_EXPLORE if not start else "%s?start=%d" % (DOUBAN_EXPLORE, start)
+        html = self._page(url, TTL_LIST)
+        if 0 == start and any(mark in html for mark in DOUBAN_LOGIN_MARKS):
+            raise FeedNetError("豆瓣这一页没给（没有访问权限），可能被反爬挡了，过一会儿再试")
+        rows = parse_douban_explore(html)
+        if not rows:
+            if start:
+                return [], None             # 翻到底了：这一页没有话题就是没有了
+            raise FeedNetError("豆瓣讨论精选这一页没解析出话题（可能改版了，或者被反爬拦了）")
+        posts = []
+        for r in rows:
+            posts.append(Post(
+                source=self.key, source_label=self.label,
+                channel=channel or self.EXPLORE_LABEL,
+                pid=r["id"], title=r["title"], author="", created=r["created"],
+                ts=_douban_rel_time(r["created"]), score=r["likes"], score_label="喜欢",
+                n_comments=0, comment_label="回复", cover=self._cover(r["cover"]),
+                excerpt=r["excerpt"], url=r["url"],
+                tags=[r["group"]] if r["group"] else [],
+            ))
+        # `start` 是条目的下标（实测 `?start=29` 会从第 29 条接上，不是第 30 条），
+        # 而一页给多少条不固定（29 或 30）。所以游标按"这次真拿回几条"往前走：
+        # 卡死 30 会漏掉页尾那一条，走 len(rows) 才既不漏也不重。
+        nxt = start + len(rows) if len(rows) >= DOUBAN_PAGE_MIN else None
+        return posts, nxt
+
+    def detail(self, post, cursor=None):
+        html = self._topic_page(post.id)
+        parsed = parse_douban_topic(html)
+        out = Post.from_dict(post.to_dict())
+        if parsed["title"]:
+            out.title = parsed["title"]
+        out.comment_label = "回复"
+        blocks = feed_mod.blocks_from_html(parsed["body_html"], max_blocks=self.MAX_BLOCKS)
+        blocks = self._localize_images(blocks, limit=8)
+        if not blocks:
+            raise FeedNetError("豆瓣这个话题页里没找到正文（可能改版了）：%s" % post.id)
+        out.body = blocks
+        return out, None
+
+    def comments(self, post, cursor=None):
+        items, why, _nxt = self.comments_page(post, cursor)
+        return items, why
+
+    def comments_page(self, post, cursor=None):
+        start = int(cursor or 0)
+        html = self._topic_page(post.id, start)
+        rows = parse_douban_replies(html)
+        items = []
+        for r in rows:
+            blocks = feed_mod.blocks_from_html(r["body_html"], max_blocks=40)
+            if not blocks:
+                continue
+            items.append(Comment(cid=r["id"], author=r["author"], created=r["created"],
+                                 score=r["score"], body=blocks))
+        nxt = start + DOUBAN_REPLIES_PAGE if len(rows) >= DOUBAN_REPLIES_MIN else None
+        return items, "", nxt
+
+
 class MixSource(SourceAdapter):
     """混流：把各来源的第一页合起来按时间倒序排，**默认就落在它上面**。
 
@@ -3837,7 +4126,7 @@ def build_real_sources(cache_root=None, config=None, log=None):
         # NGA 和 小红书 也在默认里：它们确实要 Cookie，但没配的时候页脚会照实说
         # "这个来源要 Cookie"，不会假装成功——比"藏起来让人找不到"更好解释。
         enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu",
-                   "github", "medium"]
+                   "douban", "github", "medium"]
     elif not isinstance(enabled, list):
         enabled = [str(enabled)]
 
@@ -3854,7 +4143,7 @@ def build_real_sources(cache_root=None, config=None, log=None):
     for key, cls in (("ithome", IthomeSource), ("v2ex", V2exSource),
                      ("linuxdo", DiscourseSource), ("zhihu", ZhihuSource),
                      ("weibo", WeiboSource), ("nga", NgaSource), ("xhs", XhsSource),
-                     ("hupu", HupuSource)) + extra:
+                     ("hupu", HupuSource), ("douban", DoubanSource)) + extra:
         if key not in enabled:
             continue
         cred = auth.get(key) if isinstance(auth.get(key), dict) else {}

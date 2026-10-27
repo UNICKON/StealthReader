@@ -2011,6 +2011,52 @@ AppleDouble 占位）和一个跑不起来的 `python.exe`（退出码 `0xC00001
 整段长正文不再铺开、`collapsed={'L0'}`；再点一下展开仍停在顶部。老的三条还在：
 表头在屏幕上时收起/展开都留在原地（122→122）。
 
+## 9.au（2026-10-27）加豆瓣：列表免登录，正文和回复要登录
+
+**真人**：「加一个豆瓣社区」。
+
+**先量了一遍**（不带任何 Cookie，Chrome UA）：
+- `https://www.douban.com/group/explore`（讨论精选）**200、约 44KB**，服务端渲染的 HTML，
+  一页 29 条；`?start=30/60/100/200` 都是 200 且是真下一页，翻页不是摆设；
+- `https://www.douban.com/group/` 302 到 `group/explore`；
+- 小组页 `/group/<gid>/` **200**（能看这个组的话题列表）；
+- 话题页 `/group/topic/<id>/` **403，标题「没有访问权限」**，正文写着「你没有权限访问这个页面。
+  请登录后重试。」——换三个不同小组、换 Googlebot 的 UA、换一台机器的出口 IP，全都一样；
+  RSS `/feed/group/topic/<id>` 404，`api.douban.com/v2/group/topic/<id>` 400。**所以正文和回复
+  只能带 Cookie 取**。
+
+**列表**（`parse_douban_explore`）：每条 `div.channel-item` →
+`h3 a`（标题 + 话题地址，`?_spm_id=` 这类尾巴切掉）、`.likes`（喜欢数）、`.block img`（封面）、
+`.block p`（摘要）、`.source .from a`（来自哪个小组）、`.pubtime`（相对时间）。
+
+**踩到的三个坑**（都是夹具里能看见的，不是假想）：
+1. 摘要是 `<p>…</div>`——**没有闭合的 `</p>`**。按 `</p>` 抓，29 条一条摘要都抓不到；
+   现在按 `<p>…(</p>|</div>)` 抓，25 条有摘要（另外 4 条在站上就只有图、没摘要）。
+2. 时间写的是「今天14:07 / 昨天14:36」——**中间没有空格**，还有「刚刚 / 43分钟前 / 10-23」。
+   按带空格写的话，8 条会被算成"没有时间"（`ts=0`，混流里全掉到最后）。
+3. 一页**只有 29 条**，而且一页给多少条不固定（实测 29、30 都见过）。翻页门槛按 `>= 30`
+   判就会把"还有下一页"当成到底（第一版就这样，只刷到 29 条就没了）。更要紧的是 `start` 是
+   **条目下标**：实测 `?start=29` 正是从第 29 条接上（不是第 30 条），所以游标必须按"这次真
+   拿回几条"往前走（`start + len(rows)`）——卡死 30 会把每页页尾那一条漏掉，走 len 才既不漏
+   也不重（真机验过：第 1 页 29 条 → 游标 29 → 第 2 页 30 条、和上一页一条不重）。
+
+**正文/回复要登录**：`feed_net._check` 见到 403 会先抛「被拒绝（403）」——因为豆瓣那个页面把
+「请登录」用 `<a>` 劈成了两截，`_says_login` 的关键词命不中。两处都改了：
+`_says_login` 认「没有访问权限」，`DoubanSource._topic_page` 把 403 翻成一句话——
+「豆瓣说「没有访问权限」——话题的正文和回复要登录才能看……（HTTP 403）」。**不谎报成"取数失败"**：
+列表一直就在，人也没断网。
+
+**验收**：`probe_sources.py` 429（+24，新增第 22 节），全部跑在真夹具上——
+`douban_explore.html`（44KB 真响应）与 `douban_topic_403.html`（真 403，12KB）。
+`probe_ui.py` 312（设置里的来源勾从 10 个变 11 个）。
+
+**还差一步（如实记下）**：话题页的正文/回复解析器（`parse_douban_topic` /
+`parse_douban_replies`，按豆瓣的 `#link-report > .topic-content`、`.topic-richtext`、
+`.comment-item` / `.reply-content` / `.comment-time` 写）现在只用**构造的 HTML** 验过形状，
+本机没有豆瓣登录态，录不到真话题页。等 `feed_auth.json` 里贴上豆瓣 Cookie，
+`python tests/record_fixtures.py douban` 会录到真的 `douban_topic.html`，那时把探针里那段
+构造 HTML 换成真夹具。
+
 ## 10. 我替你定的、你可能想改的
 
 1. 键位那一套（尤其 `Ctrl+Alt+F`）。

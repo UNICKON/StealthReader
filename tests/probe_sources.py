@@ -460,7 +460,7 @@ print("\n=== 7. 来源登记（默认 / 单独开关 / 全关）===")
 made = feed_sources.build_real_sources(cache_root=TMP_CACHE, config={}, log=None)
 check("默认：混流 + 免登录的和要 Cookie 的都在，微博默认关",
       [s.key for s in made] == ["mix", "ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs",
-                               "hupu", "github", "medium"],
+                               "hupu", "douban", "github", "medium"],
       [s.key for s in made])
 check("每个来源都有 label / channels / image_base",
       all(s.label and isinstance(s.channels(), list) and isinstance(s.image_base(), str)
@@ -2342,6 +2342,148 @@ check("知乎：顶层一页翻完就停（不拿'评论+回复'总数当下一�
 
 # ---------------------------------------------------------------- 收尾
 shutil.rmtree(TMP_CACHE, ignore_errors=True)
+# ---------------------------------------------------------------- 22
+print("\n=== 22. 豆瓣（讨论精选免登录；话题正文/回复要登录）===")
+raw_db = fixture_bytes("douban_explore.html")
+raw_db403 = fixture_bytes("douban_topic_403.html")
+if raw_db is None or raw_db403 is None:
+    skip("豆瓣", "缺 douban_explore.html / douban_topic_403.html"
+                 "（先跑 tests/record_fixtures.py douban）")
+else:
+    # 相对时间：豆瓣写「刚刚 / 38分钟前 / 3小时前 / 昨天 12:34」，混流排序全靠换算对不对
+    _now = time.time()
+    check("相对时间：38分钟前 → 现在减 2280 秒",
+          abs(feed_sources._douban_rel_time("38分钟前", _now) - (_now - 2280)) < 1,
+          feed_sources._douban_rel_time("38分钟前", _now))
+    check("相对时间：刚刚 = 现在、3小时前 = 减 10800 秒",
+          abs(feed_sources._douban_rel_time("刚刚", _now) - _now) < 1
+          and abs(feed_sources._douban_rel_time("3小时前", _now) - (_now - 10800)) < 1)
+    # 这两种是夹具里的原样写法（「今天14:07 / 昨天14:36」，中间没有空格）
+    _y = feed_sources._douban_rel_time("昨天14:36", _now)
+    _ylt = time.localtime(_y)
+    check("相对时间：昨天14:36 → 昨天那个 14:36（不是今天也不是明天）",
+          _ylt.tm_mday == time.localtime(_now - 86400).tm_mday and _ylt.tm_hour == 14
+          and _ylt.tm_min == 36,
+          time.strftime("%m-%d %H:%M", _ylt) if _y else _y)
+    _t = feed_sources._douban_rel_time("今天14:07", _now)
+    check("相对时间：今天14:07 → 今天 14:07（不是明天）",
+          time.localtime(_t).tm_mday == time.localtime(_now).tm_mday
+          and time.localtime(_t).tm_hour == 14 and time.localtime(_t).tm_min == 7,
+          time.strftime("%m-%d %H:%M", time.localtime(_t)) if _t else _t)
+    _d = feed_sources._douban_rel_time("10-19 20:11", _now)
+    check("相对时间：10-19 20:11 按今年算（不是 1970、不是下一年）",
+          _d > 0 and time.localtime(_d).tm_mon == 10 and time.localtime(_d).tm_mday == 19,
+          time.strftime("%Y-%m-%d %H:%M", time.localtime(_d)) if _d else _d)
+    check("相对时间：认不出来就 0（宁可排后面，也不瞎编时刻）",
+          feed_sources._douban_rel_time("上个月黑话", _now) == 0)
+
+    db = feed_sources.DoubanSource(
+        FakeHttp(bytes_routes={"group/explore": raw_db, "group/topic/": raw_db403},
+                 cache=MemCache()), {})
+    check("豆瓣只有一栏：讨论精选", db.channels() == ["讨论精选"], db.channels())
+    posts, nxt = db.list()
+    check("讨论精选一页至少解析出 20 条", len(posts) >= 20, len(posts))
+    check("每条都齐：标题 / 原帖地址 / 时间 / 喜欢数 / 来自哪个小组",
+          all(p.title and p.url.startswith("https://www.douban.com/group/topic/")
+              and p.ts > 0 and p.score >= 0 and p.tags for p in posts),
+          [(p.title[:12], p.tags, p.score) for p in posts[:2]])
+    check("统计单位是「喜欢」（豆瓣的 like 不是赞）",
+          all(p.score_label == "喜欢" for p in posts), posts[0].score_label)
+    check("封面落了本地图，不是原站直链",
+          all(p.cover and not p.cover.startswith("http") for p in posts if p.cover),
+          posts[0].cover)
+    # 豆瓣的摘要是 <p>…</div>，**没有闭合的 </p>**（2026-10-27 实测 29 条全这样）：
+    # 按 </p> 抓会一条都抓不到，所以这里要求绝大多数有摘要
+    # 豆瓣的摘要是 <p>…</div>，**没有闭合的 </p>**；另有 4 条本来就只有图、没摘要（夹具里
+    # 那 4 条的 <p> 是空的），所以门槛按"绝大多数有"算
+    check("摘要抓得到（豆瓣的 <p> 不闭合，别指望 </p>）",
+          sum(1 for p in posts if p.excerpt) >= len(posts) - 6,
+          sum(1 for p in posts if p.excerpt))
+    # `start` 是条目下标（实测 `?start=29` 从第 29 条接上），一页给 29~30 条不固定，
+    # 所以游标是"这次真拿回几条"——卡死 30 会漏掉页尾那一条
+    check("一页 29 条：游标就往前走 29（不是硬走 30，别漏掉页尾那条）",
+          nxt == len(posts) == 29, (nxt, len(posts)))
+    posts2, nxt2 = db.list("讨论精选", nxt)
+    check("第 2 页接着取：游标再往前走一页，请求真的带了 ?start=29",
+          nxt2 == 58 and any("start=29" in u for u in db.http.calls), db.http.calls[-1])
+
+    # 匿名点正文：豆瓣给 403「没有访问权限」。这里必须照实说"要登录"，
+    # 不能糊成"取数失败"——列表本来就能刷，人也没断网。
+    try:
+        db.detail(posts[0])
+        _db_open = "竟然抛都没抛"
+    except FeedNetError as e:
+        _db_open = str(e)
+    check("没 Cookie 点正文：说要登录（豆瓣原话「没有访问权限」在里面）",
+          "没有访问权限" in _db_open and "登录" in _db_open, _db_open)
+    # 真机上 403 是被 feed_net._check 先抛出来的（"要登录（403）"），适配器要把它翻译成人话；
+    # 探针里造这条错误，验的是翻译这一层（夹具那条走的是"200 + 没有访问权限"的保险）
+    _db403 = feed_sources.DoubanSource(
+        FakeHttp(bytes_error={"group/topic/": "要登录（403）"}, cache=MemCache()), {})
+    try:
+        _db403.detail(posts[0])
+        _db_msg = "竟然抛都没抛"
+    except FeedNetError as e:
+        _db_msg = str(e)
+    check("403 也翻成人话：说要登录、还带着 403（人要知道是被拒了，不是断网）",
+          "登录" in _db_msg and "403" in _db_msg, _db_msg)
+    try:
+        db.comments(posts[0])
+        _db_cm = "竟然抛都没抛"
+    except FeedNetError as e:
+        _db_cm = str(e)
+    check("回复同样照实说要登录", "登录" in _db_cm, _db_cm)
+    check("认证口径：needs_auth 是 True，未配置时说「要登录」",
+          db.needs_auth is True and "登录" in db.auth_state(), db.auth_state())
+
+    # 正文/回复的解析器：真话题页要登录才拿得到（本机没 Cookie），所以这一段用**构造的**
+    # HTML 验解析器本身（div 配平、`.all hidden` 去重、作者/有用数/时间）。等 feed_auth.json
+    # 里贴上豆瓣 Cookie，record_fixtures 会录真的 douban_topic.html，那时把这段换成真夹具。
+    # 写这句话是为了别让后来人误以为下面是真响应。
+    _db_fake = (
+        '<div id="content"><h1>穷人的蛋白质</h1>'
+        '<div id="link-report"><div class="topic-content">'
+        '<div class="topic-richtext"><p>第一段</p>'
+        '<p>第二段<img src="https://img9.doubanio.com/view/note/l/public/p1.jpg"></p></div>'
+        '</div></div>'
+        '<div id="comments">'
+        '<div class="comment-item" data-cid="11"><div class="comment"><h3>'
+        '<span class="comment-vote"><span class="vote-count">7</span></span>'
+        '<a href="https://www.douban.com/people/abc/">甲</a>'
+        '<span class="comment-time" title="2026-10-20 08:11:00">2026-10-20</span></h3>'
+        '<p class="reply-content">短的<span class="all hidden">短的加长版</span></p>'
+        '</div></div>'
+        '<div class="comment-item" data-cid="12"><div class="comment"><h3>'
+        '<a href="https://www.douban.com/people/def/">乙</a>'
+        '<span class="comment-time">刚刚</span></h3>'
+        '<p class="reply-content">第二条</p></div></div>'
+        '</div></div>')
+    _dp = feed_sources.parse_douban_topic(_db_fake)
+    check("正文解析：标题从 <h1> 来、两段都在（按 div 配平，不会被正文自己的 div 截断）",
+          _dp["title"] == "穷人的蛋白质" and _dp["body_html"].count("<p>") == 2,
+          (_dp["title"], _dp["body_html"][:40]))
+    check("回复解析：两条都在，作者 / 时间 / 有用数都对",
+          len(_dp["replies"]) == 2 and _dp["replies"][0]["author"] == "甲"
+          and _dp["replies"][0]["score"] == 7
+          and _dp["replies"][0]["created"] == "2026-10-20 08:11:00"
+          and _dp["replies"][1]["author"] == "乙",
+          [(r["author"], r["score"], r["created"]) for r in _dp["replies"]])
+    check("回复正文不重复：`.all hidden` 里那份全文被丢掉",
+          "加长版" not in _dp["replies"][0]["body_html"])
+    _blocks = feed_mod.blocks_from_html(_dp["body_html"], max_blocks=20)
+    check("正文 HTML 能变成排版块（段落 + 图）",
+          len(_blocks) >= 2 and any(b.kind == feed_mod.BLOCK_IMG for b in _blocks),
+          [b.kind for b in _blocks])
+
+    # 这里用 cache_root=None：这一节跑在"清理临时目录"之前，别再往 TMP_CACHE 里建东西
+    on_db = feed_sources.build_real_sources(
+        cache_root=None, config={"feed_sources": ["douban"]}, log=None)
+    check("写进 feed_sources 就能带出豆瓣，门面是「豆瓣」",
+          [s.key for s in on_db] == ["mix", "douban"] and on_db[1].label == "豆瓣",
+          [(s.key, s.label) for s in on_db])
+    check("豆瓣在列表里被标成需要凭据（正文要登录），但混流里也有它的席位",
+          on_db[1].needs_auth is True and hasattr(on_db[0], "sources"), "")
+
 shutil.rmtree(MemCache.img_dir, ignore_errors=True)
 check("临时目录清掉了", not os.path.exists(TMP_CACHE))
 

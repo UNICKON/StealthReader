@@ -691,6 +691,31 @@ def record(which):
         print("微博")
         save("weibo_hotsearch.json", "https://weibo.com/ajax/side/hotSearch",
              headers={"Referer": "https://weibo.com/", "User-Agent": MOBILE_UA})
+    if which in ("", "douban"):
+        print("豆瓣（讨论精选免登录；话题正文/回复要登录）")
+        save("douban_explore.html", "https://www.douban.com/group/explore")
+        tid = ""
+        try:
+            with open(os.path.join(OUT, "douban_explore.html"), "r", encoding="utf-8") as f:
+                hit = re.search(r"/group/topic/(\d+)/", f.read())
+            tid = hit.group(1) if hit else ""
+        except Exception:
+            tid = ""
+        cred = auth_for("douban") or {}
+        if not tid:
+            print("  讨论精选里没挑到话题 id，跳过话题页")
+        else:
+            raw2, status = fetch_raw("https://www.douban.com/group/topic/%s/" % tid, cred,
+                                     {"Referer": "https://www.douban.com/group/"})
+            if status == 200 and raw2:
+                write_bytes("douban_topic.html", raw2)
+                print("  录到 douban_topic.html   %8d 字节（带 Cookie）" % len(raw2))
+            elif status == 403 and raw2:
+                # 匿名一律 403：这条真响应专门用来验「照实说要登录」（别谎报成「取数失败」）
+                write_bytes("douban_topic_403.html", raw2)
+                print("  录到 douban_topic_403.html   %8d 字节（匿名 403，真响应）" % len(raw2))
+            else:
+                print("  话题页没录到（HTTP %s）" % status)
     if which in ("", "v2ex"):
         print("V2EX（本机网络连不上是常态，连上才录）")
         save("v2ex_hot.json", "https://www.v2ex.com/api/topics/hot.json")

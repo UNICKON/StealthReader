@@ -213,7 +213,11 @@ def _says_login(r):
         except Exception:
             continue
         low = text.lower()
-        if "未登录" in text or "请登录" in text or "not logged" in low or "login required" in low:
+        if ("未登录" in text or "请登录" in text or "not logged" in low
+                or "login required" in low
+                # 豆瓣的话题页：403 + 标题「没有访问权限」，正文里「请<a>登录</a>后重试」
+                # ——「请登录」被 <a> 劈成两截，关键词命不中（2026-10-27 实测）
+                or "没有访问权限" in text):
             return True
     escaped = raw.decode("ascii", "ignore").lower()
     return ("\\u672a\\u767b\\u5f55" in escaped          # 未登录
