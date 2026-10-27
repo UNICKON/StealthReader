@@ -2460,7 +2460,62 @@ else:
     db = feed_sources.DoubanSource(
         FakeHttp(bytes_routes={"group/explore": raw_db, "group/topic/": raw_db403},
                  cache=MemCache()), {})
-    check("豆瓣只有一栏：讨论精选", db.channels() == ["讨论精选"], db.channels())
+    check("豆瓣的板块 = 讨论精选 + 六个小组",
+          db.channels() == ["讨论精选", "职场吐槽大会", "下厨房", "极简生活",
+                            "迷恋植物的人", "社畜买房共进会", "火花四射观察室"],
+          db.channels())
+
+    # 小组 = 豆瓣的板块（2026-10-27 真人："豆瓣为什么没有其他板块"）
+    dbgrp = fixture_bytes("douban_group.html")
+    dbhot = fixture_bytes("douban_hot_groups.html")
+    if not (dbgrp and dbhot):
+        skip("豆瓣小组", "缺 douban_group.html / douban_hot_groups.html")
+    else:
+        grows = feed_sources.parse_douban_group_topics(dbgrp.decode("utf-8", "replace"))
+        check("小组讨论页解析出话题（34 条：30 条 + 4 条置顶）", len(grows) == 34, len(grows))
+        g0 = grows[0]
+        check("标题取的是 title 属性（页面上那个是截断版）",
+              g0["title"].startswith("❉❉职场吐槽大会新组") and g0["id"] == "261511223", g0)
+        check("作者 / 回应数 / 时间都拆开了",
+              g0["author"] == "感性不性感" and g0["replies"] == 34
+              and g0["created"] == "10-19 09:47", g0)
+        check("「10-19 09:47」这种没年份的时间换算成了 ts", g0["ts"] > 0, g0["ts"])
+        check("置顶/精华各自进 tags", g0["tags"] == ["置顶", "精华"], g0["tags"])
+        hrows = feed_sources.parse_douban_hot_groups(dbhot.decode("utf-8", "replace"))
+        check("热门小组页解析出 20 个小组（名字带 & 和引号也还原了）",
+              len(hrows) == 20 and any("买组" in n for _g, n in hrows), hrows[:3])
+        dbsrc = feed_sources.DoubanSource(
+            FakeHttp(bytes_routes={"hot_groups": dbhot,
+                                   "13232/discussion": dbgrp,
+                                   "group/explore": raw_db},
+                     cache=MemCache()),
+            auth={})
+        boards = dbsrc.boards()
+        check("板块表：六个常看的 + 热门小组里的",
+              len(boards) >= 20 and boards[0]["group"] == "常看的"
+              and any(b["group"] == "热门小组" for b in boards), len(boards))
+        check("记住的那一栏还认（accepts_channel 不联网也答得上来）",
+              dbsrc.accepts_channel("下厨房") and not dbsrc.accepts_channel("没有这个组"))
+        check("板块选择器挑的热门小组，拉过板块表之后也认",
+              dbsrc.accepts_channel("拼组 / 我跟你拼了！"))
+        gposts, gnext = dbsrc.list("职场吐槽大会", 0)
+        check("小组那一栏给的是这个小组的话题",
+              len(gposts) == 34 and gposts[0].channel == "职场吐槽大会", len(gposts))
+        check("回应数是 n_comments，单位「回应」",
+              gposts[0].n_comments == 34 and gposts[0].comment_label == "回应",
+              (gposts[0].n_comments, gposts[0].comment_label))
+        check("小组页一页 30 条，游标按 30 走（不是按拿回几条）", gnext == 30, gnext)
+        check("话题地址是干净的（去掉 _spm_id 尾巴）",
+              gposts[0].url.endswith("/261511223/"), gposts[0].url)
+        blk = feed_sources.DoubanSource(
+            FakeHttp(bytes_error={"13232/discussion": "被拒绝（403）"}, cache=MemCache()), auth={})
+        berr = ""
+        try:
+            blk.list("职场吐槽大会", 0)
+        except FeedNetError as e:
+            berr = str(e)
+        check("小组页被挡时说是风控（不赖成 Cookie 不对）",
+              ("挡" in berr or "风控" in berr) and "Cookie 不对" in berr, berr)
     posts, nxt = db.list()
     check("讨论精选一页至少解析出 20 条", len(posts) >= 20, len(posts))
     check("每条都齐：标题 / 原帖地址 / 时间 / 喜欢数 / 来自哪个小组",

@@ -703,6 +703,9 @@ def record(which):
     if which in ("", "douban"):
         print("豆瓣（讨论精选免登录；话题正文/回复要登录）")
         save("douban_explore.html", "https://www.douban.com/group/explore")
+        # 小组 = 豆瓣的板块：热门小组页给板块表，讨论页给一页话题（都是匿名 200）
+        save("douban_hot_groups.html", "https://www.douban.com/group/explore/hot_groups")
+        save("douban_group.html", "https://www.douban.com/group/13232/discussion?start=0")
         tid = ""
         try:
             with open(os.path.join(OUT, "douban_explore.html"), "r", encoding="utf-8") as f:

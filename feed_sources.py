@@ -3841,7 +3841,16 @@ def _hupu_name(author):
 DOUBAN_EXPLORE = "https://www.douban.com/group/explore"
 DOUBAN_GROUP = "https://www.douban.com/group/"
 DOUBAN_TOPIC = "https://www.douban.com/group/topic/%s/"
-DOUBAN_PAGE = 30                 # 讨论精选一页 29~30 条；游标按"这次真拿回几条"走
+DOUBAN_PAGE = 30
+# 小组 = 豆瓣的"板块"。这一页是热门小组（20 个，名字和 id 都在上面），
+# 板块选择器里列的就是它；下面这六个是同一天从「讨论精选」页的"来自哪个小组"里
+# 抄下来的，直接用（省得每次都要先拉一页热门小组才知道有哪些板）。
+DOUBAN_HOT_GROUPS = "https://www.douban.com/group/explore/hot_groups"
+DOUBAN_GROUP_DISCUSSION = "https://www.douban.com/group/%s/discussion"
+DOUBAN_GROUPS = (("职场吐槽大会", "13232"), ("下厨房", "596337"),
+                 ("极简生活", "385172"), ("迷恋植物的人", "49635"),
+                 ("社畜买房共进会", "677158"), ("火花四射观察室", "661193"))
+DOUBAN_GROUP_PAGE = 30        # 小组讨论页一页 30 条（另加置顶，「?start=」按 30 走）                 # 讨论精选一页 29~30 条；游标按"这次真拿回几条"走
 DOUBAN_PAGE_MIN = 20             # 一页拿回大半页才算"后面还有"
 DOUBAN_REPLIES_PAGE = 100        # 话题的回复一页 100 条
 DOUBAN_REPLIES_MIN = 60          # 回复同理：大半页才认为后面还有
@@ -4051,6 +4060,96 @@ def parse_douban_replies(html):
     return out
 
 
+def _douban_list_time(text, now=None):
+    """小组列表里的时间：「10-19 09:47」这种（**没有年份**），也可能是「今天/昨天」。"""
+    now = time.time() if now is None else float(now)
+    s = str(text or "").strip()
+    if not s:
+        return 0.0
+    got = _douban_rel_time(s, now)
+    if got:
+        return got
+    if s in ("今天", "昨天", "前天"):
+        return now - {"今天": 0, "昨天": 1, "前天": 2}[s] * 86400
+    m = re.match(r"^(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})$", s)
+    if not m:
+        return 0.0
+    lt = time.localtime(now)
+    try:
+        got = time.mktime((lt.tm_year, int(m.group(1)), int(m.group(2)),
+                           int(m.group(3)), int(m.group(4)), 0, 0, 0, -1))
+        if got > now + 86400:            # 12 月里看到「01-02」：那是去年的
+            got = time.mktime((lt.tm_year - 1, int(m.group(1)), int(m.group(2)),
+                               int(m.group(3)), int(m.group(4)), 0, 0, 0, -1))
+        return got
+    except Exception:
+        return 0.0
+
+
+def parse_douban_group_topics(html):
+    """小组讨论页 → 话题行。
+
+    实测（2026-10-27，`/group/13232/discussion?start=0`，43847 字节）一行是：
+
+        <tr class=""><td class="title"><span class="pl" title="置顶">…</span>
+        <span class="elite_topic_lable">精华</span>
+        <a href="…/group/topic/261511223/?_spm_id=…" title="完整标题">截断的标题…</a></td>
+        <td><a href="…/people/yesflyer/">感性不性感</a></td>
+        <td class="r-count ">34</td><td class="time">10-19 09:47</td></tr>
+
+    标题取 `title` 属性（页面上显示的是截断版）；置顶/精华各自进 tags。"""
+    out = []
+    seen = set()
+    for m in re.finditer(r"<tr[^>]*>(.*?)</tr>", html or "", re.S):
+        row = m.group(1)
+        a = re.search(r'<a href="(https://www\.douban\.com/group/topic/(\d+)/[^"]*)"'
+                      r'\s+title="([^"]*)"', row)
+        if not a:
+            continue
+        tid = a.group(2)
+        if tid in seen:
+            continue
+        seen.add(tid)
+        title = html_unescape(a.group(3)).strip()
+        author = ""
+        am = re.search(r'href="https://www\.douban\.com/people/([^"/]+)/"[^>]*>([^<]*)<', row)
+        if am:
+            author = html_unescape(am.group(2)).strip()
+        replies = 0
+        rm = re.search(r'class="r-count[^"]*"[^>]*>\s*(\d+)\s*<', row)
+        if rm:
+            replies = int(rm.group(1))
+        when = ""
+        wm = re.search(r'class="time"[^>]*>([^<]*)<', row)
+        if wm:
+            when = html_unescape(wm.group(1)).strip()
+        tags = []
+        if 'title="置顶"' in row:
+            tags.append("置顶")
+        if "elite_topic_lable" in row:
+            tags.append("精华")
+        out.append({"id": tid, "title": title, "author": author, "created": when,
+                    "ts": _douban_list_time(when), "replies": replies,
+                    "url": a.group(1).split("?")[0], "tags": tags})
+    return out
+
+
+def parse_douban_hot_groups(html):
+    """热门小组页 → [(小组 id, 名字)]。卡片就是一个 `href="/group/<gid>/"` 包着名字。"""
+    out = []
+    seen = set()
+    for m in re.finditer(r'href="https://www\.douban\.com/group/(\d+)/"[^>]*>(.*?)</a>',
+                         html or "", re.S):
+        gid = m.group(1)
+        name = feed_mod.strip_html(html_unescape(m.group(2))).strip()
+        name = re.sub(r"\s+", " ", name)
+        if not name or len(name) > 30 or gid in seen:
+            continue
+        seen.add(gid)
+        out.append((gid, name))
+    return out
+
+
 class DoubanSource(RealSource):
     """豆瓣（小组「讨论精选」）。**列表免登录；正文和回复要登录。**
 
@@ -4079,8 +4178,63 @@ class DoubanSource(RealSource):
     MAX_PAGE_BYTES = 2000000
     MAX_BLOCKS = 300
 
+    def __init__(self, http, auth):
+        RealSource.__init__(self, http, auth)
+        self._board_cache = None        # 热门小组拉回来的那份（板块选择器用）
+
     def channels(self):
-        return [self.EXPLORE_LABEL]
+        """讨论精选 + 六个小组（小组就是豆瓣的板块）。"""
+        return [self.EXPLORE_LABEL] + [name for name, _gid in DOUBAN_GROUPS]
+
+    def boards(self, force=False):
+        """板块表：六个常用的 + 热门小组那一页里的（去重）。
+
+        热门小组要联网（35KB），所以调用方得在后台线程里叫它（`main.feed_load_boards`
+        就是这么做的）。拉不到就只给六个常用的——不假装热门小组拿到了。"""
+        if self._board_cache is not None and not force:
+            return list(self._board_cache)
+        out = [{"label": name, "fid": gid, "group": "常看的"}
+               for name, gid in DOUBAN_GROUPS]
+        seen = set(gid for _n, gid in DOUBAN_GROUPS)
+        try:
+            html = self._page(DOUBAN_HOT_GROUPS, TTL_LIST, http=self._anon())
+            for gid, name in parse_douban_hot_groups(html):
+                if gid in seen or not gid.isdigit():
+                    continue
+                seen.add(gid)
+                out.append({"label": name, "fid": gid, "group": "热门小组"})
+        except Exception:
+            pass
+        if out:
+            self._board_cache = out
+        return list(out)
+
+    def accepts_channel(self, channel):
+        """记住的那一栏还没在本表里（比如板块选择器挑的热门小组）也认。
+
+        **这里不许联网**：`feed_first_channel` 在界面线程里调它（切来源那一下），
+        真去拉热门小组会把界面卡住。所以只查"六个常看的"和已经拉到过的那份缓存；
+        真取数的时候 `_gid_of` 才去补拉（那是在后台线程里）。"""
+        name = str(channel or "").strip()
+        if not name:
+            return False
+        if any(label == name for label, _gid in DOUBAN_GROUPS):
+            return True
+        return any(str(b.get("label") or "") == name for b in (self._board_cache or []))
+
+    def _gid_of(self, channel):
+        """栏目名 → 小组 id。六个常用的直接查表；选择器里挑的现查一次板块表。"""
+        name = str(channel or "").strip()
+        for label, gid in DOUBAN_GROUPS:
+            if label == name:
+                return gid
+        for b in (self._board_cache or []):
+            if str(b.get("label") or "") == name and str(b.get("fid") or "").isdigit():
+                return str(b["fid"])
+        for b in self.boards():
+            if str(b.get("label") or "") == name and str(b.get("fid") or "").isdigit():
+                return str(b["fid"])
+        return ""
 
     def _anon(self):
         """列表页用的**不带 Cookie** 的取数器（缓存目录共用）。
@@ -4103,7 +4257,9 @@ class DoubanSource(RealSource):
                     headers={"Referer": DOUBAN_GROUP},
                     cookies=None,
                     user_agent=str(self.auth.get("user_agent") or "") or feed_net.UA,
-                    min_interval=getattr(self.http, "min_interval", 0.0))
+                    # 豆瓣对"连着取"特别敏感（实测几十下就开始 403/验证码），所以这一路
+                    # 一律隔 1.2 秒再发；翻页本来就是人看着翻，感觉不到这点间隔
+                    min_interval=max(1.2, float(getattr(self.http, "min_interval", 0.0) or 0.0)))
             except TypeError:
                 # 探针里的假取数器：它自带路由、本来就不带 Cookie，直接用它自己
                 self._anon_http = self.http
@@ -4118,6 +4274,9 @@ class DoubanSource(RealSource):
 
     LOGIN_SAY = ("豆瓣说「没有访问权限」——话题的正文和回复要登录才能看。"
                  "在本机浏览器登录豆瓣，把这个来源的 Cookie 贴进来就行（列表本来不用登录）")
+    GROUP_BLOCK_SAY = ("豆瓣把这次请求挡了（403 /「禁止访问」那套风控）——不是 Cookie 不对，"
+                       "也不是断网：过几分钟再点一次，或者换个网络。要是这个小组本身是私密的，"
+                       "得先在浏览器里加入")
     BLOCK_SAY = ("豆瓣把这次请求挡了（「禁止访问」+ 验证码那套风控）——不是 Cookie 不对，"
                  "也不是断网：过几分钟再点一次，或者换个网络。连着取太快它就会这样")
 
@@ -4140,6 +4299,9 @@ class DoubanSource(RealSource):
         return html
 
     def list(self, channel=None, cursor=None):
+        ch = str(channel or self.EXPLORE_LABEL)
+        if ch != self.EXPLORE_LABEL:
+            return self._group_list(ch, cursor)
         start = int(cursor or 0)
         url = DOUBAN_EXPLORE if not start else "%s?start=%d" % (DOUBAN_EXPLORE, start)
         html = self._page(url, TTL_LIST, http=self._anon())
@@ -4167,6 +4329,44 @@ class DoubanSource(RealSource):
         # 而一页给多少条不固定（29 或 30）。所以游标按"这次真拿回几条"往前走：
         # 卡死 30 会漏掉页尾那一条，走 len(rows) 才既不漏也不重。
         nxt = start + len(rows) if len(rows) >= DOUBAN_PAGE_MIN else None
+        return posts, nxt
+
+    def _group_list(self, channel, cursor=None):
+        """一个小组的讨论列表（这一页更新得快，按 R 刷新才有意义）。"""
+        gid = self._gid_of(channel)
+        if not gid:
+            raise FeedNetError("豆瓣没有这个小组了：%s（用板块选择器挑一个）" % channel)
+        start = int(cursor or 0)
+        url = DOUBAN_GROUP_DISCUSSION % gid + ("?start=%d" % start if start else "")
+        try:
+            html = self._page(url, TTL_LIST, http=self._anon())
+        except FeedNetError as e:
+            if "禁止访问" in str(e) or "403" in str(e):
+                # 实测（2026-10-27）：连着取几十下之后**小组页也开始回 403**，
+                # 过一会儿自己就好了；私密小组是另一回事，文案里带一句。
+                raise FeedNetError(self.GROUP_BLOCK_SAY)
+            raise
+        if any(mark in html for mark in DOUBAN_BLOCK_MARKS):
+            raise FeedNetError(self.BLOCK_SAY)
+        if any(mark in html for mark in DOUBAN_LOGIN_MARKS):
+            raise FeedNetError(self.LOGIN_SAY)
+        rows = parse_douban_group_topics(html)
+        if not rows:
+            if start:
+                return [], None
+            raise FeedNetError("豆瓣「%s」这一页没解析出话题（可能改版了，或者被反爬拦了）" % channel)
+        posts = []
+        for r in rows:
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=channel,
+                pid=r["id"], title=r["title"], author=r["author"], created=r["created"],
+                ts=r["ts"], score=0, score_label="",
+                n_comments=r["replies"], comment_label="回应",
+                excerpt="", url=r["url"], tags=list(r["tags"]),
+            ))
+        # 一页 30 条，另加置顶；`?start=` 按 30 走（实测 start=0 给 34 条，30/60 两页
+        # 与第一页**零重叠**，所以游标不能按"这次拿回几条"走，会跳过帖子）。
+        nxt = start + DOUBAN_GROUP_PAGE if len(rows) >= 10 else None
         return posts, nxt
 
     def detail(self, post, cursor=None):

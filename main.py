@@ -5986,6 +5986,8 @@ class StealthReader(QWidget):
                 # 正文/评论到齐、版面变高了：从顶部读起（不是停在第一条评论上）
                 self.feed_detail_top = False
                 self.feed_scroll_top()
+        if kind in ("list", "detail"):
+            self._feed_refresh_done()
         # 排队的那次现在补上（切来源、快速按键都靠它才不丢内容）
         pend = self.feed_pending
         self.feed_pending = None
@@ -6948,9 +6950,29 @@ class StealthReader(QWidget):
         # 不用往 feed_restore_pos 里写 0（那个 0 会留给下一次"保持位置"的重画，见 feed_scroll_top）。
         self.feed_scroll_top()
         self.review_hint("刷新中…", 900)
+        # 记下刷新前的签名：回来时比一下，"内容没变"和"有新内容"是两件事，
+        # 只说"刷新中…"就没了下文的话，人对着没变化的列表会以为键没生效
+        # （2026-10-27 真人："不能刷新"——豆瓣讨论精选那一页确实半天不换一条）。
+        try:
+            self._feed_refresh_sig = self._feed_sig_now()
+        except Exception:
+            self._feed_refresh_sig = None
         self.feed_load(what, fresh=True)
         log_event("社区：刷新（%s，不吃缓存）" % what)
         return True
+
+    def _feed_refresh_done(self):
+        """按 R 那一趟回来了：当场说一句"完成了、变没变"。"""
+        sig = getattr(self, "_feed_refresh_sig", None)
+        if sig is None:
+            return
+        self._feed_refresh_sig = None
+        stamp = time.strftime("%H:%M:%S")
+        try:
+            same = self._feed_sig_now() == sig
+        except Exception:
+            same = False
+        self.review_hint("刷新完成 %s（%s）" % (stamp, "内容没变" if same else "有新内容"), 1500)
 
     def feed_board_key(self):
         """这个来源的"板块/栏目"记在 config 的哪个键上（每个来源各记各的）。
