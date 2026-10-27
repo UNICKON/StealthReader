@@ -3158,6 +3158,7 @@ class StealthReader(QWidget):
         self._feed_live_mode_was = ""                 # 上一帧在盯什么（""/detail/list）
         self._feed_live_best = {}                     # (来源, 比赛id) → (进度, 见过的摘要)
         if FEED_OK:
+            _seen_before = self.config.get("feed_sources_seen")
             try:
                 self.feed_sources = feed_mod.build_sources(
                     os.path.join(RES_DIR, "feed_demo"),
@@ -3165,6 +3166,13 @@ class StealthReader(QWidget):
                     config=self.config, log=log_event)
             except Exception as _e:
                 log_event(f"社区源登记失败: {_e}")
+            # 启动时把新来源补进了配置（见 feed_sources._add_new_sources）：立刻落盘，
+            # 不然人这次在设置里关掉它、下次启动又被补回来
+            if self.config.get("feed_sources_seen") != _seen_before:
+                try:
+                    self.save_config()
+                except Exception as _e:
+                    log_event(f"补新来源后存配置失败: {_e}")
             self.feed_nav = feed_mod.FeedNav()
             # 上次停在哪个来源就回到哪个（配置里记的是 key；找不到就回默认的混流）
             want = str(self.config.get("feed_source") or "")
@@ -9247,6 +9255,7 @@ class StealthReader(QWidget):
             cur = getattr(self.feed_source(), "key", "")
         except Exception:
             cur = ""
+        _seen_before = self.config.get("feed_sources_seen")
         try:
             self.feed_sources = feed_mod.build_sources(
                 os.path.join(RES_DIR, "feed_demo"),
@@ -9255,6 +9264,11 @@ class StealthReader(QWidget):
         except Exception as exc:
             log_event("重建社区来源失败: %s" % exc)
             return
+        if self.config.get("feed_sources_seen") != _seen_before:
+            try:
+                self.save_config()
+            except Exception as exc:
+                log_event("补新来源后存配置失败: %s" % exc)
         keys = [getattr(src, "key", "") for src in self.feed_sources]
         self.feed_source_i = keys.index(cur) if cur in keys else 0
         self._feed_memo.clear()

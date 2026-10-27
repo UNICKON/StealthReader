@@ -2046,16 +2046,46 @@ AppleDouble 占位）和一个跑不起来的 `python.exe`（退出码 `0xC00001
 「豆瓣说「没有访问权限」——话题的正文和回复要登录才能看……（HTTP 403）」。**不谎报成"取数失败"**：
 列表一直就在，人也没断网。
 
-**验收**：`probe_sources.py` 429（+24，新增第 22 节），全部跑在真夹具上——
-`douban_explore.html`（44KB 真响应）与 `douban_topic_403.html`（真 403，12KB）。
-`probe_ui.py` 312（设置里的来源勾从 10 个变 11 个）。
+**贴上 Cookie 之后（同一台机器，真人自己录的）**，话题页 494KB、正文 274 块、
+回复一页 100 条——**整套正文/回复解析器拿真页面重写了一遍**：
 
-**还差一步（如实记下）**：话题页的正文/回复解析器（`parse_douban_topic` /
-`parse_douban_replies`，按豆瓣的 `#link-report > .topic-content`、`.topic-richtext`、
-`.comment-item` / `.reply-content` / `.comment-time` 写）现在只用**构造的 HTML** 验过形状，
-本机没有豆瓣登录态，录不到真话题页。等 `feed_auth.json` 里贴上豆瓣 Cookie，
-`python tests/record_fixtures.py douban` 会录到真的 `douban_topic.html`，那时把探针里那段
-构造 HTML 换成真夹具。
+- 回复的 `li` 是 `class="clearfix comment-item reply-item"`（`comment-item` 不是唯一的），
+  按 `class="comment-item"` 切一条都切不出来；改成"li 的 class 里有 comment-item"；
+- 时间是 `<span class="pubtime">2026-10-23 01:58:01 浙江</span>`——**尾巴带发帖地区**，
+  直接 `parse_time` 会失败，所以先整串试、失败了抹掉最后一段再试（`.comment-time` 的老写法也留着）；
+- 引用的是谁：`div.reply-quote > .reply-quote-content > .pubdate a`，100 条里 22 条带引用，
+  填进 `Comment.reply_to`（正文里不再重复那段引用文字）；
+- 回复带图：`div.comment-photos > .cmt-img img`，拼到正文后面（这篇里有 1 条带图）；
+- 正文图**真的很多**：这篇云南攻略正文里 177 张图（`img*.doubanio.com/view/group_topic/l/`，
+  每张 500px 宽）。原来给正文的 8 张上限会把攻略后半截全丢掉，豆瓣这一档放到 40 张
+  （8 路并发，约一两秒；落不下来的照旧丢掉，不摆裂图）。
+
+**又踩到一个坑（比"要登录"更气人）**：`group/explore` **匿名 200（29 条），带上这位的
+Cookie 反而 1206 字节「禁止访问」**（正文挂着腾讯 `TCaptcha.js`），而话题页带同一个 Cookie
+却好得很。所以豆瓣对"登录态 + 组内列表"另有风控。现在列表走**匿名取数器**
+（`DoubanSource._anon`，缓存另开一间 `anon/`，免得被挡下来的那页躺进缓存），正文/回复带
+Cookie。副作用是好的：Cookie 过期了列表照样刷得动。
+
+风控页也是 **HTTP 200**，所以得按内容认（`DOUBAN_BLOCK_MARKS`：禁止访问 / TCaptcha），
+照实说「豆瓣把这次请求挡了（「禁止访问」+ 验证码那套风控）——不是 Cookie 不对，也不是断网，
+过几分钟再点一次」，**不许**说成"改版了"，也不许说成"要登录"（两回事）。
+`tests/record_fixtures.py douban` 也加了一道闸：录到的是风控页就存成 `douban_blocked.html`，
+不覆盖真话题页夹具。
+
+**还有一件事，跟豆瓣本身无关但必须做**：真人加完豆瓣之后说「怎么右键社区列表里没看到」——
+因为 `config.json` 里的 `feed_sources` 是**当年那份名单**（他那份里没有豆瓣），新来源压根没
+被建出来，菜单自然没它。现在启动时补一次：老配置只补 `DEFAULT_NEW`（目前就是豆瓣）里
+"它没见过"的，补完把见过的记进 `feed_sources_seen`——人在设置里关掉之后就不会被加回来，
+空列表（"我全关了"）一个字都不补。`main.py` 补完立刻存盘。
+
+**验收**：`probe_sources.py` 441（+36，第 22 节换成**真话题页** 494KB 夹具 + 第 23 节验
+"补新来源只补一次"）；`probe_ui.py` 312。真夹具：`douban_explore.html`（51KB）、
+`douban_topic.html`（494KB，带 Cookie）、`douban_topic_403.html`（12KB，匿名 403）、
+`douban_blocked.html`（1215 字节，风控页）。
+
+**还没验到的一件事**：真人的 Cookie 在我连着取了几十次之后被豆瓣风控挡了（1215 字节
+「禁止访问」，换浏览器头也一样），所以"贴了 Cookie 后界面里正文/回复长什么样"还没能亲眼
+看一遍——等风控过去再看。解析器本身是拿真页面（494KB）验的，不是构造的 HTML。
 
 ## 10. 我替你定的、你可能想改的
 

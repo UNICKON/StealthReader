@@ -3730,6 +3730,10 @@ DOUBAN_PAGE_MIN = 20             # 一页拿回大半页才算"后面还有"
 DOUBAN_REPLIES_PAGE = 100        # 话题的回复一页 100 条
 DOUBAN_REPLIES_MIN = 60          # 回复同理：大半页才认为后面还有
 DOUBAN_LOGIN_MARKS = ("没有访问权限", "请登录后重试", "你没有权限访问这个页面")
+# 风控页（2026-10-27 实测：短时间连着取几次之后，带 Cookie 的请求会被换成这一页，
+# 1215 字节、标题「禁止访问」、正文挂着腾讯的 TCaptcha.js）。它也是 **HTTP 200**，
+# 所以要按内容认，不能按状态码认。
+DOUBAN_BLOCK_MARKS = ("禁止访问", "turing.captcha", "TCaptcha", "captcha.qcloud")
 
 
 def _douban_rel_time(text, now=None):
@@ -3853,10 +3857,29 @@ def parse_douban_topic(html):
     return {"title": title, "body_html": body, "replies": parse_douban_replies(text)}
 
 
+def _douban_topic_time(text):
+    """话题里回复的时间：「2026-10-23 01:58:01 浙江」——尾巴带发帖地区，直接 parse_time 会失败。
+
+    认不出来就返回 0（跟列表那套一个口径：不知道就不写）。"""
+    s = str(text or "").strip()
+    if not s:
+        return 0.0
+    ts = feed_mod.parse_time(s)
+    if ts:
+        return ts
+    parts = s.split()
+    if len(parts) >= 3:                      # 抹掉最后那个地区再试一次
+        return feed_mod.parse_time(" ".join(parts[:-1]))
+    return 0.0
+
+
 def parse_douban_replies(html):
     """话题页里的回复：`class="comment-item"` 一段一段切（li / div 两种写法都认）。"""
     text = str(html or "")
-    marks = [m.start() for m in re.finditer(r'class="comment-item"', text)]
+    # 实测写法：`<li class="clearfix comment-item reply-item" data-cid="6786093743">`
+    # （class 里 `comment-item` 不是唯一的），所以按"li 的 class 里有 comment-item"切
+    marks = [m.start() for m in
+             re.finditer(r'<li[^>]*\bclass="[^"]*\bcomment-item\b', text)]
     out = []
     for k, pos in enumerate(marks):
         chunk = text[pos:marks[k + 1] if k + 1 < len(marks) else len(text)]
@@ -3866,28 +3889,47 @@ def parse_douban_replies(html):
             author = feed_mod.strip_html(a.group(1))
             if author:
                 break
-        when = re.search(r'class="comment-time"[^>]*title="([^"]+)"', chunk)
+        # 实测是 `<span class="pubtime">2026-10-23 01:58:01 浙江</span>`；
+        # 老版话题页写的是 `.comment-time`（title 里带完整时间），两条都认
+        when = re.search(r'class="pubtime"[^>]*>(.*?)</span>', chunk, re.S)
+        if not when:
+            when = re.search(r'class="comment-time"[^>]*title="([^"]+)"', chunk)
         if not when:
             when = re.search(r'class="comment-time"[^>]*>(.*?)</span>', chunk, re.S)
         votes = re.search(r'class="vote-count"[^>]*>\s*(-?[\d,]+)', chunk)
         body = ""
-        m = re.search(r'<p\s+class="reply-content"[^>]*>(.*?)</p>', chunk, re.S)
-        if m:
-            body = m.group(1)
+        body = _douban_div_inner(chunk, r'<div\s+class="reply-content"[^>]*>')
+        if not body.strip():
+            m = re.search(r'<p\s+class="reply-content"[^>]*>(.*?)</p>', chunk, re.S)
+            body = m.group(1) if m else ""
         if not body.strip():
             m = re.search(r'<span\s+class="reply-content"[^>]*>(.*?)</span>', chunk, re.S)
             body = m.group(1) if m else ""
         # 豆瓣长回复是「短的可见 + 全文藏在 .all.hidden 里」，两份都留着会重复一遍
         body = re.sub(r'<span\s+class="all\s+hidden"[^>]*>.*?</span>', "", body, flags=re.S)
         body = re.sub(r'<span\s+class="short"[^>]*>', "", body)
+        # 回复里带的图（实测写法：`<div class="comment-photos"><div class="cmt-img"><img src=…>`）
+        photos = _douban_div_inner(chunk, r'<div\s+class="comment-photos"[^>]*>')
+        if photos.strip():
+            body = body + photos
         plain = feed_mod.strip_html(body)
-        if not plain:
+        if not plain and not photos.strip():
             continue
+        # 引用的是谁：`<div class="reply-quote"><div class="reply-quote-content" …>
+        #              <span class="pubdate"><a href="…/people/…/">逆流的魔鬼鱼</a></span>`
+        reply_to = ""
+        quote = _douban_div_inner(chunk, r'<div\s+class="reply-quote-content"[^>]*>')
+        if quote:
+            hit = re.search(r'class="pubdate"[^>]*>\s*<a[^>]*>(.*?)</a>', quote, re.S)
+            if hit:
+                reply_to = feed_mod.strip_html(hit.group(1))
         out.append({
             "id": cid.group(1) if cid else "d%d" % (len(out) + 1),
             "author": author,
             "created": (html_unescape(when.group(1)).strip() if when else ""),
+            "ts": _douban_topic_time(html_unescape(when.group(1)) if when else ""),
             "score": int((votes.group(1) if votes else "0").replace(",", "") or 0),
+            "reply_to": reply_to,
             "body_html": body,
         })
     return out
@@ -3904,7 +3946,9 @@ class DoubanSource(RealSource):
       - 话题页 `/group/topic/<id>/` **不给看**：HTTP 403、标题「没有访问权限」、正文
         「你没有权限访问这个页面。请登录后重试。」——换三个不同小组、换 Googlebot 的 UA、
         换一台机器的出口 IP，结果一样。所以正文和回复必须有 Cookie；
-      - 小组页 `/group/<gid>/` 是 200（能看话题列表），但点进话题一样 403。
+      - 小组页 `/group/<gid>/` 是 200（能看话题列表），但点进话题一样 403；
+      - **列表页带 Cookie 反而被挡**（1206 字节「禁止访问」/腾讯验证码），匿名 29 条好得很，
+        所以列表走匿名取数器，正文/回复才带 Cookie（见 `_anon`）。
 
     定位：没贴 Cookie 也能刷豆瓣的社区热帖（点进去照实说"要登录"），贴了 Cookie 正文
     和回复才取得回来——跟知乎那条一模一样的分层，界面上会写「Cookie 未配置（这个来源
@@ -3922,14 +3966,44 @@ class DoubanSource(RealSource):
     def channels(self):
         return [self.EXPLORE_LABEL]
 
-    def _page(self, url, ttl):
-        raw = self.http.get_bytes(url, ttl=ttl, headers={"Referer": DOUBAN_GROUP},
-                                  max_bytes=self.MAX_PAGE_BYTES, timeout=LIST_TIMEOUT)
-        self.served_stale = bool(getattr(self.http, "served_stale", False))
+    def _anon(self):
+        """列表页用的**不带 Cookie** 的取数器（缓存目录共用）。
+
+        2026-10-27 实测这件怪事：同一个 `group/explore`，
+          - 匿名：200、50934 字节、29 条；
+          - **带上这位的 Cookie：1206 字节，标题「禁止访问」**（腾讯验证码那套脚本）。
+        话题页带同一个 Cookie 却好得很（494KB 正文+回复都在）。所以豆瓣对"登录态 + 组内
+        列表"这套组合另有风控。列表本来就不登录也能看，那就干脆分开：列表匿名、正文带 Cookie。
+        顺带的好处：Cookie 哪天过期了，列表照样刷得动。"""
+        if getattr(self, "_anon_http", None) is None:
+            # 缓存另开一间：带 Cookie 那次被挡下来的「禁止访问」页（1206 字节，也是 200）
+            # 绝不能躺在这里被当成本页内容
+            cache = getattr(self.http, "cache", None)
+            root = getattr(cache, "root", "") if cache is not None else ""
+            anon_cache = feed_net.Cache(os.path.join(root, "anon")) if root else None
+            try:
+                self._anon_http = type(self.http)(
+                    cache=anon_cache,
+                    headers={"Referer": DOUBAN_GROUP},
+                    cookies=None,
+                    user_agent=str(self.auth.get("user_agent") or "") or feed_net.UA,
+                    min_interval=getattr(self.http, "min_interval", 0.0))
+            except TypeError:
+                # 探针里的假取数器：它自带路由、本来就不带 Cookie，直接用它自己
+                self._anon_http = self.http
+        return self._anon_http
+
+    def _page(self, url, ttl, http=None):
+        client = http or self.http
+        raw = client.get_bytes(url, ttl=ttl, headers={"Referer": DOUBAN_GROUP},
+                               max_bytes=self.MAX_PAGE_BYTES, timeout=LIST_TIMEOUT)
+        self.served_stale = bool(getattr(client, "served_stale", False))
         return raw.decode("utf-8", "replace")
 
     LOGIN_SAY = ("豆瓣说「没有访问权限」——话题的正文和回复要登录才能看。"
                  "在本机浏览器登录豆瓣，把这个来源的 Cookie 贴进来就行（列表本来不用登录）")
+    BLOCK_SAY = ("豆瓣把这次请求挡了（「禁止访问」+ 验证码那套风控）——不是 Cookie 不对，"
+                 "也不是断网：过几分钟再点一次，或者换个网络。连着取太快它就会这样")
 
     def _topic_page(self, tid, start=0):
         url = DOUBAN_TOPIC % str(tid).strip()
@@ -3938,9 +4012,13 @@ class DoubanSource(RealSource):
         try:
             html = self._page(url, TTL_DETAIL)
         except FeedNetError as e:
+            if "禁止访问" in str(e):
+                raise FeedNetError(self.BLOCK_SAY)
             if "403" in str(e) or "要登录" in str(e):
                 raise FeedNetError("%s（HTTP 403）" % self.LOGIN_SAY)
             raise
+        if any(mark in html for mark in DOUBAN_BLOCK_MARKS):
+            raise FeedNetError(self.BLOCK_SAY)
         if any(mark in html for mark in DOUBAN_LOGIN_MARKS):
             raise FeedNetError(self.LOGIN_SAY)
         return html
@@ -3948,13 +4026,15 @@ class DoubanSource(RealSource):
     def list(self, channel=None, cursor=None):
         start = int(cursor or 0)
         url = DOUBAN_EXPLORE if not start else "%s?start=%d" % (DOUBAN_EXPLORE, start)
-        html = self._page(url, TTL_LIST)
+        html = self._page(url, TTL_LIST, http=self._anon())
         if 0 == start and any(mark in html for mark in DOUBAN_LOGIN_MARKS):
             raise FeedNetError("豆瓣这一页没给（没有访问权限），可能被反爬挡了，过一会儿再试")
         rows = parse_douban_explore(html)
         if not rows:
             if start:
                 return [], None             # 翻到底了：这一页没有话题就是没有了
+            if any(mark in html for mark in DOUBAN_BLOCK_MARKS):
+                raise FeedNetError(self.BLOCK_SAY)
             raise FeedNetError("豆瓣讨论精选这一页没解析出话题（可能改版了，或者被反爬拦了）")
         posts = []
         for r in rows:
@@ -3981,7 +4061,9 @@ class DoubanSource(RealSource):
             out.title = parsed["title"]
         out.comment_label = "回复"
         blocks = feed_mod.blocks_from_html(parsed["body_html"], max_blocks=self.MAX_BLOCKS)
-        blocks = self._localize_images(blocks, limit=8)
+        # 豆瓣的图文帖是真的图文帖：这篇云南攻略正文里 177 张图（每张 500px 宽）。
+        # 默认那 8/12 张会把攻略的后半截图全丢掉，所以放到 40 张（8 路并发，约一两秒）。
+        blocks = self._localize_images(blocks, limit=40)
         if not blocks:
             raise FeedNetError("豆瓣这个话题页里没找到正文（可能改版了）：%s" % post.id)
         out.body = blocks
@@ -4001,7 +4083,8 @@ class DoubanSource(RealSource):
             if not blocks:
                 continue
             items.append(Comment(cid=r["id"], author=r["author"], created=r["created"],
-                                 score=r["score"], body=blocks))
+                                 score=r["score"], body=blocks,
+                                 reply_to=r.get("reply_to") or ""))
         nxt = start + DOUBAN_REPLIES_PAGE if len(rows) >= DOUBAN_REPLIES_MIN else None
         return items, "", nxt
 
@@ -4113,6 +4196,38 @@ class MixSource(SourceAdapter):
         return self._route(post).comments(post, cursor)
 
 
+DEFAULT_SOURCES = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu",
+                   "douban", "github", "medium"]
+
+
+# 最近这几个是**后加**进默认表的。老配置（没有 `feed_sources_seen`）只会被补上它们：
+# 人在设置里关掉的（v2ex / linux.do / 小红书…）一律不动——那不是"没看见"，那是他不要。
+DEFAULT_NEW = ("douban",)
+
+
+def _add_new_sources(enabled, config):
+    """把"这次新加进默认表"的来源补进老配置，并记住见过哪些来源。
+
+    真人反馈过这件事：加了豆瓣之后右键菜单里找不到——因为 config 里存的是**当年那份
+    名单**（`feed_sources`），新来源压根没被建出来，菜单自然没它。
+
+    只补第一次：补完把"见过的来源"写进 `feed_sources_seen`。以后人在设置里关掉某一栏，
+    它既不在 `feed_sources` 里、又在 `seen` 里，就不会被反复加回来。
+    空列表是"我全关了"，一个字都不补。"""
+    out = [str(k) for k in enabled]
+    if not out:
+        config["feed_sources_seen"] = []
+        return out
+    seen = config.get("feed_sources_seen")
+    seen = [str(k) for k in seen] if isinstance(seen, list) else None
+    base = seen if seen is not None else out   # 没有记录：就当"它见过自己那一份"
+    fresh = [k for k in DEFAULT_NEW if k not in base]
+    if fresh:
+        out += [k for k in fresh if k not in out]
+    config["feed_sources_seen"] = sorted(set(out) | set(seen or []))
+    return out
+
+
 def build_real_sources(cache_root=None, config=None, log=None):
     """按配置建好来源。顺序就是界面里 `[`/`]` 的顺序：混流打头，然后 IT之家 / V2EX /
     linux.do / 知乎 / NGA（顺序由下面这张表定，不跟着配置串的顺序走，这样按键顺序永远可预期）。"""
@@ -4125,10 +4240,11 @@ def build_real_sources(cache_root=None, config=None, log=None):
         # 微博不在默认里：它的风控最紧，属于"单独开关"那一档。
         # NGA 和 小红书 也在默认里：它们确实要 Cookie，但没配的时候页脚会照实说
         # "这个来源要 Cookie"，不会假装成功——比"藏起来让人找不到"更好解释。
-        enabled = ["ithome", "v2ex", "linuxdo", "zhihu", "nga", "xhs", "hupu",
-                   "douban", "github", "medium"]
+        enabled = list(DEFAULT_SOURCES)
     elif not isinstance(enabled, list):
         enabled = [str(enabled)]
+    else:
+        enabled = _add_new_sources(enabled, config)
 
     # 订阅式来源单独住一个文件（feed_more.py）：它们没有评论、没有 Cookie，
     # 跟论坛接口那一套不是一类东西。导入失败只影响这三家，不影响别的来源。

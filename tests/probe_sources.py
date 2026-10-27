@@ -466,7 +466,8 @@ check("每个来源都有 label / channels / image_base",
       all(s.label and isinstance(s.channels(), list) and isinstance(s.image_base(), str)
           for s in made))
 on = feed_sources.build_real_sources(
-    cache_root=TMP_CACHE, config={"feed_sources": ["ithome", "weibo"]}, log=None)
+    cache_root=TMP_CACHE, config={"feed_sources": ["ithome", "weibo"],
+                                 "feed_sources_seen": ["douban", "ithome", "weibo"]}, log=None)
 check("写进 feed_sources 才出现（微博是单独开关那一档）",
       [s.key for s in on] == ["mix", "ithome", "weibo"], [s.key for s in on])
 check("全关掉返回空（由 build_sources 补离线示例）",
@@ -1726,7 +1727,8 @@ check("同一条笔记的评论只拉一次（详情和评论共用）",
 
 print("\n=== 18. 来源登记认出了新来源 ===")
 on_nga = feed_sources.build_real_sources(
-    cache_root=TMP_CACHE, config={"feed_sources": ["nga", "zhihu"]}, log=None)
+    cache_root=TMP_CACHE, config={"feed_sources": ["nga", "zhihu"],
+                                 "feed_sources_seen": ["douban", "nga", "zhihu"]}, log=None)
 # 顺序由代码里的登记表决定（固定的，不跟着配置串走），这样 `[`/`]` 的顺序永远可预期
 check("写进 feed_sources 就能带出 NGA", [s.key for s in on_nga] == ["mix", "zhihu", "nga"],
       [s.key for s in on_nga])
@@ -1734,7 +1736,8 @@ check("NGA 在列表里被标成需要凭据",
       next(s for s in on_nga if s.key == "nga").needs_auth is True)
 
 on_hp = feed_sources.build_real_sources(
-    cache_root=TMP_CACHE, config={"feed_sources": ["hupu"]}, log=None)
+    cache_root=TMP_CACHE, config={"feed_sources": ["hupu"],
+                                 "feed_sources_seen": ["douban", "hupu"]}, log=None)
 check("写进 feed_sources 就能带出虎扑，而且它免登录",
       [s.key for s in on_hp] == ["mix", "hupu"] and on_hp[1].needs_auth is False,
       [s.key for s in on_hp])
@@ -2215,7 +2218,7 @@ check("SST 没有评论", _sst.comments(_sp[0])[0] == [])
 
 # config 里自己加的订阅（"博客一般都有的那种格式"）：一条一个来源，写坏的跳过
 _own = feed_sources.build_real_sources(cache_root=TMP_CACHE, log=None, config={
-    "feed_sources": ["ithome"],
+    "feed_sources": ["ithome"], "feed_sources_seen": ["douban", "ithome"],
     "feed_rss": ["我的博客|https://example.com/feed.xml", "没竖线的坏条目",
                  {"name": "另一个", "url": "https://example.org/atom.xml"},
                  "缺地址|"]})
@@ -2346,6 +2349,8 @@ shutil.rmtree(TMP_CACHE, ignore_errors=True)
 print("\n=== 22. 豆瓣（讨论精选免登录；话题正文/回复要登录）===")
 raw_db = fixture_bytes("douban_explore.html")
 raw_db403 = fixture_bytes("douban_topic_403.html")
+raw_dbt = fixture_bytes("douban_topic.html")     # 带 Cookie 录的真话题页（494KB）
+raw_dbblk = fixture_bytes("douban_blocked.html")  # 真风控页（200 + 1215 字节「禁止访问」）
 if raw_db is None or raw_db403 is None:
     skip("豆瓣", "缺 douban_explore.html / douban_topic_403.html"
                  "（先跑 tests/record_fixtures.py douban）")
@@ -2436,46 +2441,61 @@ else:
     check("认证口径：needs_auth 是 True，未配置时说「要登录」",
           db.needs_auth is True and "登录" in db.auth_state(), db.auth_state())
 
-    # 正文/回复的解析器：真话题页要登录才拿得到（本机没 Cookie），所以这一段用**构造的**
-    # HTML 验解析器本身（div 配平、`.all hidden` 去重、作者/有用数/时间）。等 feed_auth.json
-    # 里贴上豆瓣 Cookie，record_fixtures 会录真的 douban_topic.html，那时把这段换成真夹具。
-    # 写这句话是为了别让后来人误以为下面是真响应。
-    _db_fake = (
-        '<div id="content"><h1>穷人的蛋白质</h1>'
-        '<div id="link-report"><div class="topic-content">'
-        '<div class="topic-richtext"><p>第一段</p>'
-        '<p>第二段<img src="https://img9.doubanio.com/view/note/l/public/p1.jpg"></p></div>'
-        '</div></div>'
-        '<div id="comments">'
-        '<div class="comment-item" data-cid="11"><div class="comment"><h3>'
-        '<span class="comment-vote"><span class="vote-count">7</span></span>'
-        '<a href="https://www.douban.com/people/abc/">甲</a>'
-        '<span class="comment-time" title="2026-10-20 08:11:00">2026-10-20</span></h3>'
-        '<p class="reply-content">短的<span class="all hidden">短的加长版</span></p>'
-        '</div></div>'
-        '<div class="comment-item" data-cid="12"><div class="comment"><h3>'
-        '<a href="https://www.douban.com/people/def/">乙</a>'
-        '<span class="comment-time">刚刚</span></h3>'
-        '<p class="reply-content">第二条</p></div></div>'
-        '</div></div>')
-    _dp = feed_sources.parse_douban_topic(_db_fake)
-    check("正文解析：标题从 <h1> 来、两段都在（按 div 配平，不会被正文自己的 div 截断）",
-          _dp["title"] == "穷人的蛋白质" and _dp["body_html"].count("<p>") == 2,
-          (_dp["title"], _dp["body_html"][:40]))
-    check("回复解析：两条都在，作者 / 时间 / 有用数都对",
-          len(_dp["replies"]) == 2 and _dp["replies"][0]["author"] == "甲"
-          and _dp["replies"][0]["score"] == 7
-          and _dp["replies"][0]["created"] == "2026-10-20 08:11:00"
-          and _dp["replies"][1]["author"] == "乙",
-          [(r["author"], r["score"], r["created"]) for r in _dp["replies"]])
-    check("回复正文不重复：`.all hidden` 里那份全文被丢掉",
-          "加长版" not in _dp["replies"][0]["body_html"])
-    _blocks = feed_mod.blocks_from_html(_dp["body_html"], max_blocks=20)
-    check("正文 HTML 能变成排版块（段落 + 图）",
-          len(_blocks) >= 2 and any(b.kind == feed_mod.BLOCK_IMG for b in _blocks),
-          [b.kind for b in _blocks])
+    if raw_dbt is None:
+        skip("豆瓣话题页", "缺 douban_topic.html（贴过 Cookie 后跑 tests/record_fixtures.py douban）")
+    else:
+        # 真夹具：贴了 Cookie 之后录的整页（494KB，100 条回复）。下面这些检查
+        # 全是"真响应里必须成立"的事——正文、回复、引用、翻页游标。
+        db2 = feed_sources.DoubanSource(
+            FakeHttp(bytes_routes={"group/topic/": raw_dbt}, cache=MemCache()), {})
+        post = feed_sources.Post(source="douban", channel="讨论精选", pid="503328210",
+                                 title="（夹具里的那条）",
+                                 url="https://www.douban.com/group/topic/503328210/")
+        detail, _ = db2.detail(post)
+        _body = " ".join(b.text for b in detail.body if b.text)
+        check("真话题页：标题取到了（不是「没有访问权限」那页）",
+              detail.title and "没有访问权限" not in detail.title, detail.title[:40])
+        check("真话题页：正文解析成几十个块、有字（长图文帖）",
+              len(detail.body) >= 20 and len(_body) >= 200, (len(detail.body), len(_body)))
+        check("真话题页：正文里的真图落了本地（豆瓣的图文帖一张帖子几十上百张图）",
+              sum(1 for b in detail.body if b.kind == feed_mod.BLOCK_IMG) >= 10,
+              sum(1 for b in detail.body if b.kind == feed_mod.BLOCK_IMG))
+        reps = feed_sources.parse_douban_replies(raw_dbt.decode("utf-8", "replace"))
+        check("回复：一页 100 条都切开了（li 的 class 里是 `comment-item reply-item`）",
+              len(reps) == 100, len(reps))
+        check("回复：作者 / 时间 / 正文都在（时间是 `.pubtime`，尾巴带地区）",
+              all(r["author"] and r["created"] and r["body_html"] for r in reps[:20])
+              and reps[0]["author"] == "竹内热假"
+              and reps[0]["created"].startswith("2026-10-23")
+              and reps[0]["ts"] > 0,
+              [(r["author"], r["created"]) for r in reps[:3]])
+        check("回复：引用谁在 reply_to 里（真页里有 22 条带引用）",
+              sum(1 for r in reps if r.get("reply_to")) >= 15,
+              [(r["author"], r["reply_to"]) for r in reps if r.get("reply_to")][:2])
+        check("回复：带图的那条把图也带上了",
+              any("<img" in r["body_html"] for r in reps),
+              [r["author"] for r in reps if "<img" in r["body_html"]][:3])
+        items, _why, nxt_c = db2.comments_page(post, 0)
+        check("comments_page：100 条、游标指到 100（豆瓣回复一页 100 条）",
+              len(items) == 100 and nxt_c == 100, (len(items), nxt_c))
+        check("comments_page：评论节点带着作者/时间/回复谁",
+              items[0].author == "竹内热假" and items[0].created.startswith("2026-10-23")
+              and sum(1 for c in items if c.reply_to) >= 15,
+              (items[0].author, items[0].created, sum(1 for c in items if c.reply_to)))
 
-    # 这里用 cache_root=None：这一节跑在"清理临时目录"之前，别再往 TMP_CACHE 里建东西
+    if raw_dbblk is not None:
+        db3 = feed_sources.DoubanSource(
+            FakeHttp(bytes_routes={"group/topic/": raw_dbblk}, cache=MemCache()), {})
+        _e = ""
+        try:
+            db3.detail(post)
+        except FeedNetError as exc:
+            _e = str(exc)
+        check("风控页（200 + 「禁止访问」）照实说是被挡了，不赖成「改版了」",
+              "挡住" in _e or "挡了" in _e or "风控" in _e, _e)
+        check("风控页不能说成「要登录」（两回事：一个是风控，一个是没贴 Cookie）",
+              "要登录才能看" not in _e, _e)
+
     on_db = feed_sources.build_real_sources(
         cache_root=None, config={"feed_sources": ["douban"]}, log=None)
     check("写进 feed_sources 就能带出豆瓣，门面是「豆瓣」",
@@ -2487,8 +2507,32 @@ else:
 shutil.rmtree(MemCache.img_dir, ignore_errors=True)
 check("临时目录清掉了", not os.path.exists(TMP_CACHE))
 
+print("\n=== 23. 老配置里补上新来源：只补一次，关掉的不动 ===")
+_cfg_old = {"feed_sources": ["ithome", "zhihu"]}          # 当年那份名单，没有 seen
+_m23 = feed_sources.build_real_sources(cache_root=None, config=_cfg_old, log=None)
+check("没有 seen 的老配置：把豆瓣补进去（不然右键菜单里找不到它）",
+      [s.key for s in _m23] == ["mix", "ithome", "zhihu", "douban"],
+      [s.key for s in _m23])
+check("补完把见过的来源记进 config（下次就不再补）",
+      sorted(_cfg_old.get("feed_sources_seen") or []) == ["douban", "ithome", "zhihu"],
+      _cfg_old.get("feed_sources_seen"))
+check("人在设置里关掉过的（v2ex / linux.do / 小红书…）不会被顺手加回来",
+      not ({"v2ex", "linuxdo", "xhs", "nga"} & {s.key for s in _m23}),
+      [s.key for s in _m23])
+_cfg_off = {"feed_sources": ["ithome", "zhihu"],
+            "feed_sources_seen": ["douban", "ithome", "zhihu"]}
+check("关掉豆瓣之后不再被加回来（seen 里记着它）",
+      [s.key for s in feed_sources.build_real_sources(cache_root=None,
+                                                      config=_cfg_off, log=None)]
+      == ["mix", "ithome", "zhihu"],
+      _cfg_off.get("feed_sources_seen"))
+_cfg_none = {"feed_sources": []}
+check("全关（空列表）一个字都不补", feed_sources.build_real_sources(
+    cache_root=None, config=_cfg_none, log=None) == [], _cfg_none.get("feed_sources_seen"))
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
+# ---------------------------------------------------------------- 23
 print("\n================ 结果 ================")
 print("通过 %d / %d%s" % (ok, len(RESULTS), ("，跳过 %d 项" % len(SKIPPED)) if SKIPPED else ""))
 for n in bad:

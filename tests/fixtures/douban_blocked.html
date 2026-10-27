@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>禁止访问</title>
+  
+  <script type="text/javascript" src="https://turing.captcha.qcloud.com/TCaptcha.js"></script>
+
+</head>
+<body>
+  
+  <br/>
+  <h2>…你访问豆瓣的方式有点像机器人程序。为了保护用户的数据，请向我们证明你是人类:</h2>
+  <br/>
+  <form method="POST" id="form" action="/misc/sorry"><div style="display:none;"><input type="hidden" name="ck" value="jot8"/></div>
+    <input type="hidden" id="ticket" name="ticket" value="">
+    <input type="hidden" id="randstr" name="randstr" value="">
+      <input type="hidden" name="original-url" value="https://www.douban.com/group/topic/503328210/" />
+    <button id="tcaptcha_btn" type="button" click=>点击证明</button>
+  </form>
+  <script type="text/javascript">
+    var captcha = new TencentCaptcha(
+      document.getElementById("tcaptcha_btn"),
+      2003459237,
+      function(res) {
+        if (res.ret == 0) {
+          document.getElementById("ticket").value = res.ticket;
+          document.getElementById("randstr").value = res.randstr;
+          document.getElementById("form").submit();
+        }
+      }
+    );
+  </script>
+
+</body>
+</html>
+
+
+
+

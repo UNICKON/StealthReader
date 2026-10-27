@@ -707,7 +707,15 @@ def record(which):
         else:
             raw2, status = fetch_raw("https://www.douban.com/group/topic/%s/" % tid, cred,
                                      {"Referer": "https://www.douban.com/group/"})
-            if status == 200 and raw2:
+            _t2 = (raw2 or b"").decode("utf-8", "replace")
+            if status == 200 and raw2 and "禁止访问" in _t2:
+                # 风控页也是 200（1215 字节 + 腾讯验证码），别拿它盖掉真话题页
+                write_bytes("douban_blocked.html", raw2)
+                print("  豆瓣把这次请求挡了（禁止访问/验证码），录成 douban_blocked.html，"
+                      "没动 douban_topic.html——过几分钟再录")
+            elif status == 200 and raw2 and "topic-content" not in _t2 and "link-report" not in _t2:
+                print("  话题页 200 但里面没正文（%d 字节），不覆盖夹具" % len(raw2))
+            elif status == 200 and raw2:
                 write_bytes("douban_topic.html", raw2)
                 print("  录到 douban_topic.html   %8d 字节（带 Cookie）" % len(raw2))
             elif status == 403 and raw2:
