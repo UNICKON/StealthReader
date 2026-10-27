@@ -776,6 +776,9 @@ def force_window_to_primary(hwnd, margin=60):
 
 # ================= 重新启动要用到的三小块 =================
 SINGLE_INSTANCE_MUTEX = "StealthReader_SingleInstance"
+# 启动器再点一次时，第二个进程撞上互斥体：它不该只弹一句"已经在运行了"，
+# 而是把已经在跑的那个**亮出来**（2026-10-27：人在隐藏状态下点快捷方式，屏幕上什么都没发生）。
+SINGLE_INSTANCE_WAKE = "StealthReader_Wake"
 
 
 def parse_restart_wait(argv):
@@ -838,6 +841,31 @@ def acquire_single_instance(create=None, attempts=30, delay=0.2, sleep=None):
         if i + 1 < attempts:
             sleep(delay)
     return None, False
+
+
+def create_wake_event():
+    """在跑的那个进程建一个自动复位的命名事件，专门给"叫醒"用。"""
+    try:
+        return ctypes.windll.kernel32.CreateEventW(
+            None, False, False, SINGLE_INSTANCE_WAKE)
+    except Exception:
+        return None
+
+
+def signal_wake(name=None):
+    """叫醒已经在跑的那个：返回 True 表示它收到了（老版本没有这个事件，会返回 False）。"""
+    name = name or SINGLE_INSTANCE_WAKE
+    try:
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenEventW(0x0002, False, name)         # EVENT_MODIFY_STATE
+        if not h:
+            return False
+        try:
+            return bool(k32.SetEvent(h))
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return False
 
 
 def release_single_instance_mutex():
@@ -3186,6 +3214,15 @@ class StealthReader(QWidget):
         self.chameleon_timer.setInterval(500)
         self.chameleon_timer.timeout.connect(self.adjust_color_to_background)
 
+        # 启动器叫醒：桌面快捷方式再点一次，第二个进程撞上单实例互斥体，就用这个事件
+        # 让已经在跑的这个把窗口亮出来（400ms 一次，读一下自动复位的事件，代价可以忽略）。
+        self._wake_event = create_wake_event()
+        self._wake_timer = QTimer(self)
+        self._wake_timer.setInterval(400)
+        self._wake_timer.timeout.connect(self.poll_wake_event)
+        if self._wake_event:
+            self._wake_timer.start()
+
         # 视线滚到哪、进度就记到哪：滚轮会连续触发，攒一会儿再落盘
         self.progress_save_timer = QTimer(self)
         self.progress_save_timer.setSingleShot(True)
@@ -4896,6 +4933,38 @@ class StealthReader(QWidget):
         self._shown_at = time.time()
         super().showEvent(event)
 
+    def poll_wake_event(self):
+        """启动器敲了一下：把窗口亮出来（不是切换——亮着就只把它提到前面）。"""
+        h = getattr(self, "_wake_event", None)
+        if not h:
+            return
+        try:
+            r = ctypes.windll.kernel32.WaitForSingleObject(h, 0)
+        except Exception:
+            return
+        if r != 0:                     # 0 = WAIT_OBJECT_0，其余都是"没敲"
+            return
+        log_event("启动器叫醒：把窗口亮出来（之前可见=%s）" % bool(self.isVisible()))
+        self.wake_window("启动器")
+
+    def wake_window(self, source="启动器"):
+        """把窗口实打实摆到屏幕上并拿到焦点；**不**因为"它以为自己是可见的"就反手收起。"""
+        if self.peek_mode:
+            # 偷瞄的那套输入钩子会把这之后的点击判成"要退出"，先收干净
+            self._drop_peek_state()
+        self.showNormal()
+        self._shown_at = time.time()
+        self.apply_style()
+        self.raise_()
+        self.activateWindow()
+        self.ensure_on_screen()
+        QTimer.singleShot(1200, self.guard_window_visible)   # 露脸一秒后复核位置
+        if self.config.get("auto_mode", False):
+            self.chameleon_timer.start()
+            self.adjust_color_to_background()
+        if self.config.get("antishot_mode", False):
+            set_window_protection(int(self.winId()), True)
+
     def toggle_window(self, source="boss"):
         current_time = time.time()
         if current_time - self.last_toggle_time < 0.3:
@@ -4926,20 +4995,7 @@ class StealthReader(QWidget):
             self.hide()
         else:
             log_event("老板键 -> 显示窗口（来源 %s）" % source)
-            if self.peek_mode:
-                # 老板键接管可见层：把偷瞄那套收干净再说，免得它把接下来的点击当退出指令
-                self._drop_peek_state()
-            self.showNormal()
-            self.apply_style()
-            self.activateWindow()
-            self.ensure_on_screen()
-            QTimer.singleShot(1200, self.guard_window_visible)   # 露脸一秒后复核位置
-            if self.config.get("auto_mode", False):
-                self.chameleon_timer.start()
-                self.adjust_color_to_background()
-
-            if self.config.get("antishot_mode", False):
-                set_window_protection(int(self.winId()), True)
+            self.wake_window(source)
 
     # --- 偷瞄模式：Ctrl+E 浮现，滚轮在任何地方都能翻页，其他输入一律退出 ---
     def toggle_peek(self):
@@ -9448,6 +9504,10 @@ if __name__ == '__main__':
 
     _mutex, _ok = acquire_single_instance()
     if not _ok:                                     # 等了六秒还是有人拿着
+        # 已经在跑：别只弹一句"已经在运行了"就退——人点快捷方式要的是**看见窗口**。
+        if signal_wake():
+            log_event("单实例：已经有一个在跑，已叫它把窗口亮出来")
+            sys.exit(0)
         log_event("单实例：另一个进程一直拿着互斥体，提示后退出")
         ctypes.windll.user32.MessageBoxW(None, "StealthReader 已经在运行了（托盘里）", "提示", 0x40)
         sys.exit(0)

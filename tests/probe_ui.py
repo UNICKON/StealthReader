@@ -2363,6 +2363,31 @@ if _old_env is None:
 else:
     os.environ["STEALTHREADER_PYW"] = _old_env
 
+# 启动器叫醒：隐藏状态下再点一次快捷方式，第二个进程撞上单实例互斥体，
+# 它应该是"把那一个亮出来"，而不是弹个"已经在运行了"就退（2026-10-27 真人报的现象）
+_was_visible = w.isVisible()
+w.hide()
+qapp.processEvents()
+_hidden_now = w.isVisible()
+_sig = app_mod.signal_wake()
+qapp.processEvents()
+w.poll_wake_event()                    # 探针里直接跑一次，不等那 400ms 的定时器
+qapp.processEvents()
+check("叫醒：隐藏着的时候收到启动器信号，窗口真的出来了",
+      _hidden_now is False and _sig is True and w.isVisible() is True,
+      (_hidden_now, _sig, w.isVisible()))
+_sig2 = app_mod.signal_wake()
+w.poll_wake_event()
+qapp.processEvents()
+check("叫醒：窗口本来就亮着时只把它提到前面，不会反手收起来",
+      _sig2 is True and w.isVisible() is True, (_sig2, w.isVisible()))
+_sig3 = app_mod.signal_wake("StealthReader_Wake_%d_没人监听" % os.getpid())
+check("叫醒：没人监听这个名字时返回 False（老版本就退回到弹框那条路）",
+      _sig3 is False, _sig3)
+if not _was_visible:
+    w.hide()
+    qapp.processEvents()
+
 
 _rm_before = w.review_mode
 w.review_mode = True
