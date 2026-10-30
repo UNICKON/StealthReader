@@ -4609,7 +4609,7 @@ class StealthReader(QWidget):
         # 滚轮：**viewport 和 text_edit 两条路都要接**。Qt 把滚轮发给谁是不一定的
         # （鼠标停在正文上一般落在 viewport，焦点在控件上时可能落在 text_edit），以前只接了
         # text_edit，于是本地书页"有时候滚一行、有时候翻一整页"（真人 2026-10-19 反馈）。
-        if (event.type() == QEvent.Wheel
+        if (event.type() == QEvent.Wheel and not getattr(self, "_synth_wheel", False)
                 and (source is self.text_edit or source is self.text_edit.viewport())):
             delta = event.angleDelta().y()
             try:
@@ -5251,6 +5251,13 @@ class StealthReader(QWidget):
         if notches <= 0:
             return
         self.scroll_px((-1 if delta > 0 else 1) * int(round(px * notches)), flip=False)
+
+    def _synth_wheel_event(self, delta):
+        """造一个和真实滚轮等价的事件交给 viewport，走 Qt 默认的逐行滚动路径。"""
+        vp = self.text_edit.viewport()
+        return QWheelEvent(QPointF(vp.rect().center()), QPointF(QCursor.pos()),
+                           QPoint(0, 0), QPoint(0, delta),
+                           Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False)
 
     def _feed_hstep(self):
         """左右滑一格走多少像素：和竖直同一套——"滚动行数 × 一行高"。"""
@@ -9075,7 +9082,7 @@ class StealthReader(QWidget):
         """滚轮：视为不确认，但滚轮本身照样滚动（手动把这一下补回去）。"""
         self.dismiss_action_panel(cancelled=True)
         try:
-            self._local_wheel_step(delta)
+            QApplication.sendEvent(self.text_edit.viewport(), self._synth_wheel_event(delta))
         except Exception:
             pass
 
