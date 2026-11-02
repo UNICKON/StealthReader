@@ -2527,6 +2527,26 @@ def _xhs_target_name(row):
     return str(((tc.get("user_info") or {}).get("nickname")) or "").strip()
 
 
+def _xhs_num(v):
+    """小红书的计数有时是 `"3.4万"` / `"1万+"` / `"1234"`：能换就换，读不懂当 0。
+
+    2026-11-02 实测：一条笔记 `like_count="3.4万"`，旧代码 `int("3.4万")` 直接抛
+    ValueError，整页评论跟着一起没了。
+    """
+    txt = str(v if v is not None else "").strip().replace("+", "").replace(",", "")
+    if not txt:
+        return 0
+    try:
+        if "万" in txt:
+            return int(float(txt.replace("万", "") or 0) * 10000)
+        low = txt.lower()
+        if low.endswith("w"):
+            return int(float(low[:-1] or 0) * 10000)
+        return int(float(txt))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _xhs_comments(obj):
     """把 `/api/sns/web/v2/comment/page` 的返回翻成 Comment。
 
@@ -2553,7 +2573,7 @@ def _xhs_comments(obj):
                 cid=str(sub.get("id") or ("s%s-%d" % (it.get("id"), j))),
                 author=who or "某人",
                 created=feed_mod.human_time(int(sub.get("create_time") or 0) / 1000.0),
-                score=int(sub.get("like_count") or 0),
+                score=_xhs_num(sub.get("like_count")),
                 body=sblocks,
                 # 收件人：target_comment 指谁就是谁（指回楼主时等于父节点作者，不会重复显示）
                 reply_to=_xhs_target_name(sub),
@@ -2562,7 +2582,7 @@ def _xhs_comments(obj):
             cid=str(it.get("id") or ("c%d" % i)),
             author=((it.get("user_info") or {}).get("nickname") or "").strip() or "某人",
             created=feed_mod.human_time(int(it.get("create_time") or 0) / 1000.0),
-            score=int(it.get("like_count") or 0),
+            score=_xhs_num(it.get("like_count")),
             body=blocks,
             replies=subs,
             # 它给的**总数**：首页 sub_comments 只塞 1 条预览，剩下几十条要另外问
@@ -2636,50 +2656,89 @@ class XhsSource(RealSource):
             url += "?xsec_token=%s&xsec_source=pc_feed" % quote(str(token), safe="")
         return url
 
+    HOMEFEED_API = "/api/sns/web/v1/homefeed"
+    HOMEFEED_NUM = 20
+
+    def _homefeed(self, cursor_score=""):
+        """推荐流接口（POST，带它那套 x-s 签名）。一次给 10 条，`cursor_score` 管翻页。"""
+        cookie = str((self.auth or {}).get("cookie") or "")
+        body = {"cursor_score": str(cursor_score or ""), "num": self.HOMEFEED_NUM,
+                "refresh_type": 1, "note_index": 0,
+                "unread_begin_note_id": "", "unread_end_note_id": "", "unread_note_count": 0,
+                "category": "homefeed_recommend", "search_key": "",
+                "need_num": self.HOMEFEED_NUM,
+                "image_formats": ["jpg", "webp", "avif"], "need_filter_image": False}
+        js = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        sig = xhs_sign.sign(self.HOMEFEED_API, js, cookie, "POST",
+                            fetch=self._ds_text, web_build=self._web_build())
+        return self.http.post_json("https://edith.xiaohongshu.com" + self.HOMEFEED_API, js,
+                                   headers=xhs_sign.headers_for(sig, cookie),
+                                   timeout=self.COMMENT_TIMEOUT)
+
     def list(self, channel=None, cursor=None):
+        """推荐流走 `/api/sns/web/v1/homefeed`（**不再是刮 /explore 的 HTML**）。
+
+        2026-11-02 实测（Cookie 有效的情况下也一样）：`/explore` 页面里那块
+        `__INITIAL_STATE__.feed.feeds` 已经是空的——以前靠刮它，于是永远"没给内容"，
+        还错怪成"要登录"（真人当场纠正："小红书的 cookie 是有效的"）。接口本身好好的：
+        一次 10 条、`success=true code=0`，`cursor_score` 接着翻。
+        """
         channel = channel if channel in self.CHANNELS else self.CHANNELS[0]
-        html = self._page(self.base_url + "/explore", TTL_LIST, "小红书 推荐", timeout=LIST_TIMEOUT)
+        cur = str(cursor or "")
         try:
-            state = _xhs_state(html)
-        except FeedNetError as e:
-            # 免登录时拿到的就是一张没有状态块的空壳页——别让人对着"改版了"猜，直接说要 Cookie
-            raise FeedNetError("小红书这会儿没给内容（%s）。它要登录：把浏览器 Cookie 贴到 feed_auth.json" % e)
-        feeds = ((state.get("feed") or {}).get("feeds") or [])
+            obj = self._homefeed(cur)
+        except FeedNetError:
+            raise
+        except Exception as e:
+            raise FeedNetError("小红书推荐取不到（%s）" % str(e)[:120])
+        if not isinstance(obj, dict):
+            raise FeedNetError("小红书推荐回的不是 JSON")
+        data = obj.get("data") or {}
+        items = data.get("items") or []
+        if obj.get("success") is False or not items:
+            code = obj.get("code")
+            msg = str(obj.get("msg") or "")
+            if code in (461, -100, -101) or "登录" in msg:
+                raise FeedNetError("小红书说没登录（code=%s，%s）" % (code, msg or "无话"))
+            raise FeedNetError("小红书这次没给推荐（code=%s，%s）"
+                               % (code, msg or "接口说成功但 0 条"))
         posts, videos = [], 0
-        for i, it in enumerate(feeds):
-            card = it.get("noteCard") if isinstance(it, dict) else None
+        for i, it in enumerate(items):
+            if not isinstance(it, dict):
+                continue
+            card = it.get("note_card") or it.get("noteCard")
             if not isinstance(card, dict):
                 continue
             if str(card.get("type") or "") == "video":
                 videos += 1
                 continue
             nid = str(it.get("id") or "")
-            title = feed_mod.strip_html(str(card.get("displayTitle") or ""))
+            title = feed_mod.strip_html(str(card.get("display_title") or card.get("displayTitle") or ""))
             if not nid or not title:
                 continue
             user = card.get("user") if isinstance(card.get("user"), dict) else {}
-            info = card.get("interactInfo") if isinstance(card.get("interactInfo"), dict) else {}
-            try:
-                likes = int(str(info.get("likedCount") or "0").replace("+", "") or 0)
-            except Exception:
-                likes = 0
+            info = card.get("interact_info") or card.get("interactInfo") or {}
+            if not isinstance(info, dict):
+                info = {}
+            likes = _xhs_num(info.get("liked_count") or info.get("likedCount"))
             cover = _xhs_cover(card.get("cover"))
             posts.append(Post(
                 source=self.key, source_label=self.label, channel=channel, pid=nid,
                 title=title,
-                author=feed_mod.strip_html(str(user.get("nickName") or "")),
+                author=feed_mod.strip_html(str(user.get("nick_name") or user.get("nickName") or "")),
                 created="", ts=0,            # 列表页不给发布时间，详情页才给
                 score=likes, score_label="赞",
                 n_comments=0, comment_label="评论",
                 cover=self._cover(cover) if (cover and i < COVER_PER_PAGE) else "",
                 excerpt="",
-                url=self._note_url(nid, it.get("xsecToken")),
+                url=self._note_url(nid, it.get("xsec_token") or it.get("xsecToken")),
             ))
         if not posts:
             if videos:
                 raise FeedNetError("小红书这一页全是视频笔记（这个窗口不放视频），没别的可显示")
-            raise FeedNetError("小红书这会儿没给内容（多半是要登录：把浏览器 Cookie 贴到 feed_auth.json）")
-        return posts, None
+            raise FeedNetError("小红书这一页没有文字笔记（10 条里没有能显示的）")
+        nxt = str(data.get("cursor_score") or "") or None
+        return posts, nxt
 
     def _note(self, post):
         """取一条笔记的 `note` 和页面自带的评论（同一份状态，详情和评论共用一次请求）。"""
@@ -2810,11 +2869,7 @@ class XhsSource(RealSource):
                 continue
             user = card.get("user") if isinstance(card.get("user"), dict) else {}
             info = card.get("interact_info") if isinstance(card.get("interact_info"), dict) else {}
-            try:
-                likes = int(str(info.get("liked_count") or info.get("likedCount") or "0")
-                            .replace("+", "") or 0)
-            except Exception:
-                likes = 0
+            likes = _xhs_num(info.get("liked_count") or info.get("likedCount"))
             cover = _xhs_cover(card.get("cover"))
             posts.append(Post(
                 source=self.key, source_label=self.label, channel=ch, pid=nid,
@@ -2895,6 +2950,28 @@ class XhsSource(RealSource):
 
     def comments(self, post, cursor=None):
         return self._comments_of(post)[0], None
+
+    def comments_page(self, post, cursor=None):
+        """评论按 `cursor` 翻页（`/api/sns/web/v2/comment/page`，`has_more` 管到头）。
+
+        2026-11-02 实测：首屏 `cursor=""` 给 10 条 + `has_more=true` + 新 cursor，
+        下一页 0 重叠。以前只取首屏那一页，"评论很多"的笔记读到底就没了。
+        """
+        nid = str(post.id or "")
+        params = {"note_id": nid, "cursor": str(cursor or ""), "top_comment_id": "",
+                  "image_formats": "jpg,webp,avif"}
+        token = self._token_of(post)
+        if token:
+            params["xsec_token"] = token
+        try:
+            obj = self._signed_get(self.COMMENT_API, params)
+        except FeedNetError as e:
+            why = "406（签名没过，它可能又换了口径）" if "406" in str(e) else str(e)[:120]
+            return [], why, None
+        rows = _xhs_comments(obj)
+        data = (obj or {}).get("data") or {}
+        nxt = str(data.get("cursor") or "") if data.get("has_more") else None
+        return rows, None, (nxt or None)
 
     SUB_API = "/api/sns/web/v2/comment/sub/page"
 

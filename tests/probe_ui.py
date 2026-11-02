@@ -3134,6 +3134,46 @@ finally:
 _src.search = _orig_search
 w._feed_memo.clear()
 
+print("\n=== 27d. 列表一屏装得下（滚不动）时，键盘到底也接下一页 ===")
+# 真人 2026-11-02：小红书一页 9 条，1200x900 根本不用滚——"滚到底"那条路永远触发不了，
+# 而 feed_move 停在最后一条时是直接 return 的，于是列表就卡在第一页。
+_src4 = w.feed_source()
+_orig_ls4 = _src4.list
+_ls4_calls = []
+
+
+def _ls4(channel=None, cursor=None):
+    _ls4_calls.append(cursor)
+    i = int(cursor or 0)
+    rows = [feed_mod.Post(source=_src4.key, pid="lp%d-%d" % (i, k),
+                          title="列表第 %d 页第 %d 条" % (i + 1, k + 1),
+                          ts=1700000000 - k) for k in range(5)]
+    return rows, ((i + 1) if i < 2 else None)
+
+
+_src4.list = _ls4
+try:
+    w._feed_memo.clear()
+    w.feed_load("list")
+    pump(lambda: not w.feed_busy, 10.0)
+    _n0 = len(w.feed_nav.posts)
+    w.feed_nav.index = _n0 - 1
+    w.feed_move(1)                     # 停在最后一条再往下：这时候只剩键盘这条路
+    pump(lambda: len(w.feed_nav.posts) > _n0, 10.0)
+    check("（短页面）最后一条再往下会去要下一页", len(w.feed_nav.posts) == _n0 + 5,
+          (len(w.feed_nav.posts), _ls4_calls[:3]))
+    check("（短页面）续页带的是上一页给的游标", _ls4_calls[:2] == [None, 1], _ls4_calls[:3])
+    # 到头了就不许再要（不然键盘一直按会一直问）
+    w.feed_nav.index = len(w.feed_nav.posts) - 1
+    w.feed_move(1)
+    w.feed_move(1)
+    pump(lambda: not w.feed_busy, 6.0)
+    check("（短页面）列表到头就不再问（请求停在 3 次）", len(_ls4_calls) == 3, _ls4_calls)
+finally:
+    _src4.list = _orig_ls4
+    w.feed_home()
+    pump(lambda: not w.feed_busy)
+
 w.exit_feed_mode(reason="probe")
 try:
     w.hide()

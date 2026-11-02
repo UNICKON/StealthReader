@@ -135,6 +135,23 @@ class FakeHttp(object):
                 return json.loads(json.dumps(obj))
         raise FeedNetError("接口不存在（404）")
 
+    def post_json(self, url, payload, ttl=None, headers=None, what="", timeout=None):
+        """推荐流那条是 POST：照样按 URL 片段找桩，顺手把请求体记下来（验它拼的对不对）。"""
+        self.calls.append(url)
+        if not hasattr(self, "post_bodies"):
+            self.post_bodies = []
+        self.post_bodies.append(payload)
+        for frag in self.fail:
+            if frag in url:
+                raise FeedNetError("连接超时")
+        for frag, code in self.status.items():
+            if frag in url:
+                raise FeedNetError("服务端返回 %s" % code)
+        for frag, obj in self.routes.items():
+            if frag in url:
+                return json.loads(json.dumps(obj))
+        raise FeedNetError("接口不存在（404）")
+
     def fetch_image(self, url):
         self.image_calls.append(url)
         return ("img_%d.jpg" % (abs(hash(url)) % 100000)) if url else ""
@@ -1051,43 +1068,83 @@ def _xhs_page(state):
             % json.dumps(state, ensure_ascii=False)).encode("utf-8")
 
 
-raw_xe = fixture("xhs_explore_state.json")
 raw_xn = fixture("xhs_note_state.json")
-if not raw_xe:
-    skip("小红书真夹具", "缺 xhs_explore_state.json（先跑 tests/record_fixtures.py xhs）")
-else:
-    cred = {"cookie": "web_session=1", "user_agent": "UA"}
-    xs2 = feed_sources.XhsSource(
-        FakeHttp(bytes_routes={"explore": _xhs_page(raw_xe)}, cache=MemCache()), cred)
-    xs_posts, xs_nxt = xs2.list("推荐", 0)
-    want = len([it for it in raw_xe["feed"]["feeds"]
-                if str((it.get("noteCard") or {}).get("type")) != "video"
-                and str((it.get("noteCard") or {}).get("displayTitle") or "").strip()])
-    check("（真夹具）列表出条目、没有下一页", len(xs_posts) == want >= 1 and xs_nxt is None,
-          (len(xs_posts), want))
-    check("（真夹具）标题 / 作者 / 赞数都对得上",
-          all(p.title and p.author and p.url.startswith("https://www.xiaohongshu.com/explore/")
-              for p in xs_posts)
-          and all(p.score >= 0 for p in xs_posts)
-          and xs_posts[0].title == feed_mod.strip_html(
-              raw_xe["feed"]["feeds"][0]["noteCard"]["displayTitle"]),
-          [(p.title[:12], p.author, p.score) for p in xs_posts[:2]])
-    check("（真夹具）地址带着 xsec_token（没有它打不开详情）",
-          all("xsec_token=" in p.url for p in xs_posts), xs_posts[0].url[-40:])
-    check("（真夹具）视频笔记没进来（这个窗口不放视频）",
-          not any(str((it.get("noteCard") or {}).get("type")) == "video"
-                  and str((it.get("noteCard") or {}).get("displayTitle") or "") in
-                  [p.title for p in xs_posts] for it in raw_xe["feed"]["feeds"]))
+cred = {"cookie": "web_session=1", "user_agent": "UA"}
 
-    # 免登录那张空壳页：要能说清"这是要登录"，而不是甩一句"改版了"
-    xs_shell = feed_sources.XhsSource(
-        FakeHttp(bytes_routes={"explore": b"<html><body>SPA shell</body></html>"}, cache=MemCache()),
-        cred)
-    try:
-        xs_shell.list("推荐", 0)
-        check("空壳页会如实说'要登录'", False, "没抛")
-    except FeedNetError as e:
-        check("空壳页会如实说'要登录'", "feed_auth.json" in str(e) and "登录" in str(e), str(e))
+# 2026-11-02 实测（真人当场纠正："小红书的 cookie 是有效的"）：
+# `/explore` 页面里 `__INITIAL_STATE__.feed.feeds` **已经是空的**（Cookie 有效也空），
+# 以前靠刮它，于是永远"没给内容"还错怪成"要登录"。真的推荐流在
+# `POST /api/sns/web/v1/homefeed`（带 x-s 签名）：一次 10 条、`success=true code=0`、
+# `cursor_score` 接着翻。下面按实测的形状放桩，不碰网络。
+_HF_ROWS = [
+    {"id": "n1", "xsec_token": "tok1",
+     "note_card": {"type": "normal", "display_title": "标题一",
+                   "user": {"nick_name": "甲"},
+                   "interact_info": {"liked_count": "3.4万"},
+                   "cover": {"url": "https://sns-img.xhscdn.com/a.jpg"}}},
+    {"id": "n2", "xsec_token": "tok2",
+     "note_card": {"type": "video", "display_title": "视频笔记",
+                   "user": {"nick_name": "乙"}, "interact_info": {"liked_count": "5"}}},
+    {"id": "n3", "xsec_token": "tok3",
+     "note_card": {"type": "normal", "display_title": "标题三",
+                   "user": {"nick_name": "丙"},
+                   "interact_info": {"liked_count": "12"}}},
+]
+_HF = {"success": True, "code": 0, "msg": "成功",
+       "data": {"cursor_score": "1.7936E9", "items": _HF_ROWS}}
+xs2 = feed_sources.XhsSource(FakeHttp(routes={"homefeed": _HF}, cache=MemCache()), cred)
+xs_posts, xs_nxt = xs2.list("推荐", 0)
+check("小红书列表走 homefeed 接口，游标接得上",
+      len(xs_posts) == 2 and xs_nxt == "1.7936E9", (len(xs_posts), xs_nxt))
+check("视频笔记不进来（这个窗口不放视频）", [p.id for p in xs_posts] == ["n1", "n3"],
+      [p.id for p in xs_posts])
+check("标题 / 作者 / 赞数（\"3.4万\" 换成 34000，不是把整页炸掉）",
+      (xs_posts[0].title, xs_posts[0].author, xs_posts[0].score) == ("标题一", "甲", 34000),
+      (xs_posts[0].title, xs_posts[0].author, xs_posts[0].score))
+check("地址带着 xsec_token（没有它打不开详情）", "xsec_token=tok1" in xs_posts[0].url,
+      xs_posts[0].url[-40:])
+_body = json.loads(xs2.http.post_bodies[0])
+check("请求体是 homefeed_recommend，且把游标带上（第 1 页是空串）",
+      _body.get("category") == "homefeed_recommend" and _body.get("cursor_score") == "",
+      {k: _body.get(k) for k in ("category", "cursor_score", "num")})
+check("不再去刮 /explore 的 HTML（那块已经是空的）",
+      not any("/explore" in u for u in xs2.http.calls), xs2.http.calls[:3])
+_HF_END = {"success": True, "code": 0, "msg": "成功",
+           "data": {"cursor_score": "", "items": _HF_ROWS[:1]}}
+xs_end = feed_sources.XhsSource(FakeHttp(routes={"homefeed": _HF_END}, cache=MemCache()), cred)
+check("翻到底（cursor_score 空）就不再给游标", xs_end.list("推荐", "x")[1] is None)
+xs_end.list("推荐", "x")
+check("第 2 页把上一页的 cursor_score 原样发回去",
+      json.loads(xs_end.http.post_bodies[0]).get("cursor_score") == "x",
+      xs_end.http.post_bodies[0][:60])
+
+# 出错时照它说的说：真没登录才说没登录，别把风控/空页也怪到 Cookie 头上
+xs_log = feed_sources.XhsSource(
+    FakeHttp(routes={"homefeed": {"success": False, "code": 461, "msg": "登录已过期"}},
+             cache=MemCache()), cred)
+try:
+    xs_log.list("推荐", 0)
+    check("它说没登录时如实说没登录", False, "没抛")
+except FeedNetError as e:
+    check("它说没登录时如实说没登录", "没登录" in str(e) and "461" in str(e), str(e))
+xs_blank = feed_sources.XhsSource(
+    FakeHttp(routes={"homefeed": {"success": True, "code": 0, "msg": "成功",
+                                  "data": {"cursor_score": "", "items": []}}},
+             cache=MemCache()), cred)
+try:
+    xs_blank.list("推荐", 0)
+    check("0 条时如实说\"没给推荐\"，不甩给 Cookie", False, "没抛")
+except FeedNetError as e:
+    check("0 条时如实说\"没给推荐\"，不甩给 Cookie",
+          "没给推荐" in str(e) and "登录" not in str(e) and "改版" not in str(e), str(e))
+xs_vid = feed_sources.XhsSource(
+    FakeHttp(routes={"homefeed": {"success": True, "code": 0, "data": {
+        "cursor_score": "c", "items": [_HF_ROWS[1]]}}}, cache=MemCache()), cred)
+try:
+    xs_vid.list("推荐", 0)
+    check("一页全是视频时说实话", False, "没抛")
+except FeedNetError as e:
+    check("一页全是视频时说实话", "视频" in str(e), str(e))
 
 # 建来源时要把"不下图"这个开关带到每个来源上（不然低调模式只在渲染层生效，图还是照下）
 _made_off = feed_sources.build_real_sources(
@@ -1257,12 +1314,15 @@ else:
           '{"type":"normal","displayTitle":"标题","user":{"nickName":"某人"},'
           '"interactInfo":{"likedCount":"7"},"cover":{"infoList":[{"url":"http://x/1.jpg"}]}}}]}}'
           '</script></html>').encode("utf-8")
-    xs5 = feed_sources.XhsSource(FakeHttp(bytes_routes={"explore": js}, cache=MemCache()), cred)
-    js_posts, _ = xs5.list("推荐", 0)
+    # 列表改走接口了，但**详情**还是从页面状态块里抠——这一条验的就是抠取那一步
+    _js_state = feed_sources._xhs_state(js.decode("utf-8"))
+    _js_feeds = (_js_state.get("feed") or {}).get("feeds") or []
     check("（手写形状）undefined / new Map([]) / new Set([]) 都当得了 JSON，"
           "而且不会被字符串里的 '} <' 提前截断",
-          len(js_posts) == 1 and js_posts[0].title == "标题" and js_posts[0].score == 7,
-          [(p.title, p.score) for p in js_posts])
+          len(_js_feeds) == 1
+          and _js_feeds[0]["noteCard"]["displayTitle"] == "标题"
+          and _js_feeds[0]["noteCard"]["interactInfo"]["likedCount"] == "7",
+          _js_feeds[:1])
 print("\n=== 15. 虎扑（免登录：版面列表是 HTML，正文和回复在页面数据里）===")
 raw_hl = fixture_bytes("hupu_list.html")
 raw_ht = fixture_bytes("hupu_thread.html")

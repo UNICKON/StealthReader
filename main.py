@@ -6702,9 +6702,13 @@ class StealthReader(QWidget):
             return False
         moved = nav.move_comment(step) if nav.view == "detail" else nav.move(step)
         if not moved:
-            if nav.view == "detail" and step > 0:
+            if step > 0 and nav.view == "detail":
                 # 已经停在最后一条了：还有就接着取（页面比一屏短、滚不动的时候只能靠这个）
                 self.feed_more_comments_now()
+            elif step > 0 and nav.view == "list" and nav.more:
+                # 列表也可能一屏装得下（实测小红书一页 9 条，1200x900 根本不用滚）：
+                # 这时滚到底那条路永远触发不了，只能靠键盘再往下一次去接下一页
+                self.feed_load("more")
             return False
         self.feed_highlight(ensure=True)
         self.update_review_bar()
