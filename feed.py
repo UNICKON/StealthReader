@@ -622,6 +622,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_done = set()     # 这些楼的回复已经翻到头了（再问也是 0 条）
         self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         # 详情里还能再进一层时用它回退（知乎：某个回答 → 这个问题的全部回答）。
         # 退格先退栈，栈空了才回列表。
@@ -646,6 +647,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_done = set()     # 这些楼的回复已经翻到头了（再问也是 0 条）
         self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         self.stack = []
         self.stack_via = []     # 与 stack 同步：每层是"怎么进来的"
@@ -694,6 +696,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_done = set()     # 这些楼的回复已经翻到头了（再问也是 0 条）
         self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         return True
 
@@ -719,6 +722,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_done = set()     # 这些楼的回复已经翻到头了（再问也是 0 条）
         self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         return True
 
@@ -761,6 +765,23 @@ class FeedNav(object):
     def has_more_comments(self):
         """还有没摆出来的（已经取回来的 + 来源说还有下一页的）。"""
         return bool(self.c_more or len(self.roots) > self.c_show)
+
+    def next_open_children(self):
+        """从页面最下面往上找第一条"站上还有、手里还没取全"的回复楼。
+
+        到底自动续子评论用：取的是**最靠下**那一条，新内容接在它下面，
+        上面正在读的部分不会被推开。已经翻到头的（`child_done`）跳过。
+        """
+        try:
+            shown = self.roots[:max(0, int(self.c_show))]
+        except Exception:
+            shown = list(self.roots)
+        for c in reversed(shown):
+            if str(c.id) in self.child_done:
+                continue
+            if int(getattr(c, "n_replies", 0) or 0) > len(c.replies):
+                return c
+        return None
 
     def show_more_comments(self):
         """把已经取回来的下一批顶层评论摆出来；返回这次多摆了几条（0 = 手里没有了）。"""
@@ -923,6 +944,7 @@ class FeedNav(object):
         self.c_more = False         # 评论还有没有下一页
         self.c_show = COMMENT_PAGE  # 屏幕上摆几条顶层评论（其余的按"继续加载"摊开）
         self.child_show = {}        # 每条评论已经摊开几条回复
+        self.child_done = set()     # 这些楼的回复已经翻到头了（再问也是 0 条）
         self.child_saved = {}       # 折起来之前摊开几条（X 摊开时回到原值，不是回到 3）
         self.stack = []
         self.stack_via = []     # 与 stack 同步：每层是"怎么进来的"

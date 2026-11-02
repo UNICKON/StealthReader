@@ -1090,6 +1090,39 @@ class ZhihuSource(RealSource):
         self._ans[key] = (out, "", time.time())
         return out
 
+    def children_page(self, post, cid, have=0, want=10):
+        """一条评论底下的子评论：**能往后翻**（`/child_comments?offset=`）。
+
+        首页 `root_comments` 每楼只带 2 条预览，`child_comment_count` 却是真数
+        （33 / 19 / 21）；以前只问 offset=0，一页 12 条就是全部，于是"还有 N 条回复"
+        永远停在那儿。2026-11-02 实测同一条 33 条回复：`limit=20&offset=0` 给 20 条、
+        `offset=20` 给 13 条、`paging.is_end=true`，条数正好对上。
+
+        `have` = 手里已经有几条（客户端拿来当 offset），`want` = 这次想要几条。
+        返回 (子评论表, 0)；0 = 总数沿用首页那次 `child_comment_count`。
+
+        注：offset 是按条算的，预览那 2 条和后面翻的页在同一条流里，所以 `have`
+        当 offset 是对的；真重复了 `FeedNav.add_children` 会按 id 去掉。
+        """
+        cid = str(cid)
+        off = max(0, int(have or 0))
+        limit = max(20, int(want or 10))          # 实测一次给 20 条没问题，别一条条挤
+        url = ("%s/api/v4/comments/%s/child_comments?limit=%d&offset=%d"
+               % (self.base_url, cid, limit, off))
+        try:
+            data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎子评论",
+                                      headers={"x-requested-with": "fetch"},
+                                      timeout=LIST_TIMEOUT)
+        except Exception as e:
+            raise FeedNetError(_zhihu_why(str(e)))
+        rows = [r for r in (((data or {}).get("data")) or []) if isinstance(r, dict)]
+        kids = []
+        for i, it in enumerate(rows):
+            c = _zhihu_comment(it, i, "zcc")
+            if c is not None:
+                kids.append(c)
+        return kids, 0
+
     def _answer_comments(self, aid, limit=None, children=True, offset=0):
         """一条回答底下的**顶层评论**（连着它的子评论一层）。
 

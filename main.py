@@ -6672,6 +6672,11 @@ class StealthReader(QWidget):
         if nav.c_more:
             self.feed_more_armed = False
             self.feed_load("comments")
+            return
+        # 顶层评论到头了：这一屏里还有「还有 N 条回复」的楼，就接着取它的子评论。
+        # 真人 2026-11-02：「知乎推荐点进去的子评论还是没自动加载」——以前只有按回车/
+        # 点那行才会取，滚到底是不动的。
+        self.feed_fetch_children_next()
 
     def feed_more_comments_now(self):
         """详情里"还有，但页面滚不动"时的手动续页入口（按 ↓ 到底了还按）。
@@ -6689,7 +6694,7 @@ class StealthReader(QWidget):
             self.feed_more_armed = False
             self.feed_load("comments")
             return True
-        return False
+        return self.feed_fetch_children_next()
 
     def feed_move(self, step):
         nav = self.feed_nav
@@ -6839,6 +6844,19 @@ class StealthReader(QWidget):
             return None, None
         return None, None
 
+    def feed_fetch_children_next(self):
+        """到底了："就在下面那一楼"的回复还没取全，就接着取一批（一次一批）。
+
+        只挑**最靠下**那一条：新回复接在它底下，正在读的上面不会被动。
+        """
+        nav = self.feed_nav
+        if nav is None or nav.view != "detail" or self._feed_children_busy:
+            return False
+        node = nav.next_open_children()
+        if node is None:
+            return False
+        return self.feed_fetch_children(node.id)
+
     def feed_fetch_children(self, cid):
         """把这条评论**还没到手**的回复从站上取回来。
 
@@ -6889,6 +6907,10 @@ class StealthReader(QWidget):
         got = nav.add_children(cid, kids or [], total_n or 0)
         log_event("社区：这条评论的回复又取回 %d 条" % got)
         if not got:
+            try:
+                nav.child_done.add(str(cid))     # 这一楼翻到头了：以后别再问
+            except Exception:
+                pass
             self.review_hint("这条的回复就这些了", 1400)
             return
         self.feed_detail_top = False        # 版面变高也别把屏幕拽回顶部

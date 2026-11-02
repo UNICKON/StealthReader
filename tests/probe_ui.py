@@ -3026,12 +3026,28 @@ _calls3 = []
 
 
 def _page3(i):
-    return [feed_mod.Comment(cid="p%d-%d" % (i, k), author="甲%d" % k,
+    rows = [feed_mod.Comment(cid="p%d-%d" % (i, k), author="甲%d" % k,
                              created="刚刚", score=k,
                              body=[feed_mod.Block(kind=feed_mod.BLOCK_P,
                                                   text="第 %d 页第 %d 条评论" % (i + 1, k + 1))],
                              replies=[])
             for k in range(8)]
+    if i == 0:
+        rows[0].n_replies = 12        # 这一楼站上有 12 条回复，手里 0 条（子评论要翻页）
+    return rows
+
+
+_kid_calls = []
+
+
+def _kids3(post, cid, have=0, want=10):
+    _kid_calls.append((str(cid), int(have)))
+    kids = [feed_mod.Comment(cid="k%d-%d" % (have, k), author="乙%d" % k, created="刚刚",
+                             score=0, replies=[],
+                             body=[feed_mod.Block(kind=feed_mod.BLOCK_P,
+                                                  text="回复 %d" % (have + k))])
+            for k in range(4)]
+    return kids, 12
 
 
 def _cp3(post, cursor=None):
@@ -3042,6 +3058,7 @@ def _cp3(post, cursor=None):
 
 
 _src3.comments_page = _cp3
+_src3.children_page = _kids3
 _src3.detail = lambda post, cursor=None: (post, None)
 try:
     w.resize(900, 700)
@@ -3079,11 +3096,25 @@ try:
     check("再往下（光标已在最后一条）→ 第三页",
           w.feed_more_comments_now() is True and (pump(lambda: not w.feed_busy, 10.0) or True)
           and len(w.feed_nav.roots) == 24, (len(w.feed_nav.roots), _calls3))
-    check("到底了就不再问（c_more 空了，请求数不再涨）",
-          not w.feed_nav.c_more and w.feed_more_comments_now() is False,
-          (w.feed_nav.c_more, w.feed_more_comments_now()))
+    check("顶层评论到头了就停：不再要顶层（请求数停在 3）",
+          not w.feed_nav.c_more and len(_calls3) == 3, (w.feed_nav.c_more, _calls3))
     _n3 = len(_calls3)
     check("没有下一页之后一个请求都不多发", len(_calls3) == _n3 == 3, _calls3)
+    # 顶层评论到头了，子评论（"还有 N 条回复"那几楼）也得能自动接着取
+    _k0 = len(w.feed_nav.roots[0].replies)
+    _ok_kid = w.feed_fetch_children_next()
+    pump(lambda: not w._feed_children_busy, 10.0)
+    check("顶层到头后，到底接着取子评论（以前只有按回车才取）",
+          _ok_kid and len(w.feed_nav.roots[0].replies) == _k0 + 4,
+          (_ok_kid, _k0, len(w.feed_nav.roots[0].replies), _kid_calls))
+    for _ in range(3):
+        w.feed_fetch_children_next()
+        pump(lambda: not w._feed_children_busy, 10.0)
+    check("子评论取全了就停（站上说 12 条，手里 12 条）",
+          len(w.feed_nav.roots[0].replies) == 12 and w.feed_fetch_children_next() is False,
+          (len(w.feed_nav.roots[0].replies), _kid_calls))
+    check("翻子评论问的是 offset=手里条数（不是每次都从 0 开始）",
+          _kid_calls[:3] == [("p0-0", 0), ("p0-0", 4), ("p0-0", 8)], _kid_calls)
     # 闸：一次结果因为"换代/换来源"被丢掉，也必须把闸放回去（不然从此再也续不了）
     w.feed_more_armed = False
     w.on_feed_data("list", (list(w.feed_nav.posts), None, False, w.feed_gen - 1, "gone-source"))
@@ -3093,6 +3124,10 @@ try:
 finally:
     _src3.comments_page = _orig_cp3
     _src3.detail = _orig_dt3
+    try:
+        del _src3.children_page
+    except Exception:
+        pass
     w.feed_home()
     pump(lambda: not w.feed_busy)
 
