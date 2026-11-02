@@ -2976,6 +2976,45 @@ if _ith_i:
     w.feed_search_box.hide()
     check("不能搜的来源：按 f 只给一句话，不弹一个没用的输入框",
           w.on_feed_key(Qt.Key_F) is True and w.feed_search_box.isHidden())
+# 搜索 → 点进一条 → Esc：先退回**搜索结果这一页**，再按一次才退出搜索
+# （真人 2026-11-02："esc 退出，退回的应该是搜索结果页，而不是直接退回了社区页"）
+_orig_detail = _src.detail
+_orig_cpage = getattr(_src, "comments_page", None)
+_src.detail = lambda post: (post, "")
+_src.comments_page = lambda post, cursor=None: ([], None)
+# 上一段把来源换成 IT之家了（不能搜），这里先切回知乎
+_guard2 = 0
+while w.feed_source().key != _src.key and _guard2 < 12:
+    w.feed_cycle_source(1)
+    pump(lambda: not w.feed_busy)
+    _guard2 += 1
+w.feed_goto_channel("热榜")
+pump(lambda: not w.feed_busy)
+try:
+    w.feed_search_run("苹果")
+    pump(lambda: bool(w.feed_nav.posts) and not w.feed_busy, 10.0)
+    _opened = w.feed_open()
+    pump(lambda: w.feed_nav.view == "detail" and not w.feed_busy, 10.0)
+    check("点进搜索结果：进了详情", _opened is True and w.feed_nav.view == "detail",
+          (_opened, w.feed_nav.view))
+    _e1 = w.on_feed_key(Qt.Key_Escape)
+    pump(lambda: w.feed_nav.view == "list" and not w.feed_busy, 10.0)
+    check("详情里按 Esc：退回的是**搜索结果页**（词还在，不是一退到底）",
+          _e1 is True and w.feed_nav.view == "list" and w.feed_search_text == "苹果"
+          and w.feed_nav.channel == "搜索：苹果",
+          (_e1, w.feed_nav.view, w.feed_nav.channel, w.feed_search_text))
+    check("退回之后搜索结果还在（条目没被清空）",
+          [p.id for p in w.feed_nav.posts] == ["a9001"], [p.id for p in w.feed_nav.posts])
+    _e2 = w.on_feed_key(Qt.Key_Escape)
+    pump(lambda: not w.feed_busy)
+    check("在搜索结果页上再按一次 Esc：这才退出搜索，回到原来那一栏",
+          _e2 is True and w.feed_search_text == "" and w.feed_nav.channel == "热榜",
+          (_e2, w.feed_search_text, w.feed_nav.channel)) 
+finally:
+    _src.detail = _orig_detail
+    if _orig_cpage is not None:
+        _src.comments_page = _orig_cpage
+
 _src.search = _orig_search
 w._feed_memo.clear()
 

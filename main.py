@@ -7437,8 +7437,9 @@ class StealthReader(QWidget):
                 self.feed_search_box.hide()
                 self._feed_focus_back()
                 return True
-            if self.feed_search_text:
-                return self.feed_search_exit()
+            # 详情里先退一层：来的时候那一页可能是**搜索结果**，Esc 该退回搜索结果，
+            # 不是把搜索一起退掉（真人 2026-11-02："我搜索，点击进入，esc退出，退回的
+            # 应该是搜索结果页，而不是直接退回了社区页"）。再按一次才退出搜索。
             if nav.view == "detail":
                 if self._feed_from_answer():
                     # 知乎：回答 → 点标题进问题 这一层，Esc 直接回主页（不先退回那个回答）
@@ -7446,6 +7447,8 @@ class StealthReader(QWidget):
                 else:
                     self.feed_back()
                 return True
+            if self.feed_search_text:
+                return self.feed_search_exit()
             return False                # 不在详情里就不抢 Esc（老板键可能就挂在它上面）
         if key == Qt.Key_Z:
             # Z：详情里 = 回主页；列表里 = 撤回上一次切社区/切板块
