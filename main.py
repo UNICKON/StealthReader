@@ -307,6 +307,16 @@ EPUB_BLOCK_TAGS = {
 }
 
 
+# 中文排版本不该有的空格：上面这一串是 CJK 汉字/标点/圈号/全角符号，
+# 两边都是它们时，中间那个空格是源码换行带出来的（真书里不会这么排）。
+_CJK_TIGHT = re.compile(
+    r"(?<=[\u2010-\u2027\u2030-\u205e\u2460-\u24ff\u2e80-\u2eff\u3000-\u303f"
+    r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\ufe30-\ufe4f"
+    r"\uff00-\uffef]) (?=[\u2010-\u2027\u2030-\u205e\u2460-\u24ff\u2e80-\u2eff"
+    r"\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    r"\ufe30-\ufe4f\uff00-\uffef])")
+
+
 class _EpubHtmlText(HTMLParser):
     """把 XHTML 正文抽成纯文本行，记录每个 id/name 锚点落在哪一行，并标记标题行。"""
 
@@ -317,10 +327,12 @@ class _EpubHtmlText(HTMLParser):
         self.heading_lines = {}     # {行号: 标题级别}，级别取自 h1~h6 的编号
         self._buf = []
         self._skip = 0
+        self._block_depth = 0       # 现在在不在 <p>/<div> 这种块里面
         self._heading_stack = []    # 正在收集的标题标签（嵌套时取最外层那级）
 
     def _flush(self):
         line = re.sub(r"[ \t\f\v\u00a0\u3000]+", " ", "".join(self._buf)).strip()
+        line = _CJK_TIGHT.sub("", line)
         self._buf = []
         if line:
             if self._heading_stack:
@@ -338,6 +350,8 @@ class _EpubHtmlText(HTMLParser):
             self._skip += 1
         elif tag in EPUB_BLOCK_TAGS:
             self._flush()
+            if tag not in ("br", "hr"):
+                self._block_depth += 1
             if tag in EPUB_HEADING_TAGS:
                 self._heading_stack.append(int(tag[1]))
 
@@ -352,11 +366,21 @@ class _EpubHtmlText(HTMLParser):
                 self._skip -= 1
         elif tag in EPUB_BLOCK_TAGS:
             self._flush()
+            if tag not in ("br", "hr") and self._block_depth:
+                self._block_depth -= 1
             if tag in EPUB_HEADING_TAGS and self._heading_stack:
                 self._heading_stack.pop()
 
     def handle_data(self, data):
         if self._skip:
+            return
+        if self._block_depth:
+            # 块里面（<p>/<div>…）源码里的换行只是空白。这本书的脚注标记写成
+            # `<sup>\n<a>①</a>\n</sup>`，一换行就把每个 ① 顶成独立一行——
+            # 真人："现在每个注释符号都单独成行"。整行 7202 个这样的标记。
+            data = data.replace("\n", " ")
+            if data:
+                self._buf.append(data)
             return
         for i, segment in enumerate(data.split("\n")):
             if i:
@@ -390,6 +414,9 @@ def _epub_html_to_text(raw_bytes):
             source = None
     if source is None:
         return "", {}, {}
+    # 换行先统一成 \n：这本书的 XHTML 是 CRLF，只认 \n 的话 \r 会留在正文里
+    # （行里带着"看不见的换行"，看着还是一个 ① 一行）
+    source = source.replace("\r\n", "\n").replace("\r", "\n")
     parser = _EpubHtmlText()
     try:
         parser.feed(source)

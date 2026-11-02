@@ -3182,6 +3182,39 @@ try:
 except Exception:
     pass
 
+print("\n=== 27e. EPUB 正文：块里的源码换行不该把脚注标记顶成独立一行 ===")
+# 真人 2026-11-02："现在每个注释符号都单独成行"。这本《庄子今注今译》把脚注标记写成
+# `<sup>\n<a>①</a>\n</sup>`，XHTML 还是 CRLF——旧代码把源码里每个换行都当断行，
+# 全书 7202 个标记各占一行，原文一句话被切成七八段。
+_ep_p = ('<html><body><p class="normaltext4">北冥<sup class="suptext">\r\n\r\n'
+         '<a id="Y1_1" href="#Z1_1">①</a>\r\n\r\n</sup>\r\n\r\n 有魚，其名為鯤'
+         '<sup class="suptext">\r\n<a id="Y1_2" href="#Z1_2">②</a>\r\n</sup>\r\n 。</p>'
+         '</body></html>')
+_ep_txt, _ep_anchors, _ep_head = app_mod._epub_html_to_text(_ep_p.encode("utf-8"))
+_ep_lines = _ep_txt.split("\n")
+check("脚注标记留在原句里（一句话还是一行）",
+      _ep_lines == ["北冥①有魚，其名為鯤②。"], _ep_lines)
+check("标记旁边的源码换行不留空格（中文之间不塞空格）",
+      "① 有" not in _ep_txt and "② 。" not in _ep_txt, _ep_txt[:40])
+check("标记上的锚点照样记着（跳注释还找得到）",
+      set(_ep_anchors) == {"Y1_1", "Y1_2"} and _ep_anchors["Y1_1"] == 0, _ep_anchors)
+# 注释那一段：标记 + 后面的注释文字是一行，不是"①"单独一行
+_ep_note = ('<p class="note1">\r\n<a id="Z1_1" href="#Y1_1">①</a>\r\n 北冥：“冥”，通溟。</p>')
+_ep_ntxt, _ep_nanch, _ = app_mod._epub_html_to_text(_ep_note.encode("utf-8"))
+check("注释段：①和它的注释文字在同一行",
+      _ep_ntxt == "①北冥：“冥”，通溟。", _ep_ntxt)
+# 但真的换行（<br/>）和"没有块标签的平文本"还得断行，别把整章并成一行
+_ep_br, _a, _h = app_mod._epub_html_to_text(
+    '<p>甲<br/>乙</p><p>丙</p>'.encode("utf-8"))
+check("<br/> 和 <p> 该断还是断（没把整章并成一行）",
+      _ep_br.split("\n") == ["甲", "乙", "丙"], _ep_br.split("\n"))
+_ep_plain, _a, _h = app_mod._epub_html_to_text("甲\n乙\n丙".encode("utf-8"))
+check("（没有块标签的）平文本仍按行分", _ep_plain.split("\n") == ["甲", "乙", "丙"],
+      _ep_plain.split("\n"))
+# 英文单词之间的空格不能被中文那条规则吃掉
+_ep_en, _a, _h = app_mod._epub_html_to_text('<p>hello\nworld</p>'.encode("utf-8"))
+check("英文单词之间的空格留着", _ep_en == "hello world", _ep_en)
+
 print("\n=== 28. 单实例：老进程还在拆钩子时要重试，不能一撞就弹")
 # 2026-10-22 真撞上一次：新进程比老进程先起来，第一次抢互斥体拿到 183，旧代码直接弹
 # 阻塞提示框（pythonw 下连日志都没有），看起来就是"应用没打开"。现在给它六秒。
