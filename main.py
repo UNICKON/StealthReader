@@ -5605,8 +5605,12 @@ class StealthReader(QWidget):
         `fresh=True` 时这一趟**不吃缓存**（人按 R 要的就是"现在这一下"）：列表缓 5 分钟、
         正文缓一天，以前按 R 只是把缓存又读了一遍，屏幕上当然什么都不变——真人报的
         "怎么不支持刷新"就是这个。开关是线程本地的（见 `feed_net.set_fresh`）。"""
-        if not FEED_OK or self.feed_nav is None or self.feed_busy:
+        if not FEED_OK or self.feed_nav is None:
             return
+        # 注意：**不能**在这里因为 feed_busy 就 return。上一次取数还在飞的时候点进一条帖子，
+        # 这一下会被静默吞掉：页面停在列表那条帖子的空壳上（正文空、评论空、没有下一页），
+        # 而且没有任何机制会再补一次——看起来就是"点进去了，但评论一直没有、滚到底也不加载"。
+        # 交给下面那段"记进 feed_pending，等这次回来立刻补上"。
         nav = self.feed_nav
         src = self.feed_source()
         if src is None:
@@ -5958,6 +5962,10 @@ class StealthReader(QWidget):
             self.feed_board_picker()
             return
         if gone:
+            # 这一趟的结果不要了（人已经换了一页/换了来源）。但"到底自动续页"的闸得放回去：
+            # 它是在发请求时关上的，只有数据回来才开——结果被丢掉就永远关着，从此滚到底
+            # 再也不响。真人报的"评论很多，到底了不自动加载"就是这一条（一次续页正好被丢）。
+            self.feed_more_armed = True
             pend = self.feed_pending
             self.feed_pending = None
             if pend is not None:
@@ -5976,6 +5984,7 @@ class StealthReader(QWidget):
                 self._feed_live_retry_at = time.time() + _gap
                 log_event("直播重取失败（第 %d 次），%d 秒后再试"
                           % (self._feed_live_fail, _gap))
+            self.feed_more_armed = True              # 失败了也放回闸：下次到底还该再试一次
             if self.feed_board_pending:              # 拉板块表失败：这不该让整页变成"取数失败"
                 self.feed_board_pending = False
                 self.feed_error = ""
@@ -6006,6 +6015,8 @@ class StealthReader(QWidget):
                     _live_text = next((b.text for b in _b if getattr(b, "text", "")), "")
                 if self._live_guard((tag, getattr(post, "id", "")), _live_text):
                     nav.set_detail(post, cmts, cnxt)
+                # 详情也算"一页取回来了"：进帖子之后往下滚到底，评论得能接着续
+                self.feed_more_armed = True
                 self._feed_live_fail = 0        # 这一拍成了：退让清零
                 self._feed_live_retry_at = 0.0
             elif kind == "comments":
@@ -6662,12 +6673,33 @@ class StealthReader(QWidget):
             self.feed_more_armed = False
             self.feed_load("comments")
 
+    def feed_more_comments_now(self):
+        """详情里"还有，但页面滚不动"时的手动续页入口（按 ↓ 到底了还按）。
+
+        `feed_autoload_more` 认的是"滚动条到底"；页面比一屏还短时永远没有那个事件，
+        所以这里不看滚动条，只看"手里还有没有"。
+        """
+        nav = self.feed_nav
+        if nav is None or not self.feed_mode or nav.view != "detail" or self.feed_busy:
+            return False
+        if nav.show_more_comments():
+            self.render_feed()
+            return True
+        if nav.c_more:
+            self.feed_more_armed = False
+            self.feed_load("comments")
+            return True
+        return False
+
     def feed_move(self, step):
         nav = self.feed_nav
         if nav is None:
             return False
         moved = nav.move_comment(step) if nav.view == "detail" else nav.move(step)
         if not moved:
+            if nav.view == "detail" and step > 0:
+                # 已经停在最后一条了：还有就接着取（页面比一屏短、滚不动的时候只能靠这个）
+                self.feed_more_comments_now()
             return False
         self.feed_highlight(ensure=True)
         self.update_review_bar()

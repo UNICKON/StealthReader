@@ -742,6 +742,7 @@ class ZhihuSource(RealSource):
         RealSource.__init__(self, http, auth)
         self._ans = {}          # 问题 id -> (回答列表, 失败原因, 取到的时刻)：详情和评论共用一次请求
         self._page_meta = {}    # "c:<aid>:<offset>" -> (这一页原始行数, 是不是最后一页)
+        self._ans_meta = {}     # "a:<qid>:<offset>" -> (这一页回来几条回答, 是不是最后一页)
 
     def channels(self):
         return list(self.CHANNELS)
@@ -1216,16 +1217,24 @@ class ZhihuSource(RealSource):
         return out
 
     def comments_page(self, post, cursor=None):
-        """评论翻页：**只有"点开的是某条回答"这一层有下一页**（offset 往后翻）。
+        """评论翻页：两层都能往后翻（offset 往后翻）。
 
-        问题页那层摆的是这个问题的回答，一页 `ANSWERS_LIMIT` 条就是全部，没有下一页。
+        点开的是某条回答 → 翻这条回答的评论；点开的是问题 → 翻这个问题的回答列表。
         缓存键里带上了 offset，所以翻过的页再翻回来是 0 请求。
         """
         if not self.has_auth:
             return [], None, None
         if not self._is_answer_post(post):
-            items, why = self.comments(post)
-            return items, why, None
+            # 问题页：评论栏是"这个问题的回答"，也能翻页（offset 往后翻）
+            qid = self._question_id(post)
+            if not qid:
+                items, why = self.comments(post)
+                return items, why, None
+            off = max(0, int(cursor or 0))
+            items, why = self._answers_comments(qid, off)
+            n_rows, is_end = self._ans_meta.get("a:%s:%d" % (qid, off), (len(items), True))
+            nxt = (off + n_rows) if (n_rows and not is_end) else None
+            return items, why, nxt
         off = max(0, int(cursor or 0))
         aid = str(post.id).lstrip("a")
         cmts = self._answer_comments(aid, offset=off)
@@ -1235,22 +1244,25 @@ class ZhihuSource(RealSource):
         nxt = (off + n_rows) if (n_rows and not is_end) else None
         return cmts, None, nxt
 
-    def _answers(self, qid):
-        """问一次这个问题的回答列表。返回 (list[dict], 失败原因)。
+    def _answers(self, qid, offset=0):
+        """问一次这个问题的回答列表（可以带 offset 往后翻）。返回 (list[dict], 失败原因)。
 
         URL 的形状是**拿真 Cookie 试出来的**（2026-10-16：HTTP 200，`data[i].content` 是正文 HTML）。
         同一个问题只成功问一次（详情和评论共用这一份）；**失败只记 RETRY_AFTER 秒**——
         以前失败也缓存一辈子，第一次撞上风控之后这个问题就永远打不开了。
         """
         qid = str(qid)
-        hit = None if feed_net.is_fresh() else self._ans.get(qid)
+        off = max(0, int(offset or 0))
+        ckey = "%s:%d" % (qid, off)
+        hit = None if feed_net.is_fresh() else self._ans.get(ckey)
         if hit is not None:
             items, why, when = hit
             if items or (time.time() - when) < self.RETRY_AFTER:
                 return items, why
         url = ("%s/api/v4/questions/%s/answers"
                "?include=data[*].content,excerpt,voteup_count,comment_count,created_time,author.name"
-               "&limit=%d&offset=0&order=default" % (self.base_url, qid, self.ANSWERS_LIMIT))
+               "&limit=%d&offset=%d&order=default"
+               % (self.base_url, qid, self.ANSWERS_LIMIT, off))
         items, why = [], ""
         try:
             data = self.http.get_json(url, ttl=TTL_DETAIL, what="知乎回答",
@@ -1269,8 +1281,12 @@ class ZhihuSource(RealSource):
                 items = [raw]
             else:
                 why = "接口回的形状不认识"
-        self._ans[qid] = (items, _zhihu_why(why) if why else "", time.time())
-        return self._ans[qid][0], self._ans[qid][1]
+            pg = (data or {}).get("paging") if isinstance(data, dict) else None
+            # 有没有下一页看接口自己的 `paging.is_end`；拿不到就不续（宁可少翻一页，也不空转）
+            self._ans_meta["a:%s:%d" % (qid, off)] = (
+                len(items), bool((pg or {}).get("is_end")))
+        self._ans[ckey] = (items, _zhihu_why(why) if why else "", time.time())
+        return self._ans[ckey][0], self._ans[ckey][1]
 
     def comments(self, post, cursor=None):
         """这一栏的"评论"就是**回答列表**——真人要的正是它们，能一条条读、能折叠。
@@ -1290,7 +1306,15 @@ class ZhihuSource(RealSource):
         qid = self._question_id(post)
         if not qid:
             return [], None
-        answers, _why = self._answers(qid)
+        return self._answers_comments(qid)          # 内部已经是 (items, why) 两元组
+
+    def _answers_comments(self, qid, offset=0):
+        """问题页"评论"这一栏 = 这个问题的回答列表（一页 `ANSWERS_LIMIT` 条，可以往后翻）。
+
+        以前这里写死 offset=0，"一页就是全部"，于是几百个回答的问题，滚到底也没有
+        下一页——真人 2026-11-02 报的"评论很多，到底了不自动加载"就是这个。
+        """
+        answers, _why = self._answers(qid, offset)
         # 前几条回答"各自的评论"是独立请求。串着一个一个来，一页要多等一两秒
         # （实测 4 条串行 2.4 秒）；并发取回来，顺序和条数一条不少。
         need = {}

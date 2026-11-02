@@ -976,8 +976,9 @@ if raw_za:
     _zr._answers("q1")
     _zr._answers("q1")
     check("刚失败过的回答请求不重试（免得一点就狂打接口）", _ch.calls == 1, _ch.calls)
-    _items, _why, _when = _zr._ans["q1"]
-    _zr._ans["q1"] = (_items, _why, _when - _zr.RETRY_AFTER - 1)   # 假装过了重试窗口
+    # 缓存键是 "<qid>:<offset>"（问题页的回答列表现在能往后翻页，每页各记一份）
+    _items, _why, _when = _zr._ans["q1:0"]
+    _zr._ans["q1:0"] = (_items, _why, _when - _zr.RETRY_AFTER - 1)   # 假装过了重试窗口
     _zr._answers("q1")
     check("过了重试窗口就允许再问一次（以前失败缓存一辈子，一次限流=这个问题永远打不开）",
           _ch.calls == 2, _ch.calls)

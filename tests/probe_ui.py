@@ -3015,6 +3015,87 @@ finally:
     if _orig_cpage is not None:
         _src.comments_page = _orig_cpage
 
+print("\n=== 27c. 详情滚到底：评论（知乎是回答）自动续页 ===")
+# 真人 2026-11-02："一个帖子的评论有很多，为什么到底后没有自动加载，比如知乎"。
+# 两个真原因：①详情数据回来时没重新武装"到底续页"的闸，闸一旦在某次被丢掉的结果上
+# 关掉就再也不开；②知乎问题页的回答列表当时写死 offset=0，一页就是全部。
+_src3 = w.feed_source()
+_orig_cp3 = _src3.comments_page
+_orig_dt3 = _src3.detail
+_calls3 = []
+
+
+def _page3(i):
+    return [feed_mod.Comment(cid="p%d-%d" % (i, k), author="甲%d" % k,
+                             created="刚刚", score=k,
+                             body=[feed_mod.Block(kind=feed_mod.BLOCK_P,
+                                                  text="第 %d 页第 %d 条评论" % (i + 1, k + 1))],
+                             replies=[])
+            for k in range(8)]
+
+
+def _cp3(post, cursor=None):
+    _calls3.append(cursor)
+    i = int(cursor or 0)
+    nxt = (i + 1) if (i + 1) < 3 else None
+    return _page3(i), None, nxt
+
+
+_src3.comments_page = _cp3
+_src3.detail = lambda post, cursor=None: (post, None)
+try:
+    w.resize(900, 700)
+    w.show()
+    if not w.feed_nav.posts:
+        w.feed_reload()
+        pump(lambda: bool(w.feed_nav.posts) and not w.feed_busy, 10.0)
+    # 前面几节留下的详情缓存要清掉（不然进详情走的是缓存那一份，压根不会问评论）
+    w._feed_memo.clear()
+    try:
+        w._feed_inflight.clear()
+    except Exception:
+        pass
+    w.feed_open()
+    pump(lambda: w.feed_nav.view == "detail" and not w.feed_busy, 10.0)
+    # 正文拉长一点，保证页面能滚（不然滚动条 max=0，测不到"滚到底"这条路）
+    w.feed_nav.post.body = [feed_mod.Block(kind=feed_mod.BLOCK_P, text="正文行 " * 600)]
+    w.render_feed()
+    pump(lambda: False, 0.3)
+    check("进详情后'到底续页'的闸是开着的（以前在列表续页被丢掉后它就是关的）",
+          w.feed_more_armed is True, w.feed_more_armed)
+    check("首屏只有第一页评论，且知道还有下一页",
+          len(w.feed_nav.roots) == 8 and bool(w.feed_nav.c_more),
+          (len(w.feed_nav.roots), w.feed_nav.c_more))
+    _sb3 = w.text_edit.verticalScrollBar()
+    if _sb3.maximum() > 0:
+        _sb3.setValue(_sb3.maximum())          # 滚到底 = 人用滚轮往下读到底
+        pump(lambda: not w.feed_busy, 10.0)
+        check("滚到底：自动取回第二页（不用按任何键）",
+              len(w.feed_nav.roots) == 16, (len(w.feed_nav.roots), _calls3))
+    else:
+        check("（这台机器的探针窗口滚不动，滚到底这条跳过，只看下面的按键入口）", True, "")
+        w.feed_more_comments_now()
+        pump(lambda: not w.feed_busy, 10.0)
+    check("再往下（光标已在最后一条）→ 第三页",
+          w.feed_more_comments_now() is True and (pump(lambda: not w.feed_busy, 10.0) or True)
+          and len(w.feed_nav.roots) == 24, (len(w.feed_nav.roots), _calls3))
+    check("到底了就不再问（c_more 空了，请求数不再涨）",
+          not w.feed_nav.c_more and w.feed_more_comments_now() is False,
+          (w.feed_nav.c_more, w.feed_more_comments_now()))
+    _n3 = len(_calls3)
+    check("没有下一页之后一个请求都不多发", len(_calls3) == _n3 == 3, _calls3)
+    # 闸：一次结果因为"换代/换来源"被丢掉，也必须把闸放回去（不然从此再也续不了）
+    w.feed_more_armed = False
+    w.on_feed_data("list", (list(w.feed_nav.posts), None, False, w.feed_gen - 1, "gone-source"))
+    pump(lambda: not w.feed_busy, 6.0)
+    check("一次被丢掉的结果不会把'到底续页'永久关掉",
+          w.feed_more_armed is True, w.feed_more_armed)
+finally:
+    _src3.comments_page = _orig_cp3
+    _src3.detail = _orig_dt3
+    w.feed_home()
+    pump(lambda: not w.feed_busy)
+
 _src.search = _orig_search
 w._feed_memo.clear()
 
