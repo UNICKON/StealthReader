@@ -2240,6 +2240,59 @@ Cookie。副作用是好的：Cookie 过期了列表照样刷得动。
 「禁止访问」，换浏览器头也一样），所以"贴了 Cookie 后界面里正文/回复长什么样"还没能亲眼
 看一遍——等风控过去再看。解析器本身是拿真页面（494KB）验的，不是构造的 HTML。
 
+## 9.ay（2026-11-02）搜索：`f` 输入、回车确认（哪几家能搜、哪几家为什么不能）
+
+真人这一轮的原话：「给各个社区加上搜索，f键输入，回车确认」。原来的 `f` 是"上一个板块"，
+现在让给搜索，上一个板块挪到 `Shift+F`（和 `v` / `Shift+F` 这一对对称：`v` 是下一个板块）。
+
+**长什么样**：社区页里按 `f`，正文上方浮出一条半透明的输入框（不是模态对话框，不挡列表），
+`Enter` 去搜，`Esc` 关掉输入框；有搜索词时再按一次 `Esc` 退出搜索、回到**原来那一栏**。
+结果是一栏新的频道，名字统一写成「搜索：关键词」（`feed_sources.SEARCH_PREFIX` /
+`search_channel()` 只有这一处口径，页脚、缓存键、撤回都用它）。
+
+**撤回**：`Z` 照旧。搜索本身也算"一次切换"，所以搜完按 `Z` 回到搜之前那一栏，
+搜索词一起清掉。切板块、切社区会主动把搜索词扔掉（`_feed_drop_search`）——不扔的话，
+新栏目还在按旧词搜，人看到的是"这个板块只有这几条"。
+
+**哪些能搜，凭什么**：
+
+| 来源 | 接口 | 门槛 |
+| --- | --- | --- |
+| 知乎 | `www.zhihu.com/api/v4/search_v3?t=general` | 要 Cookie；只收 `object.type == "answer"` |
+| NGA | `bbs.nga.cn/thread.php?key=…&__output=8` | 要 Cookie；和板块列表是同一套 `__T` |
+| 豆瓣（小组） | `www.douban.com/group/search?cat=1013&q=…` | 匿名 200；一页 50 条，`&start=` 翻 |
+| 小红书 | `POST /api/sns/web/v1/search/notes` | 要 Cookie + `xhs_sign` 签名 |
+| GitHub | `api.github.com/search/repositories` | 匿名可读（限流 10 次/分钟） |
+| 混流 | 上面几家一起搜 | 只出第一页；搜不动的记进 `errors`，页脚说得出是谁 |
+
+豆瓣搜索一页是 **50 条**：按 30 条翻的时候第二页和第一页重了 20 条（真人翻页就会撞见）。
+
+知乎的搜索结果里，问题的标题在 `name` 里（`title` 是 `null`）——一开始只读 `title`，
+于是每条都写成「（这条回答没有问题标题）」。`_post_from_answer` 现在两个字段都认
+（热榜/推荐那边给的确实是 `title`）。
+
+**哪些没做，为什么没做**（都是 2026-11-02 在这台机器上量出来的）：
+
+| 来源 | 实测 |
+| --- | --- |
+| IT之家 | `so.ithome.com` 连不上（ConnectionError）；`www.ithome.com/search/` 404；`api.ithome.com/json/search` 404 |
+| 微博 | `m.weibo.cn` 回 432（要登录）；`s.weibo.com` 落到 Sina Visitor System |
+| 虎扑 | `search.hupu.com` 连不上；`bbs.hupu.com/search` 的 GET 和 POST 都是 405 |
+| linux.do | `/search.json` 403，回的是 Cloudflare 的 `Just a moment...` |
+| Medium | RSS 来源，`medium.com/search` 同样是 Cloudflare 盾 |
+| 自定义 RSS | 订阅源没有搜索接口 |
+
+这些来源按 `f` 不会弹输入框，只在页脚给一句原因（`RealSource.search()` 抛的就是这句话，
+`search_hint` 是它的唯一来源）。这条是刻意的：**弹一个框、输了词、然后什么也搜不出来**，
+比直接说"这里搜不了"更糟。混流的 `can_search()` 是"至少有一家能搜"。
+
+**夹具与探针**：`tests/fixtures/{zhihu,nga,xhs,github}_search.json` + `douban_search.html`
+都是 `tests/record_fixtures.py search` 录的真响应（裁剪过：只留适配器用到的字段，
+小红书那条还去掉了有时效的 `xsec_token`；GitHub 把某个仓库那几百 KB 的填充描述截到 200 字）。
+`probe_sources.py §23` 钉住的是：栏目名口径、没做搜索的来源照实抛错、五家各自的解析与翻页、
+混流的合并/跳过；`probe_ui.py §27b` 钉的是：`f` 弹框、回车真去搜、结果落在「搜索：」那一栏、
+`Esc` 回原栏目、`Z` 撤回、切板块清词、不能搜的来源不弹框。
+
 ## 10. 我替你定的、你可能想改的
 
 1. 键位那一套（尤其 `Ctrl+Alt+F`）。

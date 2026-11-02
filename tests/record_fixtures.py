@@ -452,6 +452,166 @@ def _trim_weread_progress(pr, limit=60):
     return {"bookId": str((pr or {}).get("bookId") or book.get("bookId") or ""), "book": keep}
 
 
+# ---------------------------------------------------------------- 搜索
+
+def _trim_zhihu_search(obj, keep=6):
+    """知乎搜索只留"回答"那几类结果 + 适配器用到的字段（作者只留昵称）。"""
+    paging = (obj or {}).get("paging") or {}
+    out = {"data": [], "paging": {"is_end": bool(paging.get("is_end"))}}
+    for it in ((obj or {}).get("data") or []):
+        o = it.get("object") if isinstance(it, dict) else None
+        if not isinstance(o, dict) or str(o.get("type")) != "answer":
+            continue
+        q = o.get("question") if isinstance(o.get("question"), dict) else {}
+        a = o.get("author") if isinstance(o.get("author"), dict) else {}
+        out["data"].append({"type": it.get("type"), "object": {
+            "type": o.get("type"), "id": o.get("id"), "url": o.get("url"),
+            "excerpt": o.get("excerpt"), "voteup_count": o.get("voteup_count"),
+            "comment_count": o.get("comment_count"), "created_time": o.get("created_time"),
+            # 搜索接口的题目标题在 `name` 里（`title` 是 null）——两个都留，夹具才代表真响应
+            "question": {"id": q.get("id"), "title": q.get("title"), "name": q.get("name")},
+            "author": {"name": a.get("name")},
+        }})
+        if len(out["data"]) >= keep:
+            break
+    return out
+
+
+def _trim_nga_search(obj, keep=8):
+    """NGA 搜索页和板块列表是同一套 `__T`；行数也留着（搜索的翻页靠它）。"""
+    out = {}
+    for k, it in _nga_pick_list(obj)[:keep]:
+        out[k] = {f: it.get(f) for f in ("tid", "subject", "author", "postdate", "lastpost",
+                                         "replies", "type", "fid")}
+    meta = (obj or {}).get("data") or {}
+    return {"data": {"__T": out,
+                     "__T__ROWS": meta.get("__T__ROWS"),
+                     "__T__ROWS_PAGE": meta.get("__T__ROWS_PAGE")}}
+
+
+def _trim_xhs_search(obj, keep=6):
+    """小红书搜索：只留适配器用到的字段。**xsec_token 不留**（它有时效，留着也是废的）。"""
+    data = (obj or {}).get("data") or {}
+    out = {"code": 0, "data": {"has_more": bool(data.get("has_more")), "items": []}}
+    for it in (data.get("items") or []):
+        card = it.get("note_card") if isinstance(it, dict) else None
+        if not isinstance(card, dict):
+            continue
+        user = card.get("user") if isinstance(card.get("user"), dict) else {}
+        info = card.get("interact_info") if isinstance(card.get("interact_info"), dict) else {}
+        cover = card.get("cover") if isinstance(card.get("cover"), dict) else {}
+        out["data"]["items"].append({
+            "id": it.get("id"), "model_type": it.get("model_type"),
+            "note_card": {
+                "display_title": card.get("display_title"), "type": card.get("type"),
+                "user": {"nickname": user.get("nickname") or user.get("nickName")},
+                "interact_info": {"liked_count": info.get("liked_count") or info.get("likedCount")},
+                "cover": {k: cover.get(k) for k in ("url_default", "urlDefault", "url",
+                                                    "info_list", "infoList")},
+            },
+        })
+        if len(out["data"]["items"]) >= keep:
+            break
+    return out
+
+
+def _trim_github_search(obj, keep=6, desc_limit=200):
+    """GitHub 搜索：只留适配器用到的字段。描述截到 200 字——排第一的那个仓库把整个描述塞满了
+    几百 KB 的填充字符（SEO 垃圾），原样留着夹具会胖到没法进仓库。"""
+    out = []
+    for it in ((obj or {}).get("items") or [])[:keep]:
+        row = {f: it.get(f) for f in ("full_name", "stargazers_count", "language",
+                                      "html_url", "pushed_at", "forks_count")}
+        row["description"] = (it.get("description") or "")[:desc_limit]
+        out.append(row)
+    return {"total_count": (obj or {}).get("total_count"), "items": out}
+
+
+def record_search():
+    """录搜索夹具（每家一条真实响应）。录不到就照实打印原因，不编。"""
+    print("搜索")
+    # 知乎 search_v3（要 Cookie；匿名时它给的是登录页）
+    cred = auth_for("zhihu")
+    if not cred:
+        print("  知乎搜索要 Cookie，跳过")
+    else:
+        obj = fetch_json("https://www.zhihu.com/api/v4/search_v3?t=general&correction=1"
+                         "&limit=20&offset=0&q=%E8%8B%B9%E6%9E%9C", cred,
+                         headers={"Referer": "https://www.zhihu.com/search?type=content"})
+        trimmed = _trim_zhihu_search(obj)
+        if trimmed["data"]:
+            save_raw("zhihu_search.json", trimmed,
+                     note="已裁剪：只留回答类结果 6 条 + paging.is_end")
+        else:
+            print("  知乎搜索没拿到回答类结果，没录")
+    # NGA（要 Cookie）
+    cred = auth_for("nga")
+    if not cred:
+        print("  NGA 搜索要 Cookie，跳过")
+    else:
+        obj = fetch_json("https://bbs.nga.cn/thread.php?key=%E8%8B%B9%E6%9E%9C&__output=8", cred)
+        trimmed = _trim_nga_search(obj)
+        if trimmed["data"]["__T"]:
+            save_raw("nga_search.json", trimmed,
+                     note="已裁剪：只留 8 行 + 行数（__T__ROWS）")
+        else:
+            print("  NGA 搜索没拿到结果，没录")
+    # 豆瓣小组搜索（匿名 200；顺带记一下它会回什么）
+    save("douban_search.html",
+         "https://www.douban.com/group/search?cat=1013&q=%E8%8B%B9%E6%9E%9C&sort=relevance")
+    # 小红书（要 Cookie + 签名；和适配器里那条走同一套）
+    cred = auth_for("xhs")
+    if not cred:
+        print("  小红书搜索要 Cookie，跳过")
+    else:
+        try:
+            if os.path.dirname(HERE) not in sys.path:
+                sys.path.insert(0, os.path.dirname(HERE))   # xhs_sign 在项目根
+            import xhs_sign
+            path = "/api/sns/web/v1/search/notes"
+            body = {"keyword": "苹果", "page": 1, "page_size": 20,
+                    "search_id": "%d_1" % int(time.time() * 1000),
+                    "sort": "general", "note_type": 0, "ext_flags": [],
+                    "image_formats": ["jpg", "webp", "avif"]}
+            data = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+            cookie = cred.get("cookie") or ""
+            sig = xhs_sign.sign(path, data, cookie, "POST")
+            headers = xhs_sign.headers_for(sig, cookie)
+            headers["Content-Type"] = "application/json;charset=UTF-8"
+            r = S.post("https://edith.xiaohongshu.com" + path, data=data.encode("utf-8"),
+                       headers=headers, timeout=20)
+            obj = r.json() if r.status_code == 200 else None
+            if not isinstance(obj, dict):
+                print("  小红书搜索 HTTP %d，没录" % r.status_code)
+            elif int(obj.get("code") or 0) != 0:
+                print("  小红书搜索回 code=%s，没录" % obj.get("code"))
+            else:
+                trimmed = _trim_xhs_search(obj)
+                if trimmed["data"]["items"]:
+                    save_raw("xhs_search.json", trimmed,
+                             note="已裁剪：只留 6 条笔记 + has_more（xsec_token 有时效，不留）")
+                else:
+                    print("  小红书搜索没拿到笔记，没录")
+        except Exception as e:
+            print("  小红书搜索没发出去：%s: %s" % (type(e).__name__, e))
+    # GitHub（匿名，限流 10 次/分钟，所以只录一次）
+    try:
+        r = S.get("https://api.github.com/search/repositories?q=%E8%8B%B9%E6%9E%9C"
+                  "&sort=stars&per_page=20",
+                  headers={"User-Agent": UA, "Accept": "application/vnd.github+json"}, timeout=25)
+        if r.status_code != 200:
+            print("  GitHub 搜索 HTTP %d，没录" % r.status_code)
+        else:
+            trimmed = _trim_github_search(r.json())
+            if trimmed["items"]:
+                save_raw("github_search.json", trimmed,
+                         note="已裁剪：只留 6 条 + total_count")
+            else:
+                print("  GitHub 搜索没拿到仓库，没录")
+    except Exception as e:
+        print("  GitHub 搜索没发出去：%s: %s" % (type(e).__name__, e))
+
+
 def record(which):
     if which in ("", "ithome"):
         print("IT之家")
@@ -708,7 +868,10 @@ def record(which):
         save("douban_group.html", "https://www.douban.com/group/13232/discussion?start=0")
     # 话题广场 = 豆瓣 App 的 rexxar 接口（**只认手机 UA**；网页 /gallery/、/explore/ 匿名 403）：
     #   /search/hots → 20 个话题；/gallery/topic/<id>/items?start=0&count=20&tab=hot → 动态
-    if save("douban_hot_topics.json", "https://m.douban.com/rexxar/api/v2/search/hots",
+    # 这一块原来没挂 which 守卫：录任何一家都会顺手把它重录一遍，探针里钉住的那几个话题
+    # 就被换掉了（这一轮真踩到）。现在只在录豆瓣（或全量）时才动它。
+    if which in ("", "douban") and save(
+            "douban_hot_topics.json", "https://m.douban.com/rexxar/api/v2/search/hots",
             headers={"User-Agent": MOBILE_UA, "Accept": "application/json",
                      "Referer": "https://m.douban.com/"}):
         try:
@@ -794,6 +957,9 @@ def record(which):
                              note="已裁剪：summary 只留前 60 字（那是书里的原句）")
                 else:
                     print("  进度没拿到，没录")
+
+    if which in ("", "search"):
+        record_search()
 
 
 if __name__ == "__main__":

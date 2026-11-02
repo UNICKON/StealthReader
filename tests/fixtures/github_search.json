@@ -1,0 +1,59 @@
+{
+ "total_count": 5057,
+ "items": [
+  {
+   "full_name": "Dujltqzv/Some-Many-Books",
+   "stargazers_count": 25550,
+   "language": null,
+   "html_url": "https://github.com/Dujltqzv/Some-Many-Books",
+   "pushed_at": "2026-06-18T05:36:05Z",
+   "forks_count": 2419,
+   "description": "个人收藏书籍列表　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　"
+  },
+  {
+   "full_name": "datawhalechina/leedl-tutorial",
+   "stargazers_count": 16849,
+   "language": "Jupyter Notebook",
+   "html_url": "https://github.com/datawhalechina/leedl-tutorial",
+   "pushed_at": "2026-10-23T14:03:33Z",
+   "forks_count": 3100,
+   "description": "《李宏毅深度学习教程》（李宏毅老师推荐👍，苹果书🍎），PDF下载地址：https://github.com/datawhalechina/leedl-tutorial/releases"
+  },
+  {
+   "full_name": "tisfeng/Easydict",
+   "stargazers_count": 15162,
+   "language": "Swift",
+   "html_url": "https://github.com/tisfeng/Easydict",
+   "pushed_at": "2026-11-01T06:11:23Z",
+   "forks_count": 802,
+   "description": "一个简洁优雅的词典翻译 macOS App。开箱即用，支持离线 OCR 识别，支持有道词典，🍎 苹果系统词典，🍎 苹果系统翻译，OpenAI，Gemini，DeepL，Google，Bing，腾讯，百度，阿里，小牛，彩云和火山翻译。A concise and elegant Dictionary and Translator macOS App for looking up words and t"
+  },
+  {
+   "full_name": "dongyubin/Free-AppleId-Serve",
+   "stargazers_count": 3612,
+   "language": "Python",
+   "html_url": "https://github.com/dongyubin/Free-AppleId-Serve",
+   "pushed_at": "2026-11-02T03:18:45Z",
+   "forks_count": 209,
+   "description": "2026年11月每日更新🚀苹果美区账号 APPLE ID🚀免费Shadowrocket（小火箭）共享账号,Quantumult X，圈x，stash，小火箭节点，🚀 免费订阅地址，🚀 免费节点，🚀 每天更新一次，共享节点，节点质量高可用，完全免费。免费clash订阅地址，免费翻墙，免费科学上网，免费梯子，免费ss/v2ray/trojan/clash节点,翻墙梯子，Openai ChatGPT,代"
+  },
+  {
+   "full_name": "cirosantilli/china-dictatorship",
+   "stargazers_count": 3303,
+   "language": "HTML",
+   "html_url": "https://github.com/cirosantilli/china-dictatorship",
+   "pushed_at": "2026-02-05T07:59:11Z",
+   "forks_count": 296,
+   "description": "反中共政治宣传库。Anti Chinese government propaganda. 住在中国真名用户的网友请别给星星，不然你要被警察请喝茶。常见问答集，新闻集和饭店和音乐建议。卐习万岁卐。冠状病毒审查郝海东新疆改造中心六四事件法轮功 996.ICU709大抓捕巴拿马文件邓家贵低端人口西藏骚乱。Friends who live in China and have real name on ac"
+  },
+  {
+   "full_name": "magicblack/maccms10",
+   "stargazers_count": 2921,
+   "language": "PHP",
+   "html_url": "https://github.com/magicblack/maccms10",
+   "pushed_at": "2026-10-14T13:52:30Z",
+   "forks_count": 994,
+   "description": "苹果CMS v10 · MacCMS v10 — 开源内容管理系统：视频 / 分集剧情 / 文章 / 漫画 / 图片 / 网址导航. Open-source PHP CMS for video, articles, manga, images & site navigation."
+  }
+ ]
+}

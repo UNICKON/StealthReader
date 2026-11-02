@@ -3032,6 +3032,24 @@ class SettingsDialog(QDialog):
 
 
 # ================= 主程序 =================
+class FeedSearchEdit(QLineEdit):
+    """社区搜索条：Esc 收起，点到别处也收起（点正文就当放弃这一搜）。
+
+    为什么不用模态对话框（`QInputDialog`）：按 f 之后整个窗口被对话框压着，人看不见上一页
+    是什么样；这条是**浮在正文顶上的一条**，回车之前原列表一直在下面，随时能反悔。
+    """
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.hide()
+            return
+        QLineEdit.keyPressEvent(self, event)
+
+    def focusOutEvent(self, event):
+        self.hide()
+        QLineEdit.focusOutEvent(self, event)
+
+
 class StealthReader(QWidget):
     update_text_signal = pyqtSignal(str, bool)
     # 四个模式键（老板键/偷瞄/安全文档/背诵）都走全局热键注册（keyboard 库），窗口不在前台
@@ -3130,6 +3148,8 @@ class StealthReader(QWidget):
         self.feed_boards_tried = set()   # 拉过全量板块表的来源（拉不到也别反复去拉）
         self.feed_detail_top = False     # 刚点进帖子：正文回来时把视图钉在顶部
         self.feed_switch_prev = None     # 上次切社区/切板块之前的样子（Z 撤回用）
+        self.feed_search_text = ""       # 正在搜什么（空 = 不在搜索）；f 输入、回车确认
+        self.feed_search_box = None      # 搜索条（第一次按 f 才建）
         self.feed_list_pos = {}          # (来源, 板块) -> 列表滚到哪了（本次会话内有效）
         self.feed_restore_pos = None     # 下一次重画之后要落到的位置（None = 保持原样）
         self._feed_pending_scroll = None  # 已经排上队、还没执行的那次恢复（可以被取消）
@@ -5621,7 +5641,8 @@ class StealthReader(QWidget):
                   else nav.c_cursor if what == "comments" else None)
         tag = getattr(src, "key", "")     # 这次取的是哪一家：回来时要核对
         gen = self.feed_gen               # 这次取的是哪一"代"视图：回来时也要核对
-        memo_key = (("list", tag, channel or "", cursor or "") if what in ("list", "more")
+        memo_key = (("list", tag, self._feed_memo_channel(channel), cursor or "")
+                    if what in ("list", "more")
                     else ("comments", tag, target.id if target is not None else "", cursor or "")
                     if what == "comments"
                     else ("detail", tag, target.id if target is not None else ""))
@@ -5655,7 +5676,15 @@ class StealthReader(QWidget):
             feed_net.set_fresh(fresh)
             try:
                 if what in ("list", "more"):
-                    posts, nxt = src.list(channel, cursor)
+                    if self.feed_search_text:
+                        # 搜索：走来源自己的 `search()`。栏目位只是显示用的「搜索：词」，
+                        # 不当参数传给 `list()`——不然每个来源都得改一遍 list 的签名。
+                        fn = getattr(src, "search", None)
+                        if fn is None:
+                            raise feed_net.FeedNetError("这个社区没有搜索")
+                        posts, nxt = fn(self.feed_search_text, cursor)
+                    else:
+                        posts, nxt = src.list(channel, cursor)
                     if not fresh and not rotate:
                         self._feed_memo_put(memo_key, (posts, nxt, what == "more"))
                     self.feed_data_signal.emit("list", (posts, nxt, what == "more", gen, tag))
@@ -6546,6 +6575,7 @@ class StealthReader(QWidget):
             "kind": kind,
             "source_i": self.feed_source_i,
             "channel": str(getattr(self.feed_nav, "channel", "") or ""),
+            "query": str(getattr(self, "feed_search_text", "") or ""),
             "pos": self.feed_list_pos.get(self._feed_pos_key()),
         }
 
@@ -6564,6 +6594,10 @@ class StealthReader(QWidget):
             i = max(0, min(len(self.feed_sources) - 1, int(prev["source_i"])))
             self.feed_source_i = i
             self.config["feed_source"] = getattr(self.feed_source(), "key", "")
+            changed = True
+        q_prev = str(prev.get("query") or "")
+        if q_prev != str(getattr(self, "feed_search_text", "") or ""):
+            self.feed_search_text = q_prev          # Z 也把"上一次搜索"撤回来
             changed = True
         channel = prev.get("channel") or ""
         if channel and channel != nav.channel:
@@ -6930,6 +6964,143 @@ class StealthReader(QWidget):
                 pass
         return True
 
+    # ------------------------------------------------------------ 搜索
+
+    def feed_can_search(self):
+        """这个社区能不能搜：(能?, 不能的话为什么)。"""
+        src = self.feed_source()
+        if src is None:
+            return False, "还没选社区"
+        fn = getattr(src, "can_search", None)
+        if callable(fn) and not fn():
+            return False, (getattr(src, "search_hint", "") or "这个社区没有搜索")
+        if not callable(getattr(src, "search", None)):
+            return False, (getattr(src, "search_hint", "") or "这个社区没有搜索")
+        return True, ""
+
+    def _feed_memo_channel(self, channel):
+        """缓存键里"这一栏"怎么写：搜索时用 `q:<词>`，免得和同名栏目撞车。"""
+        q = str(getattr(self, "feed_search_text", "") or "")
+        return ("q:" + q) if q else (channel or "")
+
+    def _feed_drop_search(self):
+        """切社区/切板块时把搜索扔掉（否则新栏目还会按旧词去搜）。"""
+        if getattr(self, "feed_search_text", ""):
+            self.feed_search_text = ""
+        box = getattr(self, "feed_search_box", None)
+        if box is not None and box.isVisible():
+            box.hide()
+
+    def feed_search_box_make(self):
+        """把搜索条建出来（浮在正文上方，第一次按 f 才建）。"""
+        if self.feed_search_box is not None:
+            return self.feed_search_box
+        box = FeedSearchEdit(self.text_edit)
+        box.setPlaceholderText("搜索这个社区，回车确认（Esc 收起）")
+        box.setClearButtonEnabled(True)
+        box.returnPressed.connect(self.feed_search_go)
+        self.feed_search_box = box
+        return box
+
+    def feed_search_place(self):
+        """把搜索条摆在正文顶上（窗口/字号变了也跟着重摆）。"""
+        box = self.feed_search_box
+        if box is None or not box.isVisible():
+            return
+        vp = self.text_edit.viewport()
+        try:
+            th = self.feed_theme()
+            color, faint = th["text"], th["faint"]
+            size = max(12, int(th["size"]))
+            family = th["family"] or "Microsoft YaHei"
+        except Exception:
+            color, faint, size, family = "#cccccc", "#888888", 14, "Microsoft YaHei"
+        w = max(220, min(vp.width() - 24, 460))
+        h = max(26, int(round(size * 2.0)))
+        box.setGeometry(vp.x() + (vp.width() - w) // 2, vp.y() + 10, w, h)
+        box.setStyleSheet(
+            "QLineEdit{background:rgba(128,128,128,0.22); color:%s;"
+            " border:1px solid %s; border-radius:5px; padding:2px 8px;"
+            " font-size:%dpx; font-family:%s;}"
+            % (color, faint, size, family))
+
+    def feed_search_open(self):
+        """f：在这个社区里搜。没做搜索的来源照实说一句，不弹一个没用的输入框。"""
+        if not self.feed_mode or self.feed_nav is None:
+            return False
+        ok, why = self.feed_can_search()
+        if not ok:
+            self.review_hint(why, 2800)
+            return True                  # 键按了、话说清了：算处理过
+        box = self.feed_search_box_make()
+        box.setText(str(self.feed_search_text or ""))
+        box.show()
+        self.feed_search_place()
+        box.raise_()
+        box.setFocus(Qt.OtherFocusReason)
+        box.selectAll()
+        return True
+
+    def feed_search_go(self):
+        """回车：把输入框里的词交给后台去搜（空词 = 收起，等于退出搜索）。"""
+        box = self.feed_search_box
+        text = box.text() if box is not None else ""
+        if box is not None:
+            box.hide()
+        text = " ".join(str(text or "").split())
+        if not text:
+            return self.feed_search_exit()
+        return self.feed_search_run(text)
+
+    def feed_search_run(self, text):
+        """真去搜：栏目位换成「搜索：词」，列表按它取数（来源自己的 `search()`）。"""
+        nav = self.feed_nav
+        src = self.feed_source()
+        if nav is None or src is None:
+            return False
+        q = " ".join(str(text or "").split())
+        if not q:
+            return False
+        ok, why = self.feed_can_search()
+        if not ok:
+            self.review_hint(why, 2800)
+            return False
+        import feed_sources as _fs
+        self._feed_switch_mark("search")
+        self.feed_search_text = q
+        self.feed_error = ""
+        self.feed_gen += 1
+        nav.reset()
+        nav.channel = _fs.search_channel(q)
+        self.feed_restore_pos = 0
+        self.render_feed()
+        self.update_review_bar()
+        self.feed_load("list")
+        self.feed_scroll_top()
+        log_event("社区：搜索「%s」（%s）" % (q, getattr(src, "label", "")))
+        return True
+
+    def feed_search_exit(self):
+        """退出搜索：回到这个社区**上次停的那一栏**（不是回到第一栏）。"""
+        if not self.feed_search_text:
+            return False
+        nav = self.feed_nav
+        self.feed_search_text = ""
+        if nav is None:
+            return False
+        ch = self.feed_first_channel()
+        self.feed_error = ""
+        self.feed_gen += 1
+        nav.reset()
+        nav.channel = ch
+        self.feed_restore_pos = 0
+        self.render_feed()
+        self.update_review_bar()
+        self.feed_load("list")
+        self.feed_scroll_top()
+        log_event("社区：退出搜索，回到 %s" % ch)
+        return True
+
     def feed_reload(self):
         """R：重新拉一次，**这一次不吃缓存**（列表 5 分钟、正文一天，吃缓存等于没刷新）。
 
@@ -7031,6 +7202,7 @@ class StealthReader(QWidget):
         if len(self.feed_sources) <= 1:
             self.review_hint("只有一个社区可切", 1200)
             return False
+        self._feed_drop_search()
         self._feed_switch_mark("source")
         n = len(self.feed_sources)
         self.feed_source_i = (self.feed_source_i + step) % n
@@ -7070,6 +7242,7 @@ class StealthReader(QWidget):
         if len(channels) <= 1:
             self.review_hint("这个社区只有一栏（全部）", 1500)
             return False
+        self._feed_drop_search()
         self._feed_switch_mark("channel")
         try:
             i = channels.index(self.feed_nav.channel)
@@ -7095,6 +7268,7 @@ class StealthReader(QWidget):
         channel = str(channel or "")
         if not channel or channel == nav.channel:
             return False
+        self._feed_drop_search()
         self._feed_switch_mark("channel")
         self.feed_nav.channel = channel
         self.config[self.feed_board_key()] = channel
@@ -7232,6 +7406,11 @@ class StealthReader(QWidget):
             self.feed_back()
             return True
         if key == Qt.Key_Escape:
+            if self.feed_search_box is not None and self.feed_search_box.isVisible():
+                self.feed_search_box.hide()
+                return True
+            if self.feed_search_text:
+                return self.feed_search_exit()
             if nav.view == "detail":
                 if self._feed_from_answer():
                     # 知乎：回答 → 点标题进问题 这一层，Esc 直接回主页（不先退回那个回答）
@@ -7291,8 +7470,11 @@ class StealthReader(QWidget):
             # D = 上一个社区：C 的反向（真人："d 上一个社区"），Z 同样能撤回
             return self.feed_cycle_source(-1)
         if key == Qt.Key_F:
-            # F = 上一个板块：V 的反向（真人："f 上一个板块"）
-            return self.feed_cycle_channel(-1)
+            # f = 搜索（真人 2026-11-02：「给各个社区加上搜索，f键输入，回车确认」）。
+            # 上一个板块原来占着 f，挪到 Shift+F（V 的反向还是它在管）。
+            if shift:
+                return self.feed_cycle_channel(-1)
+            return self.feed_search_open()
         if key in (Qt.Key_Left, Qt.Key_Right):
             # 列多的表：左右箭头左右滑（横条不显示，只有这两个键和滚轮）
             step = self._feed_hstep()
@@ -7888,6 +8070,8 @@ class StealthReader(QWidget):
         """偷瞄时收到的社区键（信号从钩子线程来，这里是主线程）。"""
         if not self.feed_mode:
             return
+        if self.feed_search_box is not None and self.feed_search_box.hasFocus():
+            return                       # 正在输入框里打字：别把字母当成页面键
         self.on_feed_key(int(key))
 
     def peek_captures_book_keys(self):
@@ -8544,6 +8728,7 @@ class StealthReader(QWidget):
             keep = self.text_edit.verticalScrollBar().value()
             self.render_feed()      # 宽度变了：卡片间距、图片宽度、页脚文字都跟着重排
             self.text_edit.verticalScrollBar().setValue(keep)
+            self.feed_search_place()
             return
         if self.review_mode and not self.safe_mode:
             keep = self.text_edit.verticalScrollBar().value()
@@ -9148,6 +9333,13 @@ class StealthReader(QWidget):
         src_menu.addAction("▶️ 下一个社区（C）").triggered.connect(
             lambda: self.feed_cycle_source(1))
         src_menu.addAction("🔍 选一个社区…").triggered.connect(self.feed_source_picker)
+        # 搜索（这个社区能不能搜，各家不一样；不能搜的那一项是灰的）
+        _can, _why = self.feed_can_search()
+        search_act = cmenu.addAction("🔍 搜索这个社区（F）")
+        search_act.triggered.connect(self.feed_search_open)
+        search_act.setEnabled(_can)
+        if not _can and _why:
+            search_act.setToolTip(_why)
         # 换板块（栏目）
         try:
             channels = list(src.channels() or []) if src is not None else []
@@ -9164,7 +9356,7 @@ class StealthReader(QWidget):
             board_menu.addSeparator()
             board_menu.addAction("　…还有 %d 个（用下面的列表搜）" % (len(channels) - 24)).setEnabled(False)
         board_menu.addSeparator()
-        board_menu.addAction("◀️ 上一个板块（F）").triggered.connect(
+        board_menu.addAction("◀️ 上一个板块（Shift+F）").triggered.connect(
             lambda: self.feed_cycle_channel(-1))
         board_menu.addAction("▶️ 下一个板块（V）").triggered.connect(
             lambda: self.feed_cycle_channel(1))

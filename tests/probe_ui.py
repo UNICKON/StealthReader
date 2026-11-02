@@ -261,8 +261,18 @@ pump(lambda: not w.feed_busy)
 check("只按着 ctrl 也不换（组合键一律不算单键）",
       w.feed_nav.channel == _ch0, (w.feed_nav.channel, _ch0))
 w.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_F, Qt.NoModifier))
+pump(lambda: True)
+# 真人 2026-11-02：「给各个社区加上搜索，f键输入，回车确认」——f 从"上一个板块"改成搜索，
+# 上一个板块挪到 Shift+F（下面这条就钉住它没丢）
+_fbox = getattr(w, "feed_search_box", None)
+check("单按 f 打开搜索条（f 现在是搜索，不再换板块）",
+      _fbox is not None and not _fbox.isHidden() and w.feed_nav.channel == _ch0,
+      (_fbox is not None, w.feed_nav.channel, _ch0))
+if _fbox is not None:
+    _fbox.hide()
+w.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_F, Qt.ShiftModifier))
 pump(lambda: not w.feed_busy)
-check("单按 f 照样换到上一个板块", w.feed_nav.channel != _ch0, w.feed_nav.channel)
+check("Shift+F 才是上一个板块（原 f 的活）", w.feed_nav.channel != _ch0, w.feed_nav.channel)
 _lk0 = bool(w.config.get("feed_lowkey", False))
 w.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_E, Qt.ControlModifier))
 pump(lambda: True)
@@ -1772,8 +1782,8 @@ if _ith:
           w.on_feed_key(Qt.Key_V) is True and w.feed_nav.channel != _ch0,
           (w.feed_nav.channel, _ch0))
     pump(lambda: not w.feed_busy)
-    check("F 直接切回上一栏（跟 V 对称）",
-          w.on_feed_key(Qt.Key_F) is True and w.feed_nav.channel == _ch0,
+    check("Shift+F 直接切回上一栏（跟 V 对称）",
+          w.on_feed_key(Qt.Key_F, shift=True) is True and w.feed_nav.channel == _ch0,
           (w.feed_nav.channel, _ch0))
     pump(lambda: not w.feed_busy)
     w.on_feed_key(Qt.Key_V)                     # 再往前一步，下面验 Z
@@ -2872,6 +2882,74 @@ try:
     del _w.rotates
 except Exception:
     _w.rotates = None
+print("\n=== 27b. 搜索：f 输入、回车确认（每个站一个样）===")
+w.enter_feed_mode()            # 上一节把社区页退出去了；取数回来的处理只在 feed_mode 下走
+# 换到知乎（能搜），并把它的 search 换成假的：探针一律不联网
+while w.feed_source().key != "zhihu":
+    w.feed_cycle_source(1)
+    pump(lambda: not w.feed_busy)
+_src = w.feed_source()
+_orig_search = _src.search
+_calls = []
+
+
+def _fake_search(q, cursor=None):
+    _calls.append((q, cursor))
+    return [feed_mod.Post(source=_src.key, pid="a9001", title="搜到的回答", ts=1,
+                          channel="搜索：" + q)], None
+
+
+_src.search = _fake_search
+w.feed_goto_channel("热榜")
+pump(lambda: not w.feed_busy)
+
+check("知乎：能搜（can_search 为真）", w.feed_can_search()[0] is True)
+_fret = w.on_feed_key(Qt.Key_F)
+check("按 f 打开搜索条（浮在正文上的一条，不是模态对话框）",
+      _fret is True and not w.feed_search_box.isHidden(),
+      (_fret, w.feed_mode, None if w.feed_search_box is None else w.feed_search_box.isHidden()))
+w.feed_search_box.setText("  苹果   手机  ")
+w.feed_search_go()
+pump(lambda: not w.feed_busy)
+check("回车确认：按这个词去搜了（空白压成一个、只发一次）",
+      _calls == [("苹果 手机", None)], _calls)
+check("搜索结果落在「搜索：苹果 手机」这一栏（页脚能看见）",
+      w.feed_nav.channel == "搜索：苹果 手机"
+      and "搜索：苹果 手机" in w.feed_status_text(), w.feed_status_text())
+pump(lambda: bool(w.feed_nav.posts) or not w.feed_busy, 10.0)
+check("列表画出来的就是搜到的东西", [p.id for p in w.feed_nav.posts] == ["a9001"],
+      ([p.id for p in w.feed_nav.posts], w.feed_status_text()[:60]))
+check("退出搜索：回到原来那一栏（热榜），不是回到第一栏",
+      w.feed_search_exit() is True and w.feed_search_text == "" and w.feed_nav.channel == "热榜",
+      (w.feed_search_text, w.feed_nav.channel))
+pump(lambda: not w.feed_busy)
+
+w.feed_search_run("苹果")
+pump(lambda: not w.feed_busy)
+check("搜索也算一次切换：Z 撤回得回来（词也一起清掉）",
+      w.on_feed_key(Qt.Key_Z) is True and w.feed_search_text == ""
+      and w.feed_nav.channel == "热榜", (w.feed_search_text, w.feed_nav.channel))
+pump(lambda: not w.feed_busy)
+
+w.feed_search_run("苹果")
+pump(lambda: not w.feed_busy)
+w.feed_cycle_channel(1)
+pump(lambda: not w.feed_busy)
+check("切板块时把搜索扔掉（否则新栏目还按旧词去搜）",
+      w.feed_search_text == "" and w.feed_nav.channel != "搜索：苹果", w.feed_nav.channel)
+
+_ith_i = [i for i, _s in enumerate(w.feed_sources) if _s.key == "ithome"]
+if _ith_i:
+    w.feed_source_i = _ith_i[0]
+    w.feed_nav.reset()
+    w.feed_nav.channel = w.feed_first_channel()
+    _can, _why = w.feed_can_search()
+    check("IT之家：能搜 = False，原因里是实测那句（so.ithome.com / 404）",
+          _can is False and ("404" in _why or "so.ithome.com" in _why), _why[:48])
+    w.feed_search_box.hide()
+    check("不能搜的来源：按 f 只给一句话，不弹一个没用的输入框",
+          w.on_feed_key(Qt.Key_F) is True and w.feed_search_box.isHidden())
+_src.search = _orig_search
 w._feed_memo.clear()
 
 w.exit_feed_mode(reason="probe")

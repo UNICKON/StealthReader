@@ -2719,6 +2719,226 @@ _cfg_none = {"feed_sources": []}
 check("全关（空列表）一个字都不补", feed_sources.build_real_sources(
     cache_root=None, config=_cfg_none, log=None) == [], _cfg_none.get("feed_sources_seen"))
 
+# ---------------------------------------------------------------- 23
+print("\n=== 23. 搜索：f 输入、回车确认（每个站一个样）===")
+
+import feed_more as _feed_more                                          # noqa: E402
+
+check("搜索结果那一栏的口径只有一个（页脚/缓存/撤回都用它）",
+      feed_sources.search_channel("  苹果   手机 ") == "搜索：苹果 手机",
+      feed_sources.search_channel("  苹果   手机 "))
+
+# 没做搜索的来源：照实说原因，不摆一页空白
+_ith = feed_sources.IthomeSource(FakeHttp(cache=MemCache()))
+check("IT之家：能搜 = False", _ith.can_search() is False)
+check("IT之家：按 f 时给的是实测原因（不是空白）",
+      "404" in _ith.search_hint and "so.ithome.com" in _ith.search_hint, _ith.search_hint)
+_ith_err = ""
+try:
+    _ith.search("苹果")
+except FeedNetError as e:
+    _ith_err = str(e)
+check("没做搜索的来源：search() 抛的就是那句人话",
+      _ith_err == _ith.search_hint, _ith_err[:40])
+for _cls, _kw in ((feed_sources.V2exSource, "V2EX"),
+                  (feed_sources.DiscourseSource, "Cloudflare"),
+                  (feed_sources.WeiboSource, "432"),
+                  (feed_sources.HupuSource, "405"),
+                  (_feed_more.RssSource, "RSS")):
+    _o = _cls(FakeHttp(cache=MemCache()))
+    check("%s：没做搜索，但写清了原因" % _cls.__name__,
+          _o.can_search() is False and _kw in (_o.search_hint or ""), _o.search_hint)
+
+# ---------------------------------------------------------------- 知乎
+raw_zs = fixture("zhihu_search.json")
+if not raw_zs:
+    skip("知乎搜索", "缺 zhihu_search.json（先跑 tests/record_fixtures.py search）")
+else:
+    _zh = feed_sources.ZhihuSource(FakeHttp({"search_v3": raw_zs}, cache=MemCache()),
+                                   {"cookie": "z_c0=1"})
+    check("知乎：有 Cookie 才算能搜", _zh.can_search() is True and _zh.search_hint == "")
+    _zp, _zn = _zh.search("苹果")
+    check("知乎搜索：只收「回答」（问题/用户/专栏点开是空白，宁可不摆）",
+          len(_zp) >= 3 and all(p.id.startswith("a") for p in _zp), [p.id for p in _zp])
+    _first = raw_zs["data"][0]["object"]
+    _want_title = feed_mod.strip_html(_first["question"].get("title")
+                                      or _first["question"].get("name") or "").strip()
+    check("知乎搜索：标题取问题的 name/title（搜索给的 title 是 null），摘要里没有 <em>",
+          _zp[0].title == _want_title and "<em>" not in _zp[0].excerpt,
+          (_zp[0].title[:20], _want_title[:20], _zp[0].excerpt[:40]))
+    check("知乎搜索：栏目写成「搜索：苹果」", _zp[0].channel == "搜索：苹果", _zp[0].channel)
+    check("知乎搜索：还能往下翻（offset 游标 20）", _zn == 20, _zn)
+    _zh.search("苹果", 20)
+    check("知乎搜索：翻页把 offset 写进 URL", "offset=20" in _zh.http.calls[-1],
+          _zh.http.calls[-1][:70])
+    _zh_no = feed_sources.ZhihuSource(FakeHttp({"search_v3": raw_zs}, cache=MemCache()))
+    _zh_err = ""
+    try:
+        _zh_no.search("苹果")
+    except FeedNetError as e:
+        _zh_err = str(e)
+    check("知乎搜索：没 Cookie 就说要 Cookie（根本不发请求）",
+          "Cookie" in _zh_err and not _zh_no.http.calls, (_zh_err[:30], _zh_no.http.calls))
+
+# ---------------------------------------------------------------- NGA
+raw_ns = fixture_bytes("nga_search.json")
+if not raw_ns:
+    skip("NGA 搜索", "缺 nga_search.json")
+else:
+    _ng = feed_sources.NgaSource(FakeHttp(bytes_routes={"thread.php": raw_ns}, cache=MemCache()),
+                                 {"cookie": "ngaPassportUid=1", "user_agent": "UA"})
+    check("NGA：有 Cookie 就能搜", _ng.can_search() is True)
+    _np, _nn = _ng.search("苹果")
+    check("NGA 搜索：出帖子，tid 和 read.php 地址对得上",
+          len(_np) >= 5 and all(p.id.isdigit() and p.url.endswith(p.id) for p in _np), len(_np))
+    check("NGA 搜索：作者 / 回复数 / 时间都来自真字段",
+          all(p.author and p.n_comments >= 0 and p.ts > 0 for p in _np), len(_np))
+    check("NGA 搜索：关键词进 URL", "key=" in _ng.http.calls[-1], _ng.http.calls[-1][:60])
+    _np2, _nn2 = _ng.search("苹果", 2)
+    check("NGA 搜索：翻页带 page=，到底了给 None",
+          "page=2" in _ng.http.calls[-1] and (_nn2 is None or _nn2 == 3), _nn2)
+
+# ---------------------------------------------------------------- 豆瓣
+raw_ds = fixture_bytes("douban_search.html")
+if not raw_ds:
+    skip("豆瓣搜索", "缺 douban_search.html")
+else:
+    _rows = feed_sources.parse_douban_search(raw_ds)
+    check("豆瓣搜索页：一行一个话题（id / 标题 / 时间 / 回复数 / 小组都解析到了）",
+          len(_rows) >= 5 and all(r["id"].isdigit() and r["title"] and r["ts"] > 0 for r in _rows),
+          len(_rows))
+    check("豆瓣搜索页：小组名进标签，不占作者位",
+          all(r["group"] for r in _rows), [r["group"] for r in _rows[:3]])
+    _db = feed_sources.DoubanSource(
+        FakeHttp(bytes_routes={"group/search": raw_ds}, cache=MemCache()), {})
+    _dp, _dn = _db.search("苹果")
+    check("豆瓣搜索：结果就是话题，地址是 /group/topic/<id>/",
+          len(_dp) >= 5 and all("/group/topic/" in p.url for p in _dp), len(_dp))
+    check("豆瓣搜索：栏目名 + 50 条一页的游标（和站上一页的条数一样，翻页才不会重）",
+          _dp[0].channel == "搜索：苹果" and _dn == 2, (_dp[0].channel, _dn))
+    check("豆瓣搜索：作者位留空（搜索页不给楼主，不编）",
+          all(not p.author for p in _dp), [p.author for p in _dp[:3]])
+    _blk = fixture_bytes("douban_blocked.html")
+    if _blk:
+        _db2 = feed_sources.DoubanSource(
+            FakeHttp(bytes_routes={"group/search": _blk}, cache=MemCache()), {})
+        _db_err = ""
+        try:
+            _db2.search("苹果")
+        except FeedNetError as e:
+            _db_err = str(e)
+        check("豆瓣搜索：被拦下时说的是「风控」这句实话",
+              _db_err == _db2.BLOCK_SAY or "风控" in _db_err, _db_err[:40])
+
+# ---------------------------------------------------------------- 小红书
+raw_xs = fixture("xhs_search.json")
+if not raw_xs:
+    skip("小红书搜索", "缺 xhs_search.json")
+else:
+    class _Resp(object):
+        status_code = 200
+
+        def __init__(self, obj):
+            self._o = obj
+
+        def json(self):
+            return self._o
+
+    class _FakeRequests(object):
+        """顶替 `requests`：小红书的搜索是签名 POST，只能从这里截。"""
+
+        def __init__(self, obj):
+            self._o = obj
+            self.posts = []
+
+        def post(self, url, data=None, headers=None, timeout=None):
+            self.posts.append({"url": url, "data": data, "headers": dict(headers or {})})
+            return _Resp(self._o)
+
+    _freq = _FakeRequests(raw_xs)
+    _saved_req = sys.modules.get("requests")
+    _orig_sign = feed_sources.xhs_sign.sign
+    _orig_hdr = feed_sources.xhs_sign.headers_for
+    try:
+        sys.modules["requests"] = _freq
+        feed_sources.xhs_sign.sign = lambda *a, **k: {"x-s": "S", "x-t": "T"}
+        feed_sources.xhs_sign.headers_for = lambda sig, cookie: dict(sig)
+        _xh = feed_sources.XhsSource(FakeHttp(cache=MemCache()), {"cookie": "web_session=1"})
+        check("小红书：有 Cookie 就能搜", _xh.can_search() is True)
+        _xp, _xn = _xh.search("苹果")
+        check("小红书搜索：出笔记，标题 / 作者都在",
+              len(_xp) >= 3 and all(p.title and p.author for p in _xp), len(_xp))
+        _sent = _freq.posts[0] if _freq.posts else {}
+        _body = (_sent.get("data") or b"").decode("utf-8", "replace")
+        check("小红书搜索：POST 带签名头，页码和关键词在 JSON 体里",
+              (_sent.get("headers") or {}).get("x-s") == "S"
+              and "search/notes" in (_sent.get("url") or "")
+              and '"page":1' in _body and "苹果" in _body, _body[:60])
+        check("小红书搜索：has_more 决定还有没有下一页", _xn == 2, _xn)
+        check("小红书搜索：栏目写成「搜索：苹果」", _xp[0].channel == "搜索：苹果", _xp[0].channel)
+    finally:
+        feed_sources.xhs_sign.sign = _orig_sign
+        feed_sources.xhs_sign.headers_for = _orig_hdr
+        if _saved_req is None:
+            sys.modules.pop("requests", None)
+        else:
+            sys.modules["requests"] = _saved_req
+
+# ---------------------------------------------------------------- GitHub
+raw_gh = fixture_bytes("github_search.json")
+if not raw_gh:
+    skip("GitHub 搜索", "缺 github_search.json")
+else:
+    _gh = _feed_more.GithubTrendingSource(
+        FakeHttp(bytes_routes={"search/repositories": raw_gh}, cache=MemCache()), {})
+    check("GitHub：能搜（search_hint 空）", _gh.can_search() is True and _gh.search_hint == "")
+    _gp, _gn = _gh.search("苹果")
+    check("GitHub 搜索：owner/repo 就是 pid，详情（README）能接着打开",
+          len(_gp) >= 3 and all("/" in p.id for p in _gp), [p.id for p in _gp])
+    check("GitHub 搜索：star / 语言 / 描述都在",
+          _gp[0].score > 0 and bool(_gp[0].tags) and bool(_gp[0].excerpt),
+          (_gp[0].score, _gp[0].tags, _gp[0].excerpt[:20]))
+    # 夹具只留了 6 条（真响应是 20 条一页），所以这一页没有下一页；翻页要靠 URL 验
+    check("GitHub 搜索：栏目名对、夹具这一页到底了（6 条 < 一页 20 条）",
+          _gp[0].channel == "搜索：苹果" and _gn is None, (_gp[0].channel, _gn))
+    _gh.search("苹果", 2)
+    check("GitHub 搜索：翻页把 page 写进 URL", "page=2" in _gh.http.calls[-1],
+          _gh.http.calls[-1][:70])
+
+# ---------------------------------------------------------------- 混流
+class _StubSrc(object):
+    """混流搜索的替身：只要 key / label / can_search / search 四样。"""
+
+    def __init__(self, key, label, posts=None, err="", can=None):
+        self.key, self.label = key, label
+        self._posts, self._err = list(posts or []), err
+        # can 单独给：有的站**能搜**但这次搜失败了（要能验"失败也记进 errors"）
+        self._can = (not err) if can is None else bool(can)
+
+    def can_search(self):
+        return self._can
+
+    def search(self, q, cursor=None):
+        if self._err:
+            raise FeedNetError(self._err)
+        return list(self._posts), None
+
+
+_a = feed_mod.Post(source="a", pid="1", title="甲", ts=100)
+_b = feed_mod.Post(source="b", pid="2", title="乙", ts=200)
+_mix = feed_sources.MixSource([_StubSrc("a", "甲站", [_a]),
+                               _StubSrc("b", "乙站", [_b]),
+                               _StubSrc("c", "丙站", err="被盾挡了", can=True)])
+check("混流：能搜的前提是有来源能搜", _mix.can_search() is True)
+_mp, _mn = _mix.search("苹果")
+check("混流搜索：能搜的都问一遍，合起来按时间倒序", [p.id for p in _mp] == ["2", "1"],
+      [p.id for p in _mp])
+check("混流搜索：搜不动的来源记进 errors（页脚说得出是谁）",
+      any("丙站" in e for e in _mix.errors), _mix.errors)
+check("混流搜索：只给一页（再往下没有）", _mix.search("苹果", 1) == ([], None))
+check("混流搜索：一个能搜的都没有时照实说",
+      feed_sources.MixSource([_StubSrc("c", "丙站", err="x")]).can_search() is False)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23

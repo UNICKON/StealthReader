@@ -17,9 +17,11 @@
 """
 
 import html as _html
+import json
 import re
 import time
 import xml.etree.ElementTree as ET
+from urllib.parse import quote
 
 import feed as feed_mod
 import feed_net
@@ -27,7 +29,7 @@ from feed import (Block, Post, BLOCK_CODE, BLOCK_H, BLOCK_IMG, BLOCK_LIST,
                   BLOCK_P, BLOCK_QUOTE)
 from feed_net import FeedNetError, TTL_DETAIL, TTL_LIST
 from feed_sources import (COVER_PER_PAGE, LIST_TIMEOUT, MAX_PAGES, RealSource,
-                          _cookies_from)          # noqa: F401  (_cookies_from 供探针复用)
+                          _cookies_from, search_channel)   # noqa: F401  (_cookies_from 供探针复用)
 
 NOTHING_TO_SAY = ""          # 没有评论时返回的空串（界面据此不画评论那一块）
 
@@ -329,6 +331,8 @@ class RssSource(RealSource):
 
     key = "medium"
     label = "Medium"
+    search_hint = ("Medium 这一栏是 RSS（标签流），RSS 里没有搜索——"
+                   "前面试过 medium.com/search，被 Cloudflare 盾挡住")
     base_url = "https://medium.com"
     needs_auth = False
     PER_PAGE = 10
@@ -592,6 +596,59 @@ class GithubTrendingSource(RealSource):
         nxt = start + self.PER_PAGE if (chunk and start + self.PER_PAGE < len(posts)
                                         and page + 1 < MAX_PAGES) else None
         return chunk, nxt
+
+    # 搜索走 GitHub 自己的 search API（2026-11-02 匿名实测 200，20 条）。
+    # 免登录限流 10 次/分钟：所以只在人手动搜的时候发一次，不进任何自动刷新。
+    SEARCH_API = ("https://api.github.com/search/repositories?q=%s"
+                  "&sort=stars&order=desc&per_page=20&page=%d")
+
+    def search(self, query, cursor=None):
+        """搜仓库。`pid` 就是 `owner/repo`，所以详情（README）照旧能打开。"""
+        q = " ".join(str(query or "").split())
+        if not q:
+            raise FeedNetError("没输入关键词")
+        page = max(1, int(cursor or 1))
+        url = self.SEARCH_API % (quote(q, safe=""), page)
+        try:
+            raw = self.http.get_bytes(url, ttl=TTL_LIST, max_bytes=4000000,
+                                      headers={"Accept": "application/vnd.github+json"},
+                                      timeout=LIST_TIMEOUT + 8)
+        except FeedNetError as e:
+            if "403" in str(e):
+                raise FeedNetError("GitHub 的搜索限流了（免登录 10 次/分钟），过一分钟再试")
+            raise
+        try:
+            obj = json.loads(raw.decode("utf-8", "replace"))
+            items = obj.get("items") or []
+        except Exception:
+            raise FeedNetError("GitHub 的搜索结果读不出来（不是 JSON）")
+        ch = search_channel(q)
+        posts = []
+        for it in items:
+            full = str(it.get("full_name") or "").strip()
+            if "/" not in full:
+                continue
+            tags = []
+            if it.get("language"):
+                tags.append(str(it["language"]))
+            if it.get("stargazers_count"):
+                tags.append("%s star" % _num(int(it["stargazers_count"])))
+            if it.get("forks_count"):
+                tags.append("%s fork" % _num(int(it["forks_count"])))
+            ts = feed_mod.parse_time(it.get("pushed_at"))
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=ch, pid=full,
+                title=full,
+                author=full.split("/")[0],
+                excerpt=feed_mod.strip_html(str(it.get("description") or "")),
+                created=feed_mod.human_time(ts), ts=ts,
+                score=int(it.get("stargazers_count") or 0), score_label="star",
+                n_comments=0,
+                url="%s/%s" % (self.base_url, full),
+                tags=tags,
+            ))
+        nxt = page + 1 if len(items) >= 20 else None
+        return posts, nxt
 
     def _readme(self, full):
         """README：先按 `HEAD` 试几个常见文件名；拿到的是"再做一次"的跳转行也跟着走一次。"""

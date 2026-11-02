@@ -105,6 +105,14 @@ def load_auth(path):
         return {}
 
 
+SEARCH_PREFIX = "搜索："
+
+
+def search_channel(query):
+    """搜索结果的栏目名。页脚、撤回、缓存键都用这一个口径，别各写各的。"""
+    return SEARCH_PREFIX + " ".join(str(query or "").split())
+
+
 class RealSource(SourceAdapter):
     """真实来源的公共部分：错误信息、图片目录、把异常收成一句人话。"""
 
@@ -138,6 +146,21 @@ class RealSource(SourceAdapter):
         if not self.has_auth:
             return "（这个站的正文/评论要登录，可以在应用目录的 feed_auth.json 里贴一次 Cookie）"
         return "（已经贴了 Cookie，但接口这次没给——见下面的原文）"
+
+    # -- 搜索 -------------------------------------------------------------
+    # 没有搜索的来源在类里写一句话说明**为什么没有**（实测过的原因，不是猜的）。
+    search_hint = ""
+
+    def search(self, query, cursor=None):
+        """在这个社区里搜关键词。没做搜索的来源照实说原因——不要给人一页空白。
+
+        真人 2026-11-02：「给各个社区加上搜索，f键输入，回车确认」。能不能搜**一个站一个样**，
+        所以每个来源自己实现；没实现的由这里统一回一句实话（`search_hint`）。"""
+        raise FeedNetError(self.search_hint or "这个社区还没有搜索")
+
+    def can_search(self):
+        """这个来源是不是真的能搜（子类覆盖了 search 才算）。"""
+        return type(self).search is not RealSource.search
 
     # -- 公共 -------------------------------------------------------------
     def image_base(self):
@@ -225,6 +248,8 @@ class IthomeSource(RealSource):
 
     key = "ithome"
     label = "IT之家"
+    search_hint = ("IT之家 没有能匿名用的搜索：搜索页在 so.ithome.com（这台机器解析不到），"
+                   "www.ithome.com/search/ 直接 404，站上也没有别的搜索接口")
     base_url = "https://www.ithome.com"
     CHANNELS = ("热榜", "最新")
     COMMENT_API = "https://cmt.ithome.com/api/webcomment/getnewscomment"
@@ -403,6 +428,7 @@ class V2exSource(RealSource):
 
     key = "v2ex"
     label = "V2EX"
+    search_hint = ("V2EX 这一版没做搜索：你说过不要探它，所以没有真实响应可对，不编一个出来")
     base_url = "https://www.v2ex.com"
     CHANNELS = ("最热", "最新")
 
@@ -484,6 +510,8 @@ class DiscourseSource(RealSource):
 
     key = "linuxdo"
     label = "linux.do"
+    search_hint = ("linux.do 的搜索被 Cloudflare 盾挡着（/search.json 回的是 Just a moment…），"
+                   "列表能取、搜索取不到——贴的 Cookie 也过不去")
     base_url = "https://linux.do"
     CHANNELS = ("最新", "热门")
 
@@ -780,7 +808,10 @@ class ZhihuSource(RealSource):
             else ("%s/answer/%s" % (self.base_url, aid))
         return Post(
             source=self.key, source_label=self.label, channel=channel, pid="a" + aid,
-            title=feed_mod.strip_html(q.get("title") or "") or "（这条回答没有问题标题）",
+            # 搜索接口里问题的标题字段是 `name`（`title` 是 null）；推荐/关注那边给的是
+            # `title`。两个都认，别因为换个入口就满屏「（这条回答没有问题标题）」。
+            title=feed_mod.strip_html(q.get("title") or q.get("name") or "")
+            or "（这条回答没有问题标题）",
             author=_zhihu_name(tgt.get("author")) or "匿名",
             created=feed_mod.human_time(ts), ts=ts,
             score=int(tgt.get("voteup_count") or 0), score_label="赞",
@@ -788,6 +819,39 @@ class ZhihuSource(RealSource):
             excerpt=self._excerpt_of(tgt),
             url=url, tags=[],
         )
+
+    # 网页版搜索（`search_v3`）。**要 Cookie**：匿名时它回的是登录页/空 data。
+    SEARCH_API = ("https://www.zhihu.com/api/v4/search_v3?t=general&correction=1"
+                  "&limit=20&offset=%d&q=%s")
+
+    def search(self, query, cursor=None):
+        """搜知乎。命中的**回答**直接是一条能点开的帖子（详情走全文那条路）。
+
+        只收 `object.type == "answer"`：问题/用户/专栏这几类没有对应的详情这条路，
+        收进来点开就是空白——宁可少摆一条，不摆一条点不开的。
+        """
+        q = " ".join(str(query or "").split())
+        if not q:
+            raise FeedNetError("没输入关键词")
+        if not self.has_auth:
+            raise FeedNetError("知乎的搜索要 Cookie（feed_auth.json 里的 zhihu）")
+        off = max(0, int(cursor or 0))
+        ch = search_channel(q)
+        obj = self._get(self.SEARCH_API % (off, quote(q, safe="")), TTL_LIST, "知乎 搜索")
+        data = obj.get("data") if isinstance(obj, dict) else None
+        if not isinstance(data, list) or not data:
+            raise FeedNetError("知乎的搜索没给内容（可能被风控了，也可能这个词没有结果）")
+        posts = []
+        for it in data:
+            o = it.get("object") if isinstance(it, dict) else None
+            if not isinstance(o, dict) or str(o.get("type") or "") != "answer":
+                continue
+            p = self._post_from_answer(o, ch)
+            if p is not None:
+                posts.append(p)
+        paging = obj.get("paging") if isinstance(obj.get("paging"), dict) else {}
+        nxt = None if paging.get("is_end") else (off + 20)
+        return posts, nxt
 
     def _clip(self, text):
         """一段文字压到 `EXCERPT_CHARS` 以内（压成一行，超了加省略号）。缩略就用这一把尺子。"""
@@ -1422,6 +1486,8 @@ class WeiboSource(RealSource):
     """
     key = "weibo"
     label = "微博"
+    search_hint = ("微博 的搜索要登录：m.weibo.cn 的搜索接口回 432「要登录」，"
+                   "s.weibo.com 给的是「Sina Visitor System」——现在这份 Cookie 也过期了")
     base_url = "https://weibo.com"
     # 热搜榜免登录，**词条正文/评论要 Cookie**：页脚那句"这个来源要 Cookie"对正文是真的。
     needs_auth = True
@@ -1964,6 +2030,43 @@ class NgaSource(RealSource):
             ))
         posts.sort(key=lambda p: (p.ts or 0), reverse=True)
         return posts, None
+
+    SEARCH_URL = "https://bbs.nga.cn/thread.php?key=%s&__output=8"
+
+    def search(self, query, cursor=None):
+        """搜 NGA（`thread.php?key=` 带 Cookie 实测能用，一页 35 条，`page=` 翻页）。
+
+        返回的行和板块列表是同一套 `__T`（tid/subject/author/replies/lastpost），
+        所以详情、评论都照旧能走通。
+        """
+        q = " ".join(str(query or "").split())
+        if not q:
+            raise FeedNetError("没输入关键词")
+        page = max(1, int(cursor or 1))
+        url = self.SEARCH_URL % quote(q, safe="")
+        if page > 1:
+            url += "&page=%d" % page
+        data = self._json(url, TTL_LIST, "NGA 搜索")
+        ch = search_channel(q)
+        posts = []
+        for it in _nga_rows(data, "__T"):
+            tid = it.get("tid")
+            title = feed_mod.strip_html(it.get("subject") or "")
+            if not tid or not title:
+                continue
+            ts = feed_mod.parse_time(it.get("lastpost") or it.get("postdate"))
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=ch, pid=str(tid),
+                title=title, author=feed_mod.strip_html(it.get("author") or ""),
+                created=feed_mod.human_time(ts), ts=ts, score=0, score_label="",
+                n_comments=max(0, int(it.get("replies") or 0)), comment_label="回复",
+                excerpt="", url="%s/read.php?tid=%s" % (self.base_url, tid), tags=[],
+            ))
+        meta = data.get("data") if isinstance(data.get("data"), dict) else {}
+        total = int(meta.get("__T__ROWS") or 0)
+        per = int(meta.get("__T__ROWS_PAGE") or 0) or 35
+        nxt = page + 1 if (posts and total and page * per < total) else None
+        return posts, nxt
 
     def detail(self, post, cursor=None):
         url = "%s/read.php?tid=%s&__output=8" % (self.base_url, post.id)
@@ -2588,6 +2691,91 @@ class XhsSource(RealSource):
             self.last_error = "评论没取到：%s" % why
         out.body = body
         return out, None
+
+    # ------------------------------------------------------------ 搜索
+
+    SEARCH_API = "/api/sns/web/v1/search/notes"
+    SEARCH_URL = "https://edith.xiaohongshu.com" + SEARCH_API
+
+    def search(self, query, cursor=None):
+        """搜笔记（`/api/sns/web/v1/search/notes`，POST + 它那套签名，2026-11-02 实测 200）。
+
+        这一下**不走公共取数器**：签名要发 POST，而 `feed_net.Http` 只有 GET。请求量很小
+        （人手动搜一次），不缓存、也不占列表那份缓存。返回的 `note_card` 和首页那套是同一个
+        形状，所以详情/评论照旧能走通。
+        """
+        q = " ".join(str(query or "").split())
+        if not q:
+            raise FeedNetError("没输入关键词")
+        if not self.has_auth:
+            raise FeedNetError("小红书的搜索要 Cookie（feed_auth.json 里的 xhs）")
+        page = max(1, int(cursor or 1))
+        body = {
+            "keyword": q, "page": page, "page_size": 20,
+            "search_id": "%d_%d" % (int(time.time() * 1000), page),
+            "sort": "general", "note_type": 0, "ext_flags": [],
+            "image_formats": ["jpg", "webp", "avif"],
+        }
+        data = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        cookie = str((self.auth or {}).get("cookie") or "")
+        try:
+            import requests
+            sig = xhs_sign.sign(self.SEARCH_API, data, cookie, "POST",
+                                fetch=self._ds_text, web_build=self._web_build())
+            headers = xhs_sign.headers_for(sig, cookie)
+            headers["Content-Type"] = "application/json;charset=UTF-8"
+            r = requests.post(self.SEARCH_URL, data=data.encode("utf-8"),
+                              headers=headers, timeout=self.COMMENT_TIMEOUT)
+        except Exception as e:
+            raise FeedNetError("小红书的搜索没发出去（%s）" % type(e).__name__)
+        if r.status_code != 200:
+            raise FeedNetError("小红书搜索返回 %d" % r.status_code)
+        try:
+            obj = r.json()
+        except Exception:
+            raise FeedNetError("小红书搜索回的不是 JSON（签名可能又变了）")
+        if int(obj.get("code") or 0) != 0:
+            raise FeedNetError("小红书搜索回 code=%s %s"
+                               % (obj.get("code"), obj.get("msg") or ""))
+        items = ((obj.get("data") or {}).get("items") or [])
+        ch = search_channel(q)
+        posts, videos = [], 0
+        for i, it in enumerate(items):
+            card = it.get("note_card") if isinstance(it, dict) else None
+            if not isinstance(card, dict):
+                continue
+            if str(card.get("type") or "") == "video":
+                videos += 1
+                continue                     # 和首页一条规矩：这个窗口不放视频
+            nid = str(it.get("id") or "")
+            title = feed_mod.strip_html(str(card.get("display_title") or ""))
+            if not nid or not title:
+                continue
+            user = card.get("user") if isinstance(card.get("user"), dict) else {}
+            info = card.get("interact_info") if isinstance(card.get("interact_info"), dict) else {}
+            try:
+                likes = int(str(info.get("liked_count") or info.get("likedCount") or "0")
+                            .replace("+", "") or 0)
+            except Exception:
+                likes = 0
+            cover = _xhs_cover(card.get("cover"))
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=ch, pid=nid,
+                title=title,
+                author=feed_mod.strip_html(str(user.get("nickname") or user.get("nickName") or "")),
+                created="", ts=0,
+                score=likes, score_label="赞",
+                n_comments=0, comment_label="评论",
+                cover=self._cover(cover) if (cover and i < COVER_PER_PAGE) else "",
+                excerpt="",
+                url=self._note_url(nid, it.get("xsec_token")),
+            ))
+        if not posts:
+            if videos:
+                raise FeedNetError("搜到的全是视频笔记（这个窗口不放视频），换个词试试")
+            raise FeedNetError("小红书这次没搜到东西（也可能搜索接口又要新的签名了）")
+        nxt = page + 1 if (obj.get("data") or {}).get("has_more") else None
+        return posts, nxt
 
     # ------------------------------------------------------------ 评论
 
@@ -3286,6 +3474,8 @@ class HupuSource(RealSource):
 
     key = "hupu"
     label = "虎扑"
+    search_hint = ("虎扑 的搜索接口回 405（GET/POST 都试过），search.hupu.com 这台机器解析不到；"
+                   "站上没找到能匿名用的搜索")
     base_url = "https://bbs.hupu.com"
     needs_auth = False               # 免登录
     # 两栏 NBA：不是 bbs 的板，走 nba.hupu.com 的页面（战绩表 / 赛程 + 文字直播）
@@ -4147,6 +4337,45 @@ def parse_douban_group_topics(html):
     return out
 
 
+DOUBAN_SEARCH = "https://www.douban.com/group/search?cat=1013&q=%s&sort=relevance"
+# 一页 50 条（2026-11-02 实测：搜索页给 50 行；一开始按 30 算，第二页因此和第一页
+# 重了 20 条——探针不查这个，是真人翻页才会撞见的那种错）
+DOUBAN_SEARCH_PAGE = 50
+
+
+def parse_douban_search(html):
+    """豆瓣小组搜索页（`/group/search?cat=1013`，实测匿名 200，50926 字节）。
+
+    一行 `<tr class="pl">` = 一条话题：`td-subject` 的 `title=` 是全标题、`td-time` 的
+    `title=` 是绝对时间、`td-reply` 是「N回复」、最后一个 `<td>` 是这个话题所在的小组。
+    搜索页**不给楼主**，所以作者位留空、小组名放成标签（不把人家的组名摆在作者位）。
+    """
+    text = str(html or "")
+    out = []
+    for row in re.findall(r'<tr class="pl">(.*?)</tr>', text, re.S):
+        m = re.search(r'href="https://www\.douban\.com/group/topic/(\d+)/[^"]*"'
+                      r'[^>]*?title="([^"]*)"', row)
+        if not m:
+            continue
+        tid = m.group(1)
+        title = html_unescape(m.group(2)).strip()
+        if not tid or not title:
+            continue
+        t = re.search(r'<td class="td-time"[^>]*?title="([^"]*)"', row)
+        rep = re.search(r'<td class="td-reply"[^>]*>\s*<span[^>]*>(\d+)\s*回复', row)
+        g = re.search(r'href="https://www\.douban\.com/group/(\d+)/"[^>]*>([^<]*)</a>', row)
+        ts = feed_mod.parse_time(t.group(1)) if t else 0
+        out.append({
+            "id": tid, "title": title, "ts": ts,
+            "created": feed_mod.human_time(ts),
+            "replies": int(rep.group(1)) if rep else 0,
+            "group": html_unescape(g.group(2)).strip() if g else "",
+            "group_id": g.group(1) if g else "",
+            "url": "https://www.douban.com/group/topic/%s/" % tid,
+        })
+    return out
+
+
 def parse_douban_hot_groups(html):
     """热门小组页 → [(小组 id, 名字)]。卡片就是一个 `href="/group/<gid>/"` 包着名字。"""
     out = []
@@ -4565,6 +4794,45 @@ class DoubanSource(RealSource):
         nxt = start + DOUBAN_GROUP_PAGE if len(rows) >= 10 else None
         return posts, nxt
 
+    def search(self, query, cursor=None):
+        """搜豆瓣小组里的话题（网页搜索页，匿名可读；`&start=` 按 30 翻）。
+
+        这一步和「讨论精选/小组」是同一个匿名取数器，同样容易被风控挡——挡了就照实说。
+        """
+        q = " ".join(str(query or "").split())
+        if not q:
+            raise FeedNetError("没输入关键词")
+        page = max(1, int(cursor or 1))
+        url = DOUBAN_SEARCH % quote(q, safe="")
+        if page > 1:
+            url += "&start=%d" % ((page - 1) * DOUBAN_SEARCH_PAGE)
+        try:
+            html = self._page(url, TTL_LIST, http=self._anon())
+        except FeedNetError as e:
+            if "403" in str(e) or "禁止访问" in str(e):
+                raise FeedNetError(self.GROUP_BLOCK_SAY)
+            raise
+        if any(mark in html for mark in DOUBAN_BLOCK_MARKS):
+            raise FeedNetError(self.BLOCK_SAY)
+        rows = parse_douban_search(html)
+        ch = search_channel(q)
+        if not rows:
+            if page > 1:
+                return [], None
+            raise FeedNetError("豆瓣的搜索这次没给结果（可能这个词真的没人聊，也可能它临时挡了）")
+        posts = []
+        for r in rows:
+            posts.append(Post(
+                source=self.key, source_label=self.label, channel=ch,
+                pid=r["id"], title=r["title"], author="", created=r["created"],
+                ts=r["ts"], score=0, score_label="",
+                n_comments=r["replies"], comment_label="回应",
+                excerpt="", url=r["url"],
+                tags=[r["group"]] if r["group"] else [],
+            ))
+        nxt = page + 1 if len(rows) >= 20 else None
+        return posts, nxt
+
     def detail(self, post, cursor=None):
         ch = str(getattr(post, "channel", "") or "").strip()
         if ch == self.TOPICS_LABEL:
@@ -4755,6 +5023,54 @@ class MixSource(SourceAdapter):
             return [], None
         nxt = page + 1 if page + 1 < len(pages) else None
         return pages[page], nxt
+
+    def can_search(self):
+        return any(getattr(s, "can_search", lambda: False)() for s in self.sources)
+
+    def search(self, query, cursor=None):
+        """混流里搜：把**每个能搜的来源**都问一遍，合起来按时间倒序。
+
+        搜不动的来源（IT之家/虎扑/微博/linux.do 这些）根本不参与，页脚也不会因为它们刷错误——
+        `can_search()` 是 False 就直接不问。只交代"能搜的那几家这次怎么了"。
+        """
+        q = " ".join(str(query or "").split())
+        if not q:
+            raise FeedNetError("没输入关键词")
+        if cursor:
+            return [], None            # 混流搜索只给一页：各家第一页合起来
+        todo = [s for s in self.sources if getattr(s, "can_search", lambda: False)()]
+        if not todo:
+            raise FeedNetError("这几个来源都没有搜索")
+        self.errors = []
+        out = [None] * len(todo)
+
+        def one(i, src):
+            try:
+                posts, _nxt = src.search(q, None)
+                out[i] = posts
+            except FeedNetError as e:
+                out[i] = ("err", "%s：%s" % (src.label, e))
+            except Exception as e:
+                out[i] = ("err", "%s：%s" % (src.label, type(e).__name__))
+
+        threads = []
+        for i, src in enumerate(todo):
+            t = threading.Thread(target=one, args=(i, src), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join(timeout=max(LIST_TIMEOUT * 2, 8))
+        lists = []
+        for item in out:
+            if isinstance(item, tuple):
+                self.errors.append(item[1])
+            elif item:
+                lists.append(item)
+        self.last_error = "；".join(self.errors)
+        merged = feed_mod.merge_posts(lists)
+        cap = 0 if len(lists) <= 1 else max(2, PAGE_MIX // max(1, len(lists)))
+        pages = fair_pages(merged, PAGE_MIX, cap)
+        return (pages[0] if pages else []), None
 
     def _route(self, post):
         src = self.by_key.get(getattr(post, "source", ""))

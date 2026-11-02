@@ -1,0 +1,127 @@
+{
+ "data": [
+  {
+   "type": "search_result",
+   "object": {
+    "type": "answer",
+    "id": "1923838136565363658",
+    "url": "https://api.zhihu.com/answers/1923838136565363658",
+    "excerpt": "我知道这些事情，因为我一直在用<em>苹果</em>。这并不妨碍我对苹果激情开麦，相反正因为我有很多<em>苹果</em>设备，对苹果开麦有利于我以后用上更好的产品",
+    "voteup_count": 2379,
+    "comment_count": 710,
+    "created_time": 1751458754,
+    "question": {
+     "id": "666875394",
+     "title": null,
+     "name": "你是在哪一瞬间突然感觉到<em>苹果</em>创新乏力的？"
+    },
+    "author": {
+     "name": "病猫发威"
+    }
+   }
+  },
+  {
+   "type": "search_result",
+   "object": {
+    "type": "answer",
+    "id": "2089681924021344064",
+    "url": "https://api.zhihu.com/answers/2089681924021344064",
+    "excerpt": "我去过的<em>苹果</em>直营店-上海、长沙、香港、吉隆坡、新加坡、东京、釜山、首尔、曼谷，所有的<em>苹果</em>员工待人接物都是有礼有节",
+    "voteup_count": 777,
+    "comment_count": 59,
+    "created_time": 1790998995,
+    "question": {
+     "id": "55317964",
+     "title": null,
+     "name": "为什么<em>苹果</em>直营店店员也会看不起顾客？"
+    },
+    "author": {
+     "name": "南极鰯魚"
+    }
+   }
+  },
+  {
+   "type": "search_result",
+   "object": {
+    "type": "answer",
+    "id": "2096004256100790417",
+    "url": "https://api.zhihu.com/answers/2096004256100790417",
+    "excerpt": "特别是当这种方法不公开的时候, 会形成重要的护城河 <em>苹果</em>的品牌和效果营销都是业界独一档的存在 为什么<em>苹果</em>的营销和用户体验很难模仿",
+    "voteup_count": 41,
+    "comment_count": 1,
+    "created_time": 1792506356,
+    "question": {
+     "id": "667272347",
+     "title": null,
+     "name": "虚心请教，<em>苹果</em>现在还有哪些科技含量？"
+    },
+    "author": {
+     "name": "Luv Letter"
+    }
+   }
+  },
+  {
+   "type": "search_result",
+   "object": {
+    "type": "answer",
+    "id": "1919460946893600156",
+    "url": "https://api.zhihu.com/answers/1919460946893600156",
+    "excerpt": "假如它有<em>苹果</em>的本事，手机它敢卖五万一台。不过也正是<em>苹果</em>的廉价策略，才成就了苹果的伟大。<em>苹果</em>是事实上的奢侈品",
+    "voteup_count": 8241,
+    "comment_count": 671,
+    "created_time": 1750415151,
+    "question": {
+     "id": "276807760",
+     "title": null,
+     "name": "<em>苹果</em>这家公司伟大之处在哪里？"
+    },
+    "author": {
+     "name": "如龙"
+    }
+   }
+  },
+  {
+   "type": "search_result",
+   "object": {
+    "type": "answer",
+    "id": "2072366615778399558",
+    "url": "https://api.zhihu.com/answers/2072366615778399558",
+    "excerpt": "充电、信号、长截图、应用分身、文件管理、快充、分屏，随便拎几个出来<em>苹果</em>都不占便宜，有些甚至落后得莫名其妙。但问题在于，大多数人买手机根本不是拿着功能表一项一项打勾",
+    "voteup_count": 273,
+    "comment_count": 181,
+    "created_time": 1786870703,
+    "question": {
+     "id": "501925771",
+     "title": null,
+     "name": "<em>苹果</em>手机明明有那么多缺点，为什么还有那么多人买？"
+    },
+    "author": {
+     "name": "薛定谔的卡夫卡尔"
+    }
+   }
+  },
+  {
+   "type": "search_result",
+   "object": {
+    "type": "answer",
+    "id": "2062490617394082428",
+    "url": "https://api.zhihu.com/answers/2062490617394082428",
+    "excerpt": "年轻人越穷，越要买<em>苹果</em> 因为苹果手机超出你想象的耐用 不少外卖小哥赚点钱换了<em>苹果</em>手机送单（口碑相传+好用）",
+    "voteup_count": 459,
+    "comment_count": 244,
+    "created_time": 1784516082,
+    "question": {
+     "id": "2025101121857894243",
+     "title": null,
+     "name": "年轻人偏爱<em>苹果</em>手机的原因是什么？"
+    },
+    "author": {
+     "name": "西山绅士J"
+    }
+   }
+  }
+ ],
+ "paging": {
+  "is_end": false
+ }
+}
