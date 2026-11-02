@@ -307,14 +307,50 @@ EPUB_BLOCK_TAGS = {
 }
 
 
-# 中文排版本不该有的空格：上面这一串是 CJK 汉字/标点/圈号/全角符号，
+# 中文排版本不该有的空格：下面这一串是 CJK 汉字/标点/圈号/全角符号，
 # 两边都是它们时，中间那个空格是源码换行带出来的（真书里不会这么排）。
-_CJK_TIGHT = re.compile(
-    r"(?<=[\u2010-\u2027\u2030-\u205e\u2460-\u24ff\u2e80-\u2eff\u3000-\u303f"
-    r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\ufe30-\ufe4f"
-    r"\uff00-\uffef]) (?=[\u2010-\u2027\u2030-\u205e\u2460-\u24ff\u2e80-\u2eff"
-    r"\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
-    r"\ufe30-\ufe4f\uff00-\uffef])")
+_CJK_CLASS = (r"\u2010-\u2027\u2030-\u205e\u2460-\u24ff\u2e80-\u2eff"
+              r"\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
+              r"\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef")
+_CJK_CHAR = re.compile("[%s]" % _CJK_CLASS)
+_EPUB_WS = " \t\f\v\u00a0\u3000"
+
+
+def _clean_epub_line(raw):
+    """把一行原文洗成正文里那一行，同时给出 {原始列: 洗完列}。
+
+    注释跳转是按字符偏移找人的，所以"洗掉几个空格"必须算得清——不然 ① 会指到
+    隔壁那个字上（实测就是这样：点"有"跳了，点"①"没反应）。
+    """
+    out, src = [], []
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch in _EPUB_WS:
+            j = i
+            while j < n and raw[j] in _EPUB_WS:
+                j += 1
+            out.append(" ")          # 一串空白压成一个空格
+            src.append(j - 1)
+            i = j
+        else:
+            out.append(ch)
+            src.append(i)
+            i += 1
+    while out and out[0] == " ":     # strip
+        out.pop(0)
+        src.pop(0)
+    while out and out[-1] == " ":
+        out.pop()
+        src.pop()
+    final, fsrc = [], []
+    for k, ch in enumerate(out):
+        if (ch == " " and 0 < k < len(out) - 1
+                and _CJK_CHAR.match(out[k - 1]) and _CJK_CHAR.match(out[k + 1])):
+            continue                 # 中文之间的空格：删
+        final.append(ch)
+        fsrc.append(src[k])
+    return "".join(final), {r: f for f, r in enumerate(fsrc)}
 
 
 class _EpubHtmlText(HTMLParser):
@@ -323,7 +359,10 @@ class _EpubHtmlText(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.lines = []
+        self._line_maps = []        # 每行"原始列 → 洗完列"，注释跳转要用
         self.ids = {}
+        self.links = []             # [(起行, 起列, 止行, 止列, 片段名)]：注释互跳靠它
+        self._link_stack = []
         self.heading_lines = {}     # {行号: 标题级别}，级别取自 h1~h6 的编号
         self._buf = []
         self._skip = 0
@@ -331,21 +370,36 @@ class _EpubHtmlText(HTMLParser):
         self._heading_stack = []    # 正在收集的标题标签（嵌套时取最外层那级）
 
     def _flush(self):
-        line = re.sub(r"[ \t\f\v\u00a0\u3000]+", " ", "".join(self._buf)).strip()
-        line = _CJK_TIGHT.sub("", line)
+        raw = "".join(self._buf)
         self._buf = []
+        line, mapping = _clean_epub_line(raw)
         if line:
             if self._heading_stack:
                 self.heading_lines.setdefault(len(self.lines), self._heading_stack[0])
             self.lines.append(line)
+            self._line_maps.append(mapping)
 
     def _mark(self, attrs):
         for key, value in attrs:
             if key in ("id", "name") and value:
-                self.ids.setdefault(value, len(self.lines))
+                # 记 (行, 列)：脚注标记夹在句子中间，只记行首会跳到段首去
+                self.ids.setdefault(value, (len(self.lines), len("".join(self._buf))))
 
     def handle_starttag(self, tag, attrs):
         self._mark(attrs)
+        if tag == "a":
+            href = ""
+            for key, value in attrs:
+                if key == "href" and value:
+                    href = value
+                    break
+            if "#" in href:
+                # 记下这个链接内容的起点：正文里的 ① 就是靠它连到下面注释那一段的
+                self._link_stack.append({
+                    "frag": href.rsplit("#", 1)[1],
+                    "line": len(self.lines),
+                    "col": len("".join(self._buf)),
+                })
         if tag in EPUB_SKIP_TAGS:
             self._skip += 1
         elif tag in EPUB_BLOCK_TAGS:
@@ -361,6 +415,12 @@ class _EpubHtmlText(HTMLParser):
             self._flush()
 
     def handle_endtag(self, tag):
+        if tag == "a" and self._link_stack:
+            link = self._link_stack.pop()
+            if link["frag"]:
+                self.links.append((link["line"], link["col"],
+                                   len(self.lines), len("".join(self._buf)),
+                                   link["frag"]))
         if tag in EPUB_SKIP_TAGS:
             if self._skip:
                 self._skip -= 1
@@ -389,20 +449,75 @@ class _EpubHtmlText(HTMLParser):
                 self._buf.append(segment)
 
     def finish(self):
-        """返回 (纯文本, {锚点: 字符偏移}, {标题行字符偏移: 标题级别})。"""
+        """返回 (纯文本, {锚点: 字符偏移}, {标题行字符偏移: 标题级别}, [(起, 止, 片段)])。"""
         self._flush()
         text = "\n".join(self.lines)
         offsets = [0]
         for line in self.lines:
             offsets.append(offsets[-1] + len(line) + 1)
-        anchors = {key: offsets[min(idx, len(self.lines))]
-                   for key, idx in self.ids.items()}
+
+        def at(line, col):
+            """(行, 原始列) → 全文偏移。洗行时删掉的空格要在这里补算回来。"""
+            if line >= len(self.lines):
+                return len(text)
+            mapping = self._line_maps[line]
+            if col in mapping:
+                return offsets[line] + mapping[col]
+            later = [v for k, v in mapping.items() if k >= col]
+            if later:
+                return offsets[line] + min(later)
+            return offsets[line] + len(self.lines[line])
+
+        anchors = {key: at(line, col) for key, (line, col) in self.ids.items()}
         headings = {offsets[idx]: level for idx, level in self.heading_lines.items()}
-        return text, anchors, headings
+        links = []
+        for start_line, start_col, end_line, end_col, frag in self.links:
+            if not frag:
+                continue
+            start, end = at(start_line, start_col), at(end_line, end_col)
+            if end > start:
+                links.append((start, end, frag))
+        return text, anchors, headings, links
 
 
 def _epub_local_name(tag):
     return tag.rsplit("}", 1)[-1]
+
+
+# 注释标记长什么样：圈号、括号号、星号剑号这几类。只用来"补回程"，
+# 不影响书自己给了回链的情况。
+EPUB_MARKER_RE = re.compile(r"^[①-⑳❶-❿㉑-㉟㊱-㊿⑴-⒇⒈-⒛*＊※†‡]$")
+
+
+def _epub_links_map(text, docs, file_start):
+    """把书里的 `<a href="#片段">` 变成 {字符偏移: 目标字符偏移}，正反都通。
+
+    互跳靠的是书自己的链接：《庄子今注今译》原文的 ①（id Y1_1）指向注释（Z1_1），
+    注释的 ①（id Z1_1）指回原文（Y1_1），所以两边的标记都点得动。
+    有些书只给了"去"的链接，那就按"两边都是标记符"补一条回来的——不然点进注释就出不来。
+    """
+    anchor_at = {}
+    for target, _body, anchors, _heads, _links in docs:
+        base = file_start.get(target, 0)
+        for frag, off in anchors.items():
+            anchor_at.setdefault(frag, base + off)
+
+    def is_marker(off):
+        return 0 <= off < len(text) and bool(EPUB_MARKER_RE.match(text[off]))
+
+    links = {}
+    for target, _body, _anchors, _heads, doc_links in docs:
+        base = file_start.get(target, 0)
+        for start, end, frag in doc_links:
+            dst = anchor_at.get(frag)
+            if dst is None:
+                continue
+            src = base + start
+            for k in range(src, base + end):
+                links[k] = dst
+            if dst not in links and is_marker(src) and is_marker(dst):
+                links[dst] = src
+    return {k: v for k, v in links.items() if k != v}
 
 
 def _epub_html_to_text(raw_bytes):
@@ -519,7 +634,8 @@ def _epub_toc_entries(zf, opf_path, manifest):
 
 
 def _load_epub(path):
-    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...], {标题行偏移})。"""
+    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...], {标题行偏移},
+    {注释标记偏移: 对面那一处偏移})。"""
     with zipfile.ZipFile(path) as zf:
         opf_path = None
         try:
@@ -566,9 +682,9 @@ def _load_epub(path):
             target = posixpath.normpath(posixpath.join(opf_dir, unquote(item["href"].split("#")[0])))
             if target not in names:
                 continue
-            body, anchors, headings = _epub_html_to_text(zf.read(target))
+            body, anchors, headings, links = _epub_html_to_text(zf.read(target))
             if body:
-                docs.append((target, body, anchors, headings))
+                docs.append((target, body, anchors, headings, links))
 
         if not docs:
             raise ValueError("epub 里没有可读文字（可能是纯图片书）")
@@ -577,12 +693,13 @@ def _load_epub(path):
 
         if toc and has_anchors:
             # 目录指向文件内的锚点：正文原样拼接，不额外插标题行，章节偏移由锚点换算
-            doc_anchors = {target: anchors for target, _body, anchors, _heads in docs}
+            doc_anchors = {target: anchors
+                           for target, _body, anchors, _heads, _links in docs}
             blocks = []
             file_start = {}
             file_headings = {}
             cursor = 0
-            for target, body, _anchors, heads in docs:
+            for target, body, _anchors, heads, _links in docs:
                 file_start[target] = cursor
                 file_headings[target] = heads
                 piece = body.strip("\n") + "\n\n"
@@ -591,7 +708,7 @@ def _load_epub(path):
 
             chapters = []
             used_offsets = set()
-            bodies = {target: body for target, body, _a, _h in docs}
+            bodies = {target: body for target, body, _a, _h, _l in docs}
             for target, fragment, label, level in toc:
                 if target not in file_start:
                     continue
@@ -622,7 +739,9 @@ def _load_epub(path):
                         for target, offsets in file_headings.items()
                         for offset in offsets}
             headings.update(offset for _label, offset, _level in chapters)
-            return "".join(blocks), chapters, headings
+            joined = "".join(blocks)
+            return (joined, chapters, headings,
+                    _epub_links_map(joined, docs, file_start))
 
         # 目录缺失或只到文件级：一个文件一章，需要时补一行标题
         titles = {}
@@ -632,8 +751,9 @@ def _load_epub(path):
         blocks = []
         chapters = []
         headings = set()
+        file_start = {}
         cursor = 0
-        for order, (target, body, _anchors, doc_headings) in enumerate(docs):
+        for order, (target, body, _anchors, doc_headings, _links) in enumerate(docs):
             first_line = body.split("\n", 1)[0].strip()
             title = titles.get(target, "")
             if not title:
@@ -646,6 +766,7 @@ def _load_epub(path):
             chapters.append((title, cursor, 1))
             headings.add(cursor)  # 标题行本身
             shift = len(title) + 2 if prepended else 0
+            file_start[target] = cursor + shift   # 这一段正文（不含补的标题行）的起点
             used = {cursor}
             for offset, level in doc_headings.items():
                 absolute = cursor + shift + offset
@@ -661,7 +782,8 @@ def _load_epub(path):
             cursor += len(piece)
 
         chapters.sort(key=lambda item: item[1])
-        return "".join(blocks), chapters, headings
+        joined = "".join(blocks)
+        return joined, chapters, headings, _epub_links_map(joined, docs, file_start)
 
 
 def load_epub_with_headings(path):
@@ -671,7 +793,7 @@ def load_epub_with_headings(path):
 
 def load_epub_text(path):
     """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...])。"""
-    text, chapters, _headings = _load_epub(path)
+    text, chapters, _headings, _links = _load_epub(path)
     return text, chapters
 
 
@@ -3137,6 +3259,7 @@ class StealthReader(QWidget):
         self.local_file_path = ""  # 当前文件路径
         self.local_chapters = []  # 本地书目录 [(标题, 起始偏移, 层级)]；epub 和 txt 都会有
         self.local_heading_offsets = set()  # 标题行的字符偏移，首行缩进要跳过它们
+        self.book_links = {}  # {字符偏移: 对面那一处偏移}：注释标记点一下就能互跳
         self.displaying_local_text = False  # 当前显示的文本是否来自本地书（防止标题表串到网络章节上）
 
         # --- 划线 / 书签 ---
@@ -3399,10 +3522,11 @@ class StealthReader(QWidget):
             content = ""
             chapters = []
             headings = set()
+            links = {}
             if file_path.lower().endswith(".epub"):
-                # epub：转成纯文本 + 章节目录 + 标题行（标题用来跳过首行缩进）
+                # epub：转成纯文本 + 章节目录 + 标题行（标题用来跳过首行缩进）+ 注释互跳表
                 try:
-                    content, chapters, headings = load_epub_with_headings(file_path)
+                    content, chapters, headings, links = load_epub_with_headings(file_path)
                 except zipfile.BadZipFile:
                     self.update_text_signal.emit("EPUB 打不开（文件损坏或不是 epub）", False)
                     return
@@ -3437,6 +3561,7 @@ class StealthReader(QWidget):
             self.local_full_text = content
             self.local_chapters = chapters
             self.local_heading_offsets = headings
+            self.book_links = links          # TXT 没有链接，这里是空表
 
             # 安全校验索引
             safe_pos = min(max(0, target_pos), len(content) - 1)
@@ -4638,6 +4763,8 @@ class StealthReader(QWidget):
             want = Qt.SizeFDiagCursor
         elif event.buttons() == Qt.NoButton and self.feed_hover_title(event.pos()):
             want = Qt.PointingHandCursor     # 标题能点（知乎回答页 → 该问题的全部回答）
+        elif event.buttons() == Qt.NoButton and self.reading_link_at(event.pos()) is not None:
+            want = Qt.PointingHandCursor     # 注释标记能点：原文 ↔ 注释
         else:
             want = Qt.ArrowCursor
         self.text_edit.set_pinned_cursor(want)
@@ -5355,7 +5482,7 @@ class StealthReader(QWidget):
                 if not os.path.exists(path):
                     raise FileNotFoundError(path)
                 if path.lower().endswith(".epub"):
-                    content, _chapters, _headings = load_epub_with_headings(path)
+                    content, _chapters, _headings, _links = load_epub_with_headings(path)
                 else:
                     try:
                         with open(path, "r", encoding="utf-8-sig") as f:
@@ -9145,6 +9272,50 @@ class StealthReader(QWidget):
             self.persist_annotations()
             log_event("划线/书签位置已按原文校正")
 
+    def _inside_char_rect(self, pos, index):
+        """点是不是落在这一个字的格子里（用来容忍"点在标记的右半边"）。"""
+        try:
+            doc = self.text_edit.document()
+            a, b = QTextCursor(doc), QTextCursor(doc)
+            a.setPosition(index)
+            b.setPosition(index + 1)
+            ra, rb = self.text_edit.cursorRect(a), self.text_edit.cursorRect(b)
+            if ra.top() != rb.top():
+                return False          # 跨行：这个位置是换行处，不算
+            return (ra.left() - 2 <= pos.x() <= rb.left() + 2
+                    and ra.top() - 2 <= pos.y() <= ra.bottom() + 2)
+        except Exception:
+            return False
+
+    def reading_link_at(self, pos):
+        """正文里这个点能不能跳（注释标记 / 回链），返回对面那一处的字符偏移。"""
+        links = getattr(self, "book_links", None)
+        if not links or self.feed_mode:
+            return None
+        if not (self.is_local_mode and self.local_full_text) or self._book_veiled():
+            return None
+        if not self.displayed_is_local_page():
+            return None
+        try:
+            doc_pos = self.text_edit.cursorForPosition(pos).position()
+        except Exception:
+            return None
+        base = self.local_start_index + int(doc_pos)
+        if base in links:
+            return links[base]
+        if (base - 1) in links and self._inside_char_rect(pos, base - 1):
+            return links[base - 1]      # 点在标记右半边时，光标会落到它后面那一格
+        return None
+
+    def follow_reading_link(self, pos):
+        """点在注释标记上：跳到注释；点在注释的标记上：跳回原文。返回是否跳了。"""
+        target = self.reading_link_at(pos)
+        if target is None:
+            return False
+        self.jump_to_offset(target)
+        log_event(f"注释跳转 -> {target}")
+        return True
+
     def jump_to_offset(self, offset):
         if not self.local_full_text:
             return
@@ -9309,6 +9480,10 @@ class StealthReader(QWidget):
                 return False
         # 没选到东西、或只带出一个字/一块空白：都按"单击"办
         # （点的时候手指抖一下会留下一个字的残留选中，不能因此把菜单吞了）
+        # 点在注释标记上就先跳过去——它不会同时是高亮，两者不冲突
+        if self.follow_reading_link(event.pos()):
+            self.clear_text_selection()
+            return True
         hit = self.find_highlight_at(self.buffer_offset_at(event.pos()))
         if hit:
             pos = QPoint(event.pos())

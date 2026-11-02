@@ -3190,30 +3190,128 @@ _ep_p = ('<html><body><p class="normaltext4">北冥<sup class="suptext">\r\n\r\n
          '<a id="Y1_1" href="#Z1_1">①</a>\r\n\r\n</sup>\r\n\r\n 有魚，其名為鯤'
          '<sup class="suptext">\r\n<a id="Y1_2" href="#Z1_2">②</a>\r\n</sup>\r\n 。</p>'
          '</body></html>')
-_ep_txt, _ep_anchors, _ep_head = app_mod._epub_html_to_text(_ep_p.encode("utf-8"))
+_ep_txt, _ep_anchors, _ep_head, _ep_links = app_mod._epub_html_to_text(
+    _ep_p.encode("utf-8"))
 _ep_lines = _ep_txt.split("\n")
 check("脚注标记留在原句里（一句话还是一行）",
       _ep_lines == ["北冥①有魚，其名為鯤②。"], _ep_lines)
 check("标记旁边的源码换行不留空格（中文之间不塞空格）",
       "① 有" not in _ep_txt and "② 。" not in _ep_txt, _ep_txt[:40])
-check("标记上的锚点照样记着（跳注释还找得到）",
-      set(_ep_anchors) == {"Y1_1", "Y1_2"} and _ep_anchors["Y1_1"] == 0, _ep_anchors)
+# 锚点现在记的是"第几行第几列"，要正落在 ① 上（只记行首的话，段中的标记会跳到段首）
+check("标记上的锚点照样记着，而且正指着那个标记（跳注释还找得到）",
+      set(_ep_anchors) == {"Y1_1", "Y1_2"}
+      and _ep_txt[_ep_anchors["Y1_1"]] == "①"
+      and _ep_txt[_ep_anchors["Y1_2"]] == "②", _ep_anchors)
 # 注释那一段：标记 + 后面的注释文字是一行，不是"①"单独一行
 _ep_note = ('<p class="note1">\r\n<a id="Z1_1" href="#Y1_1">①</a>\r\n 北冥：“冥”，通溟。</p>')
-_ep_ntxt, _ep_nanch, _ = app_mod._epub_html_to_text(_ep_note.encode("utf-8"))
+_ep_ntxt, _ep_nanch, _h, _l = app_mod._epub_html_to_text(_ep_note.encode("utf-8"))
 check("注释段：①和它的注释文字在同一行",
       _ep_ntxt == "①北冥：“冥”，通溟。", _ep_ntxt)
 # 但真的换行（<br/>）和"没有块标签的平文本"还得断行，别把整章并成一行
-_ep_br, _a, _h = app_mod._epub_html_to_text(
+_ep_br, _a, _h, _l = app_mod._epub_html_to_text(
     '<p>甲<br/>乙</p><p>丙</p>'.encode("utf-8"))
 check("<br/> 和 <p> 该断还是断（没把整章并成一行）",
       _ep_br.split("\n") == ["甲", "乙", "丙"], _ep_br.split("\n"))
-_ep_plain, _a, _h = app_mod._epub_html_to_text("甲\n乙\n丙".encode("utf-8"))
+_ep_plain, _a, _h, _l = app_mod._epub_html_to_text("甲\n乙\n丙".encode("utf-8"))
 check("（没有块标签的）平文本仍按行分", _ep_plain.split("\n") == ["甲", "乙", "丙"],
       _ep_plain.split("\n"))
 # 英文单词之间的空格不能被中文那条规则吃掉
-_ep_en, _a, _h = app_mod._epub_html_to_text('<p>hello\nworld</p>'.encode("utf-8"))
+_ep_en, _a, _h, _l = app_mod._epub_html_to_text('<p>hello\nworld</p>'.encode("utf-8"))
 check("英文单词之间的空格留着", _ep_en == "hello world", _ep_en)
+
+print("\n=== 27f. 注释点击互跳：点原文的 ① 跳到注释，点注释的 ① 跳回原文 ===")
+# 真人 2026-11-02："我想实现注释点击的相互跳转"。书里的写法是
+# `<a id="Y1_1" href="#Z1_1">①</a>`…`<a id="Z1_1" href="text00008.html#Y1_1">①</a>`，
+# 两边成对；偏移必须精确到"那个字"，落到隔壁就是点了没反应。
+_frag_page = ('<html><body><p class="normaltext4">北冥'
+              '<a id="Y1_1" href="#Z1_1">①</a>有魚。</p>'
+              '<p class="note1"><a id="Z1_1" href="text00008.html#Y1_1">①</a>'
+              ' 北冥：“冥”，通溟。</p></body></html>')
+_frg_txt, _frg_anch, _frg_head, _frg_links = app_mod._epub_html_to_text(
+    _frag_page.encode("utf-8"))
+_frg_map = app_mod._epub_links_map(
+    _frg_txt, [("t.html", _frg_txt, _frg_anch, _frg_head, _frg_links)], {"t.html": 0})
+_frg_i = _frg_txt.index("①")
+_frg_j = _frg_txt.index("①", _frg_i + 1)
+check("解析层：原文①指向注释①（带文件名的写法也认）",
+      _frg_map.get(_frg_i) == _frg_j and _frg_map.get(_frg_j) == _frg_i,
+      (_frg_i, _frg_j, _frg_map.get(_frg_i), _frg_map.get(_frg_j)))
+check("解析层：偏移落在标记那个字上（不是隔壁的字）",
+      _frg_txt[_frg_i] == "①" and _frg_txt[_frg_i + 1] == "有"
+      and _frg_txt[_frg_j] == "①" and _frg_txt[_frg_j + 1] == "北", _frg_txt)
+_frag2 = ('<p>甲<a id="A1" href="#B1">②</a>乙</p><p><a id="B1">②</a>注文</p>')
+_2txt, _2anch, _2head, _2links = app_mod._epub_html_to_text(_frag2.encode("utf-8"))
+_2map = app_mod._epub_links_map(_2txt, [("a.html", _2txt, _2anch, _2head, _2links)],
+                                {"a.html": 0})
+_2i = _2txt.index("②")
+_2j = _2txt.index("②", _2i + 1)
+check("只有去的链接时补一条回来（不然点进注释就出不来）",
+      _2map.get(_2i) == _2j and _2map.get(_2j) == _2i, _2map)
+
+try:
+    from PyQt5.QtTest import QTest
+    _qtest_ok = True
+except Exception:
+    _qtest_ok = False
+_book_bak = (w.is_local_mode, w.local_full_text, w.local_start_index,
+             w.local_chapters, w.local_heading_offsets,
+             getattr(w, "book_links", None))
+
+
+def _click_doc_pos(doc_pos):
+    """在正文里"点"文档第 doc_pos 个字（合成鼠标事件，真走 release 那条路）。"""
+    _c = app_mod.QTextCursor(w.text_edit.document())
+    _c.setPosition(doc_pos)
+    _r = w.text_edit.cursorRect(_c)
+    _pt = QPoint(_r.center().x(), _r.center().y())
+    if _qtest_ok:
+        QTest.mouseClick(w.text_edit.viewport(), Qt.LeftButton, Qt.NoModifier, _pt)
+    else:
+        w.follow_reading_link(_pt)
+    pump(lambda: False, 0.2)
+
+
+try:
+    _save_lc = w.local_heading_offsets
+    w.is_local_mode = True
+    w.local_full_text = "甲①乙\n\n①注文"
+    w.local_chapters = []
+    w.local_heading_offsets = set()
+    w.book_links = {1: 5, 5: 1}
+    w.local_start_index = 0
+    w.render_local_page()
+    pump(lambda: False, 0.25)
+    check("（界面）这一小段铺出来了", w.text_edit.toPlainText().startswith("甲①乙"),
+          w.text_edit.toPlainText()[:12])
+    _click_doc_pos(1)
+    check("点原文的①：跳到注释那一条", w.local_start_index == 5,
+          (w.local_start_index, w.text_edit.toPlainText()[:12]))
+    _click_doc_pos(0)
+    check("点注释的①：跳回原文", w.local_start_index == 1,
+          (w.local_start_index, w.text_edit.toPlainText()[:12]))
+    _keep = w.local_start_index
+    _click_doc_pos(len(w.text_edit.toPlainText()) - 1)
+    check("点普通正文不跳", w.local_start_index == _keep, w.local_start_index)
+    # 悬停要变手型（能点的地方得看得出来）
+    _c2 = app_mod.QTextCursor(w.text_edit.document())
+    _c2.setPosition(1)
+    _r2 = w.text_edit.cursorRect(_c2)
+    try:
+        from PyQt5.QtCore import QPointF
+        from PyQt5.QtGui import QMouseEvent
+        _me = QMouseEvent(app_mod.QEvent.MouseMove, QPointF(_r2.center()), Qt.NoButton,
+                          Qt.NoButton, Qt.NoModifier)
+        w.update_viewport_cursor(_me)
+        _shape = w.text_edit.viewport().cursor().shape()
+        check("停在标记上光标变手型", _shape == Qt.PointingHandCursor, _shape)
+    except Exception as e:
+        check("停在标记上光标变手型（这条环境不支持，跳过）", True, str(e)[:40])
+finally:
+    (w.is_local_mode, w.local_full_text, w.local_start_index,
+     w.local_chapters, w.local_heading_offsets, _links_bak) = _book_bak
+    w.book_links = _links_bak or {}
+    w.render_local_page()
+    pump(lambda: False, 0.2)
 
 print("\n=== 28. 单实例：老进程还在拆钩子时要重试，不能一撞就弹")
 # 2026-10-22 真撞上一次：新进程比老进程先起来，第一次抢互斥体拿到 183，旧代码直接弹
