@@ -255,7 +255,7 @@ class IthomeSource(RealSource):
     COMMENT_API = "https://cmt.ithome.com/api/webcomment/getnewscomment"
     # 正文页里评论容器上的那个短 id，16 位十六进制
     COMMENT_SN_RE = re.compile(r'data-id="([0-9a-f]{16})"')
-    COMMENT_LIMIT = 30
+    COMMENT_LIMIT = 200          # 接口一次就把整串评论给回来（实测 43 条），别自己砍掉
 
     def channels(self):
         return list(self.CHANNELS)
@@ -3835,10 +3835,11 @@ class HupuSource(RealSource):
         out.source_label = ""
         return out
 
-    def _bbs_replies(self, tid):
-        """虎扑帖子的回复（`replies.list`）。赛后帖的讨论也走这里。"""
-        detail = self._detail_json(tid)
-        rows = ((detail.get("replies") or {}).get("list")) or []
+    def _bbs_replies(self, tid, page=1):
+        """虎扑帖子的回复（`replies.list`），一页 20 楼。赛后帖的讨论也走这里。"""
+        detail = self._detail_json(tid, page)
+        rep = detail.get("replies") or {}
+        rows = rep.get("list") or []
         out = []
         for i, it in enumerate(rows):
             blocks = self._localize_images(
@@ -3854,7 +3855,14 @@ class HupuSource(RealSource):
                 # 这就是"这条回复在回谁"，比正文里猜准得多（它们的正文不带 @ 前缀）
                 reply_to=_hupu_name((it.get("quote") or {}).get("author")),
             ))
-        return out
+        # 还有没有下一页：接口自己给了 current（第几页）/ total（一共几页）
+        try:
+            cur = int(rep.get("current") or page)
+            total = int(rep.get("total") or 0)
+        except (TypeError, ValueError):
+            cur, total = page, 0
+        nxt = (cur + 1) if (total and cur < total) else None
+        return out, nxt
 
     def _match_detail(self, post):
         """一场比赛的文字直播：头部比分 + 状态，然后最新的回合在上、越往下越早。"""
@@ -4002,9 +4010,17 @@ class HupuSource(RealSource):
         self.served_stale = bool(getattr(self.http, "served_stale", False))
         return raw.decode("utf-8", "replace")
 
-    def _detail_json(self, tid):
-        """帖子页里那坨 `__NEXT_DATA__` 的 `detail` 部分（正文和回复都在里面）。"""
-        html = self._html("/%s.html" % str(tid).strip(), TTL_DETAIL)
+    def _detail_json(self, tid, page=1):
+        """帖子页里那坨 `__NEXT_DATA__` 的 `detail` 部分（正文和回复都在里面）。
+
+        回复是**按页**的：第 1 页 `/<tid>.html`，第 2 页 `/<tid>-2.html`。
+        2026-11-02 实测：`?page=2` **不生效**（把第 1 页原样再发一遍，20 条全重叠），
+        `-2.html` 才是第 2 页（20 条、0 重叠、`replies.current=2`、`replies.total=6`）。
+        """
+        page = max(1, int(page or 1))
+        path = ("/%s.html" % str(tid).strip()) if page <= 1 else (
+            "/%s-%d.html" % (str(tid).strip(), page))
+        html = self._html(path, TTL_DETAIL)
         m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
         if not m:
             raise FeedNetError("虎扑这一页没带数据（可能改版了）：%s" % tid)
@@ -4064,16 +4080,29 @@ class HupuSource(RealSource):
         out.body = body
         return out, None
 
-    def comments(self, post, cursor=None):
-        """回复（虎扑的回复没有真正的层级，引用写在正文里，所以按平铺给）。"""
+    def _bbs_tid(self, post):
+        """这条帖子对应哪个 bbs 帖号（NBA 赛后帖要反查出来）。认不出就 None。"""
         if str(getattr(post, "channel", "") or "").strip() in self.NBA_CHANNELS:
             # 数据统计/文字直播本身是内容，没有"回复"这一层；
             # 但打完了的那场，详情页给的是赛后帖，回复就是它的讨论。
             if self.detail_view(post) == "stats":
-                return [], None
-            tid = self._cached_match_post(post.id)
-            return (self._bbs_replies(tid) if tid else []), None
-        return self._bbs_replies(post.id), None
+                return None
+            return self._cached_match_post(post.id) or None
+        return str(post.id or "") or None
+
+    def comments(self, post, cursor=None):
+        """回复（虎扑的回复没有真正的层级，引用写在正文里，所以按平铺给）。"""
+        tid = self._bbs_tid(post)
+        return (self._bbs_replies(tid)[0] if tid else []), None
+
+    def comments_page(self, post, cursor=None):
+        """滚到底接下一页回复（`/<tid>-2.html`，一页 20 楼，`replies.total` 管到头）。"""
+        page = max(1, int(cursor or 1))
+        tid = self._bbs_tid(post)
+        if not tid:
+            return [], None, None
+        items, nxt = self._bbs_replies(tid, page)
+        return items, None, nxt
 
 
 def _hupu_name(author):

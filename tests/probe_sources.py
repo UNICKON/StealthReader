@@ -2940,6 +2940,44 @@ check("混流搜索：只给一页（再往下没有）", _mix.search("苹果", 
 check("混流搜索：一个能搜的都没有时照实说",
       feed_sources.MixSource([_StubSrc("c", "丙站", err="x")]).can_search() is False)
 
+# ---------------------------------------------------------------- 24
+print("\n=== 24. 评论续页：虎扑按页翻、IT之家别把整串砍掉一半 ===")
+# 真人 2026-11-02：「其他的社区用不用同步上面这几个修复」
+_hp = feed_sources.HupuSource(None, {})
+_paths = []
+_hp._html = lambda path, ttl=None: (_paths.append(path), (
+    '<script id="__NEXT_DATA__">{"props":{"pageProps":{"detail":{"replies":'
+    '{"list":[],"current":2,"total":6}}}}}</script>'))[1]
+_hp._detail_json("123")
+check("虎扑第 1 页照旧 `/<tid>.html`", _paths[-1] == "/123.html", _paths)
+_hp._detail_json("123", 2)
+check("虎扑第 2 页走 `/<tid>-2.html`（`?page=2` 实测会把第 1 页原样重发，不能用）",
+      _paths[-1] == "/123-2.html", _paths)
+_hp._detail_json = lambda tid, page=1: {"replies": {
+    "list": [{"pid": "p%d" % page, "content": "第%d页" % page, "createdAt": 0,
+              "author": {"puname": "甲"}, "allLightCount": 0}],
+    "current": page, "total": 3}}
+_items, _nxt = _hp._bbs_replies("123", 1)
+check("虎扑续页：current<total 时给下一页游标", _nxt == 2, _nxt)
+_items, _nxt = _hp._bbs_replies("123", 3)
+check("虎扑翻到最后一页就不再给游标（不假装还有）", _nxt is None, _nxt)
+_posts = [feed_mod.Post(source="hupu", pid="123", title="帖子")]
+_hp.comments_page = getattr(_hp, "comments_page")
+_items, _why, _nxt = _hp.comments_page(_posts[0], 2)
+check("虎扑 comments_page：游标就是页码，回来还带着下一页", _nxt == 3 and len(_items) == 1,
+      (_nxt, len(_items)))
+
+_ih = feed_sources.IthomeSource(None, {})
+check("IT之家的评论条数上限放到 200（接口一次就把 44 条全给回来，以前砍成 30）",
+      _ih.COMMENT_LIMIT >= 200, _ih.COMMENT_LIMIT)
+_ih._comment_sn = lambda post: "sn0"
+_ih._get = lambda url, ttl=None, what="", timeout=None: {
+    "success": True, "content": {"comments": [{"id": i} for i in range(44)]}}
+_ih._to_comment = lambda c, i: feed_mod.Comment(cid=str(c["id"]), author="甲",
+                                               created="", score=0, body=[])
+_ih_c, _ih_w = _ih.comments(feed_mod.Post(source="ithome", pid="1", title="t"))
+check("IT之家 44 条评论一条都不丢", len(_ih_c) == 44, len(_ih_c))
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23
