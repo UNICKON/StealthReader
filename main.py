@@ -3039,9 +3039,27 @@ class FeedSearchEdit(QLineEdit):
     是什么样；这条是**浮在正文顶上的一条**，回车之前原列表一直在下面，随时能反悔。
     """
 
+    def __init__(self, parent=None, on_hide=None):
+        QLineEdit.__init__(self, parent)
+        self._on_hide = on_hide
+
+    def _close(self):
+        """收起，并且把焦点**还回去**。
+
+        Qt 里 hide() 一个正拿着焦点的子控件，焦点就悬空了；悬空之后窗口收不到
+        keyPressEvent，`c`/`d`/`Esc` 一起失灵——真人 2026-11-02 搜完就是这个：
+        "搜索完怎么没别的交互了，我没法cd也没法esc"。"""
+        self.hide()
+        self.clearFocus()
+        if self._on_hide is not None:
+            try:
+                self._on_hide()
+            except Exception:
+                pass
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            self.hide()
+            self._close()
             return
         QLineEdit.keyPressEvent(self, event)
 
@@ -6990,12 +7008,20 @@ class StealthReader(QWidget):
         box = getattr(self, "feed_search_box", None)
         if box is not None and box.isVisible():
             box.hide()
+            self._feed_focus_back()
+
+    def _feed_focus_back(self):
+        """把焦点还给正文：社区页的键都靠窗口的 keyPressEvent，焦点悬空就一个键都不响。"""
+        try:
+            self.text_edit.setFocus(Qt.OtherFocusReason)
+        except Exception:
+            pass
 
     def feed_search_box_make(self):
         """把搜索条建出来（浮在正文上方，第一次按 f 才建）。"""
         if self.feed_search_box is not None:
             return self.feed_search_box
-        box = FeedSearchEdit(self.text_edit)
+        box = FeedSearchEdit(self.text_edit, on_hide=self._feed_focus_back)
         box.setPlaceholderText("搜索这个社区，回车确认（Esc 收起）")
         box.setClearButtonEnabled(True)
         box.returnPressed.connect(self.feed_search_go)
@@ -7047,6 +7073,7 @@ class StealthReader(QWidget):
         text = box.text() if box is not None else ""
         if box is not None:
             box.hide()
+            self._feed_focus_back()
         text = " ".join(str(text or "").split())
         if not text:
             return self.feed_search_exit()
@@ -7408,6 +7435,7 @@ class StealthReader(QWidget):
         if key == Qt.Key_Escape:
             if self.feed_search_box is not None and self.feed_search_box.isVisible():
                 self.feed_search_box.hide()
+                self._feed_focus_back()
                 return True
             if self.feed_search_text:
                 return self.feed_search_exit()
@@ -8070,7 +8098,8 @@ class StealthReader(QWidget):
         """偷瞄时收到的社区键（信号从钩子线程来，这里是主线程）。"""
         if not self.feed_mode:
             return
-        if self.feed_search_box is not None and self.feed_search_box.hasFocus():
+        if (self.feed_search_box is not None and not self.feed_search_box.isHidden()
+                and self.feed_search_box.hasFocus()):
             return                       # 正在输入框里打字：别把字母当成页面键
         self.on_feed_key(int(key))
 

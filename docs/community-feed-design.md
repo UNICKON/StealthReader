@@ -2286,6 +2286,14 @@ Cookie。副作用是好的：Cookie 过期了列表照样刷得动。
 `search_hint` 是它的唯一来源）。这条是刻意的：**弹一个框、输了词、然后什么也搜不出来**，
 比直接说"这里搜不了"更糟。混流的 `can_search()` 是"至少有一家能搜"。
 
+**搜完别把键盘锁死**：`hide()` 一个正拿着焦点的子控件，Qt 会把焦点**留在那个已经看不见的
+控件上**（本机实测：`hide()` 之后 window 的 `focusWidget()` 还是那个 `QLineEdit`），于是后面
+每个字母都敲进了一个隐形的输入框：`c`/`d` 不切社区、`Esc` 只把隐形框再收一次，看起来就是
+"搜索完没别的交互了"（真人 2026-11-02 的原话）。现在收起输入条一律走 `_close()` /
+`_feed_focus_back()`：`hide()` + `clearFocus()` + 把焦点还给正文，那条"正在输入就别抢页面键"
+的闸也从 `hasFocus()` 收紧成"没藏起来**且**有焦点"。`probe_ui.py §27b` 钉住了它
+（回车后、Esc 收起后，window 的 `focusWidget()` 必须是正文）。
+
 **夹具与探针**：`tests/fixtures/{zhihu,nga,xhs,github}_search.json` + `douban_search.html`
 都是 `tests/record_fixtures.py search` 录的真响应（裁剪过：只留适配器用到的字段，
 小红书那条还去掉了有时效的 `xsec_token`；GitHub 把某个仓库那几百 KB 的填充描述截到 200 字）。

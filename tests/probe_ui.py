@@ -2919,10 +2919,37 @@ check("搜索结果落在「搜索：苹果 手机」这一栏（页脚能看见
 pump(lambda: bool(w.feed_nav.posts) or not w.feed_busy, 10.0)
 check("列表画出来的就是搜到的东西", [p.id for p in w.feed_nav.posts] == ["a9001"],
       ([p.id for p in w.feed_nav.posts], w.feed_status_text()[:60]))
+# 真人 2026-11-02："搜索完怎么没别的交互了，我没法cd也没法esc"——hide() 一个拿着焦点的
+# 子控件，焦点就悬空，窗口再也收不到 keyPressEvent。焦点必须还给正文。
+check("回车之后焦点回到正文（不还回去的话 c/d/Esc 一起失灵）",
+      w.focusWidget() is w.text_edit,
+      type(w.focusWidget()).__name__ if w.focusWidget() is not None else None)
 check("退出搜索：回到原来那一栏（热榜），不是回到第一栏",
       w.feed_search_exit() is True and w.feed_search_text == "" and w.feed_nav.channel == "热榜",
       (w.feed_search_text, w.feed_nav.channel))
 pump(lambda: not w.feed_busy)
+
+_prev_key = w.feed_source().key
+_ok_c = w.on_feed_key(Qt.Key_C)
+pump(lambda: not w.feed_busy)
+check("搜完（以及退出搜索后）照样能按 c 切社区，不再'卡住'",
+      _ok_c is True and w.feed_source().key != _prev_key,
+      (_ok_c, _prev_key, w.feed_source().key))
+_guard = 0
+while w.feed_source().key != _src.key and _guard < 12:
+    w.feed_cycle_source(1)
+    pump(lambda: not w.feed_busy)
+    _guard += 1
+w.feed_goto_channel("热榜")
+pump(lambda: not w.feed_busy)
+
+# Esc 收起输入条（不开搜索）也要把焦点还回去
+w.feed_search_open()
+_esc_ok = w.on_feed_key(Qt.Key_Escape)
+check("Esc 收起输入条：焦点照样回到正文",
+      _esc_ok is True and w.feed_search_box.isHidden() and w.focusWidget() is w.text_edit,
+      (_esc_ok, w.feed_search_box.isHidden(),
+       type(w.focusWidget()).__name__ if w.focusWidget() is not None else None))
 
 w.feed_search_run("苹果")
 pump(lambda: not w.feed_busy)
