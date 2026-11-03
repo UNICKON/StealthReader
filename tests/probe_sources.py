@@ -2472,11 +2472,48 @@ _zarows = _za._answer_comments("a8")
 check("知乎：分不清是哪一楼时就留在顶层（不瞎猜、不吞内容）",
       [c.id for c in _zarows] == ["21", "22", "23"] and _zarows[2].reply_to == "甲",
       [(c.id, c.reply_to) for c in _zarows])
-# 翻页：说了算的是 paging.is_end（post.n_comments 是"评论+回复"的总数，不能拿来判顶层）
+# 翻页：**不能看 `paging.is_end`**（post.n_comments 是"评论+回复"的总数，也不能拿来判顶层）
 _np = feed_mod.Post(source="zhihu", pid="a9", title="t", n_comments=45)
 _zpage, _zwhy, _znxt = _zc.comments_page(_np)
-check("知乎：顶层一页翻完就停（不拿'评论+回复'总数当下一页依据）",
+check("知乎：顶层不满一页就停（不拿'评论+回复'总数当下一页依据）",
       bool(_zpage) and _znxt is None, (len(_zpage or []), _znxt))
+
+# 2026-11-03 真人：「知乎回答的评论，只能看到 6 条」。
+# 实测一条 171 条评论的回答：`root_comments?limit=20&offset=0/20/40/60` 每次都回来 20 条
+# **全新的**，`paging.is_end` 四次全是 true，`totals` 是 0/1/2 这种没意义的数；
+# 旧代码把它当"到头了"的依据 → 这一层只有第一页（8 条里再挪走一两楼 = 真人看到的 6、7 条）。
+# 现在只按"这一页有没有满"判断：满页 = 可能还有，不满 = 真到头。
+def _zcRows(base, n):
+    return [{"id": base + i, "content": "<p>第 %d 条</p>" % (base + i),
+             "author": {"name": "甲", "member": {"id": "m-%d" % (base + i)}},
+             "child_comment_count": 0, "child_comments": []} for i in range(n)]
+
+
+_ZP1 = {"data": _zcRows(300, 20), "paging": {"is_end": True, "totals": 1}}
+_ZP2 = {"data": _zcRows(320, 13), "paging": {"is_end": True, "totals": 2}}
+_ZEMB = {"data": _zcRows(400, 8), "paging": {"is_end": True, "totals": 0}}
+_zp = feed_sources.ZhihuSource(FakeHttp({
+    "root_comments?limit=20&offset=0": _ZP1,
+    "root_comments?limit=20&offset=20": _ZP2,
+    "root_comments?limit=8&offset=0": _ZEMB}, cache=MemCache()), {"cookie": "x"})
+_zp.images_off = True
+_zpost = feed_mod.Post(source="zhihu", pid="a7", title="t", n_comments=171)
+_p1, _w1, _n1 = _zp.comments_page(_zpost, None)
+check("知乎：回答详情一页 20 条（以前 8 条，真人看到 6、7 条）", len(_p1) == 20, len(_p1))
+check("知乎：这一页满了就给下一页游标——哪怕 `paging.is_end` 写着 true",
+      _n1 == 20, _n1)
+_p2, _w2, _n2 = _zp.comments_page(_zpost, _n1)
+check("知乎：第二页从 offset=20 接上，不满一页才停",
+      [c.id for c in _p2][:1] == ["320"] and _n2 is None, ([c.id for c in _p2][:1], _n2))
+_n_before = len(_zp.http.calls)
+_zem = _zp._answer_comments("a7", limit=feed_sources.ZhihuSource.ANSWER_EMBED_COMMENTS,
+                            children=False)
+check("知乎：问题页那条 8 条预览不吃详情页 20 条那份缓存（各问各的一次）",
+      len(_zem) == 8 and len(_zp.http.calls) == _n_before + 1,
+      (len(_zem), len(_zp.http.calls) - _n_before))
+check("知乎：两个 limit 的缓存键不一样（先被谁写过就还是谁）",
+      _zp._cpage_key("7", 0, 20) != _zp._cpage_key("7", 0, 8),
+      (_zp._cpage_key("7", 0, 20), _zp._cpage_key("7", 0, 8)))
 
 
 # ---------------------------------------------------------------- 收尾

@@ -2401,6 +2401,38 @@ Cookie。副作用是好的：Cookie 过期了列表照样刷得动。
 `feed_move` 在"停在最后一条再往下"时补了一次续页——和详情页那条 `feed_more_comments_now()`
 是同一个道理。实测：9 → 19 → 29 → 37，滚动条也跟着长起来（0 → 608 → 1408 → 2051）。
 
+## 9.bd（2026-11-03）知乎回答的评论只有 6、7 条：`paging.is_end` 在撒谎
+
+真人：「知乎回答的评论，只能看到6条」。
+
+**实测（2026-11-03，一条 171 条评论的回答 `a2100744488826181048`）**：
+
+| 请求 | 回来 | `paging.is_end` | `paging.totals` |
+|---|---|---|---|
+| `root_comments?limit=20&offset=0` | 20 条新评论 | true | 0 |
+| `…offset=20` | 20 条新评论 | true | 0 |
+| `…offset=40` | 20 条新评论 | true | 1 |
+| `…offset=60` | 20 条新评论 | true | 2 |
+
+四页全是真的新评论（id 不重），`is_end` 却四次都说"到头了"，`totals` 还是个 0/1/2
+的假数。旧代码 `nxt = off + n_rows if (n_rows and not is_end)`，于是**这一层永远
+只有第一页**：`limit=8` 拿回 8 行，其中一两行是"回复某楼"被挪进那一楼的子评论里，
+顶层就剩 6、7 条——正好是真人看到的数。问题页那层
+（`/questions/<qid>/answers`，`is_end=false`、`totals=452`）一直是好的，骗人的只有
+回答评论这一层。
+
+**改了什么**（`feed_sources.py`）：
+1. `ANSWER_COMMENTS_LIMIT` 8 → **20**（站上自己也是 20 一页）。
+2. 续页判据换成"**这一页有没有满**"：`_page_meta[key] = (len(rows), len(rows) < limit)`。
+   满了就可能还有，不满才是真到头（宁可多问一次，也不假装没有）。
+3. `ANSWER_EMBED_COMMENTS = 8`：问题页里每条回答仍只带 8 条预览（一屏 6 条回答，
+   每条 20 条会撑成 120 条）；缓存键 `_cpage_key` 带上 limit，两种 limit 各存各的。
+
+**真窗口验的**（offscreen，同一台机器、真 Cookie）：
+- 修改前：`comments_page → 7 条，next=None`（顶层就 7 条，滚到底也不动）。
+- 修改后：第一屏 **20 条**、`c_more=True`、`c_cursor=20`；按到底续页 → **33 条**、
+  `c_more=False`（那条回答的顶层就 33 条，剩下的 43 条是回复），正文 3219 → 3949 字。
+
 ## 10. 我替你定的、你可能想改的
 
 1. 键位那一套（尤其 `Ctrl+Alt+F`）。

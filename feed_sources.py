@@ -712,7 +712,12 @@ class ZhihuSource(RealSource):
     # 一页里最多给几条评论各补一次子评论（并发）。顶层接口自带的 2 条预览是白送的，
     # 所以这个数是"想多摆几条"的量，不是"能不能摆"的门槛。
     CHILDREN_THREADS = 6
-    ANSWER_COMMENTS_LIMIT = 8
+    # 回答详情那一页摆几条顶层评论。**一页 20**：站上自己也是 20 一页，
+    # 一页只给 8 条的话（以前就是这个值）真人看到的就是"评论只有 6、7 条"。
+    ANSWER_COMMENTS_LIMIT = 20
+    # 问题页里每条回答"顺带"摆的那几条评论：那里要的是广度（一屏 6 条回答），
+    # 每条 20 条会把一页撑成 120 条，所以只带 8 条预览，点进去才是整页。
+    ANSWER_EMBED_COMMENTS = 8
     # 一条回答最多摆多少块（一块 = 一个段落或一张图）。
     # **帖子正文那一份不设小上限**：真人要的就是"能读完一条长回答"，按 40 块截断等于又省略了
     # （实测一条 9000 字的回答有 100+ 块）。300 块是防疯的兜底，正常回答根本到不了。
@@ -1123,6 +1128,12 @@ class ZhihuSource(RealSource):
                 kids.append(c)
         return kids, 0
 
+    @staticmethod
+    def _cpage_key(aid, offset, limit):
+        """评论分页的缓存键：**带上 limit**。问题页里每条回答只带 8 条预览，
+        回答详情页要 20 条，两个 limit 不能共用一份缓存（共用的话先被谁写过就是谁）。"""
+        return "c:%s:%d:%d" % (aid, int(offset or 0), int(limit))
+
     def _answer_comments(self, aid, limit=None, children=True, offset=0):
         """一条回答底下的**顶层评论**（连着它的子评论一层）。
 
@@ -1142,15 +1153,18 @@ class ZhihuSource(RealSource):
         `children=True` 时再给前几条有回复的评论各补一次
         `/api/v4/comments/<cid>/child_comments`（一页 12 条，并发的），有"回复某楼"的
         那几楼排在最前面；`children=False`（问题页那一层，一屏 6 条回答）只吃白送的预览。
+
+        `limit` 默认 `ANSWER_COMMENTS_LIMIT`（20 条，站上自己也是这个页大小），
+        `offset` 按**原始行数**往后翻；问题页那一层传 `ANSWER_EMBED_COMMENTS`（8 条）当预览。
         """
         aid = str(aid).lstrip("a")
-        key = "c:%s:%d" % (aid, int(offset or 0))
+        limit = int(limit or self.ANSWER_COMMENTS_LIMIT)
+        key = self._cpage_key(aid, offset, limit)
         hit = None if feed_net.is_fresh() else self._ans.get(key)
         if hit is not None:
             items, _why, when = hit
             if items or (time.time() - when) < self.RETRY_AFTER:
                 return list(items)
-        limit = int(limit or self.ANSWER_COMMENTS_LIMIT)
         url = ("%s/api/v4/answers/%s/root_comments?limit=%d&offset=%d"
                % (self.base_url, aid, limit, int(offset or 0)))
         out = []
@@ -1161,10 +1175,14 @@ class ZhihuSource(RealSource):
         except Exception:
             data = {}
         rows = [r for r in ((data or {}).get("data") or []) if isinstance(r, dict)]
-        paging = ((data or {}).get("paging") or {}) if isinstance(data, dict) else {}
-        # 翻页按**原始行数**推进（有的行没正文会被跳过，按摆出来的条数推会原地打转）；
-        # 停不停看接口自己的 `paging.is_end`。
-        self._page_meta[key] = (len(rows), bool(paging.get("is_end")))
+        # 翻页按**原始行数**推进（有的行没正文会被跳过，按摆出来的条数推会原地打转）。
+        #
+        # **`paging.is_end` 在这个接口上永远是 true**（2026-11-03 实测一条 171 条评论的回答：
+        # `limit=20&offset=0/20/40/60` 每次都回来 20 条全新的，`is_end` 四次全是 true，
+        # `paging.totals` 还是 0/1/2 这种没意义的数）。之前拿它当"到头了"的判据，于是这一层
+        # 只有第一页、滚到底也不续——真人报的"知乎回答的评论只能看到 6 条"就是这个。
+        # 现在只按"这一页有没有满"判断：不满一页才是真到头。
+        self._page_meta[key] = (len(rows), len(rows) < limit)
 
         def _mid(author):
             """`author` 里那个 member id：判断"回复的是哪一楼"只认它（名字会重）。"""
@@ -1271,9 +1289,11 @@ class ZhihuSource(RealSource):
         off = max(0, int(cursor or 0))
         aid = str(post.id).lstrip("a")
         cmts = self._answer_comments(aid, offset=off)
-        # 下一页游标 = 已经翻过的**原始行数**；停不停看接口自己的 `paging.is_end`
-        #（`post.n_comments` 是"评论 + 回复"的总数，拿它跟顶层条数比会永远以为还有下一页）。
-        n_rows, is_end = self._page_meta.get("c:%s:%d" % (aid, off), (len(cmts), True))
+        # 下一页游标 = 已经翻过的**原始行数**。"还有没有下一页"看 `_page_meta` 里记的
+        # "这一页满没满"（`paging.is_end` 这一层永远是 true，见 `_answer_comments` 里的实测）；
+        # `post.n_comments` 是"评论 + 回复"的总数，拿它跟顶层条数比会永远以为还有下一页。
+        n_rows, is_end = self._page_meta.get(
+            self._cpage_key(aid, off, self.ANSWER_COMMENTS_LIMIT), (len(cmts), True))
         nxt = (off + n_rows) if (n_rows and not is_end) else None
         return cmts, None, nxt
 
@@ -1360,7 +1380,8 @@ class ZhihuSource(RealSource):
         if need:
             def _one(idx, aid0):
                 try:
-                    got[idx] = self._answer_comments(aid0, children=False)
+                    got[idx] = self._answer_comments(aid0, limit=self.ANSWER_EMBED_COMMENTS,
+                                                     children=False)
                 except Exception:
                     got[idx] = []
 
