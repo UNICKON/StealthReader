@@ -2515,6 +2515,38 @@ check("知乎：两个 limit 的缓存键不一样（先被谁写过就还是谁
       _zp._cpage_key("7", 0, 20) != _zp._cpage_key("7", 0, 8),
       (_zp._cpage_key("7", 0, 20), _zp._cpage_key("7", 0, 8)))
 
+# 真人 2026-11-03：「问题的回答好像也只有八条」。
+# 问题页那一层的树是 问题 → 回答 → 这条回答的评论；回答底下只带 8 条预览，
+# 而占位行要看 `n_replies`——以前它没设，于是 8 条看着就是全部，也没处点。
+# 现在记站上的 `comment_count`，点开续的是**这条回答的** `root_comments`。
+_ZQANS = {"data": [{"id": "9001", "content": "<p>回答一</p>", "author": {"name": "甲"},
+                    "comment_count": 30, "voteup_count": 7, "created_time": 1700000000}],
+          "paging": {"is_end": True, "totals": 1}}
+_ZQPREV = {"data": _zcRows(500, 8), "paging": {"is_end": True}}
+_ZQFULL = {"data": _zcRows(520, 20), "paging": {"is_end": True}}
+_ZQEND = {"data": _zcRows(540, 2), "paging": {"is_end": True}}
+_zq = feed_sources.ZhihuSource(FakeHttp({
+    "questions/7/answers": _ZQANS,
+    "root_comments?limit=8&offset=0": _ZQPREV,
+    "root_comments?limit=20&offset=8": _ZQFULL,
+    "root_comments?limit=20&offset=28": _ZQEND}, cache=MemCache()), {"cookie": "x"})
+_zq.images_off = True
+_zqitems, _zqwhy = _zq._answers_comments("7")
+check("知乎：问题页里每条回答记着站上的评论总数（占位行才有得写）",
+      len(_zqitems) == 1 and _zqitems[0].n_replies == 30 and len(_zqitems[0].replies) == 8,
+      (_zqitems[0].n_replies, len(_zqitems[0].replies)) if _zqitems else "空")
+_zqpost = feed_mod.Post(source="zhihu", pid="7", title="q",
+                        url="https://www.zhihu.com/question/7")
+_kids, _ktot = _zq.children_page(_zqpost, "9001", 8, 10)
+_calls = [str(u) for u in _zq.http.calls]
+check("知乎：点开回答那一楼续的是它的 root_comments（不是 child_comments）",
+      len(_kids) == 20 and any("root_comments?limit=20&offset=8" in u for u in _calls)
+      and not any("child_comments" in u for u in _calls), (len(_kids), _calls[-2:]))
+check("知乎：这一页满了就还按站上总数算（0 = 接着翻）", _ktot == 0, _ktot)
+_kids2, _ktot2 = _zq.children_page(_zqpost, "9001", 28, 10)
+check("知乎：翻到底时把总数校正成顶层真数（不再写着 comment_count 骗人）",
+      len(_kids2) == 2 and _ktot2 == 30, (len(_kids2), _ktot2))
+
 
 # ---------------------------------------------------------------- 收尾
 shutil.rmtree(TMP_CACHE, ignore_errors=True)

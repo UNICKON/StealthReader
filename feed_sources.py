@@ -1111,6 +1111,17 @@ class ZhihuSource(RealSource):
         """
         cid = str(cid)
         off = max(0, int(have or 0))
+        if not self._is_answer_post(post):
+            # 问题页那一层里，"这一楼"是**一条回答**：它下面摆着的是这条回答的评论。
+            # 再往下翻当然还是它的评论（`root_comments?offset=8`），**不是** `/comments/<cid>/
+            # child_comments`——拿回答 id 去问子评论接口只会拿回空，于是那 8 条预览就是全部，
+            # 真人看到的"问题的回答好像也只有八条"就是这个。
+            limit = max(20, int(want or 10))
+            kids = self._answer_comments(cid, limit=limit, offset=off, children=False)
+            # 这一页不满 = 真到底了：把 `n_replies` 校正成"顶层实际有几条"，
+            # 免得占位行一直写着 `comment_count`（那是"评论 + 回复"的总数）骗人。
+            # 满页时给 0，意思是"按站上那个总数接着算"。
+            return kids, (0 if len(kids) >= limit else off + len(kids))
         limit = max(20, int(want or 10))          # 实测一次给 20 条没问题，别一条条挤
         url = ("%s/api/v4/comments/%s/child_comments?limit=%d&offset=%d"
                % (self.base_url, cid, limit, off))
@@ -1410,6 +1421,10 @@ class ZhihuSource(RealSource):
                 score=int(it.get("voteup_count") or 0),
                 body=blocks,
                 replies=reps,
+                # 站上这条回答一共有多少条评论（`comment_count` 是"评论 + 回复"的总数，
+                # 拿它跟顶层预览比会偏大——但占位行要的就是"还有多少没摆出来"，
+                # 宁可多留一行，也别让人以为这 8 条就是全部）。
+                n_replies=int(it.get("comment_count") or 0),
             ))
         return out, None
 
