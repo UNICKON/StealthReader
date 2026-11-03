@@ -6692,6 +6692,23 @@ class StealthReader(QWidget):
         except Exception:
             pass
 
+    def _feed_restore_list(self):
+        """从详情退回列表：先落回"进帖前滚到的那一像素"，再把人读到的那条 ensure 进可见区。
+
+        两个都要：像素最准（人滚到哪就是哪），但列表被续页/图片撑高过时会偏，
+        ensure 那一下是兜底。以前 `feed_home`（Z、以及"从回答点标题进问题再 Esc"）
+        只读 `feed_list_pos`，而那个值只在"进/切来源"时记——**进帖不记**，于是退出时
+        它还是 `None`：`render_feed` 把 `None` 当成"保持原样"，把**详情页的滚动位置**
+        搬回列表，实际就落在顶上（真人报的"点进帖子再退出，没有回到点进去时的位置"）。
+        """
+        pos = self.feed_list_pos.get(self._feed_pos_key())
+        self.feed_restore_pos = int(pos) if pos is not None else 0
+        self.render_feed()
+        cur = self.feed_current_block()
+        if cur is not None:
+            # 排到"像素回位"之后：那时文档高度才算稳，ensure 才不会按半截高度量
+            QTimer.singleShot(0, lambda c=cur: self.feed_ensure_visible(c))
+
     def _feed_apply_pending_scroll(self):
         want = self._feed_pending_scroll
         self._feed_pending_scroll = None
@@ -6725,8 +6742,7 @@ class StealthReader(QWidget):
         if not nav.home():
             return False
         self.feed_gen += 1                  # 还在飞的详情结果不许再把视图弹回详情
-        self.feed_restore_pos = self.feed_list_pos.get(self._feed_pos_key())
-        self.render_feed()
+        self._feed_restore_list()           # 回到点进去时那一行（以前这里会落到顶上）
         self.update_review_bar()
         return True
 
@@ -6883,6 +6899,7 @@ class StealthReader(QWidget):
             if getattr(cur, "more_for", ""):
                 return self.feed_toggle_collapse()
             return False
+        self._feed_save_pos()           # 进帖之前先把"列表滚到哪"记下来：退出要回原位
         if not nav.open_selected():
             return False
         self.feed_gen += 1                  # 视图换代：还在飞的列表结果不许再盖回来
@@ -6897,15 +6914,9 @@ class StealthReader(QWidget):
         if nav is None or not nav.back():
             return False
         self.feed_gen += 1                  # 退回列表了，还在飞的详情结果不许把视图又弹回详情
-        self.feed_restore_pos = 0           # 换了一层：从顶上读（列表会再 ensure 到刚才那条）
         if getattr(self, "feed_live_timer", None) is not None:
             self.feed_live_timer.stop()     # 回到列表就没有"进行中"这回事了
-        self.render_feed()
-        cur = self.feed_current_block()
-        if cur is not None:
-            self.feed_ensure_visible(cur)   # 回到刚才读的那一条（不在可见区里才滚）
-        else:
-            self.feed_scroll_top()
+        self._feed_restore_list()           # 回到点进去时那一行（不是顶上）
         return True
 
     def feed_question_id(self, post=None):

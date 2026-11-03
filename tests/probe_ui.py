@@ -445,6 +445,47 @@ pump(lambda: not w.feed_busy, 10.0)
 check("退回列表之后，晚到的详情结果没有把视图弹回详情", w.feed_nav.view == "list",
       w.feed_nav.view)
 
+# 6.3 真人 2026-11-03：「点进帖子再退出，没有回到点进去时的浏览位置」。
+#     病根：`feed_list_pos` 只在"进/切来源"时记，**进帖不记**；Z（feed_home）读不到就
+#     把 `feed_restore_pos` 设成 None，渲染时 `None` 表示"保持原样"——于是把**详情页的
+#     滚动位置**搬回了列表，实际落在顶上。现在进帖时先记，退出一律按它回位。
+_posts = [feed_mod.Post(source="ithome", pid="p%d" % i, title="第 %d 条帖子" % i,
+                        excerpt="内容 " * 120, n_comments=3) for i in range(200)]
+w.show()                      # 前面几节把窗口藏过：不显示就不排版，滚动条恒为 0
+w.resize(825, 500)
+w.feed_nav.reset()
+w.feed_nav.channel = "热榜"
+w.feed_nav.posts = _posts
+w.feed_nav.index = 0
+w.feed_gen += 1
+_sb = w.text_edit.verticalScrollBar()
+w.render_feed()
+pump(lambda: _sb.maximum() > 500, 6.0)      # 200 条排一会儿才量得准
+check("列表铺得够长、能滚（不然这一条验不了）", _sb.maximum() > 500, _sb.maximum())
+_orig_feed_load = w.feed_load
+w.feed_load = lambda what, post=None, fresh=False: None    # 详情不取数：只验回位
+try:
+    for _how, _idx in (("Z", 9), ("Backspace", 5)):
+        w.feed_nav.index = _idx
+        w.feed_highlight(ensure=True)
+        pump(lambda: False, 0.4)
+        _p0 = _sb.value()
+        w.feed_open()
+        pump(lambda: False, 0.3)
+        _in_detail = (w.feed_nav.view == "detail" and _sb.value() == 0)
+        if _how == "Z":
+            w.on_feed_key(Qt.Key_Z)
+        else:
+            w.on_feed_key(Qt.Key_Backspace)
+        pump(lambda: False, 1.1)
+        check("按 %s 退出详情：回到进帖时那一行（进帖前 %d → 退出后 %d）"
+              % (_how, _p0, _sb.value()),
+              _in_detail and w.feed_nav.view == "list" and _p0 > 0
+              and abs(_sb.value() - _p0) <= 40,
+              (_in_detail, _p0, _sb.value(), w.feed_nav.view))
+finally:
+    w.feed_load = _orig_feed_load
+
 print("\n=== 7. 微信读书书架窗口（只到\"读到哪了\"）===")
 
 
