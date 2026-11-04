@@ -596,6 +596,7 @@ def run_rt(app, args):
             if off is not None:
                 rect.moveTo(e.globalPos() - off)
                 view.setGeometry(rect)
+                box["moved"] = True
 
         def on_release(_e):
             drag.pop("off", None)
@@ -630,10 +631,12 @@ def run_rt(app, args):
             print("跟到变化：行距 %d 左边距 %d 相位 %d 底 %s 字 %s"
                   % (st["pitch"], st["left"], st["phase"],
                      st["bg"].name(), st["fg"].name()))
-        elif abs(view.pad_top - int(st["phase"])) > 1:
-            # 没变化也要对一下相位（窗口被挪动、底下滚了一行时会差一两像素）
+        elif abs(view.pad_top - int(st["phase"])) > 1 and box.get("moved"):
+            # 相位**不每帧都改**：实测它会在 4~22 之间跳（带子下沿常把最后一行切半行），
+            # 跟着改就成了"第一条墨线上下抖"。只在窗口被拖动过之后才对一次。
             view.pad_top = int(st["phase"])
             view.restyle()
+            box["moved"] = False
 
     timer = QTimer()
     timer.timeout.connect(tick)
