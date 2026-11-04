@@ -466,6 +466,10 @@ def ring_measure(rect, pad=80):
         return None
     if not (12 <= m["pitch"] <= 60) or m["ink"] < 6 or m["bands"] < 3:
         return None
+    if m["left"] > rect.width() * 0.35:
+        # 真桌面实跑时量到过 left=1430（窗口才 1190 宽）：那是"文字在窗口右半边之外"，
+        # 照这个左边距排，字全排到窗口外面去，看着就是一块空白。这种直接判死。
+        return None
     pitch = max(6, int(m["pitch"]))
     t = m["tops"][-1]
     while t < pad:
