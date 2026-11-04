@@ -25,3 +25,6 @@ cache/
 # 连 `.bak` 一起忽略：保存时留的那份备份里也是明文 Cookie。
 feed_auth.json
 feed_auth.json.bak
+
+# overlay_demo.py 跑出来的对照图（本机工件，不进版本库）
+overlay_*.png
