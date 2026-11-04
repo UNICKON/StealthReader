@@ -8,6 +8,7 @@
 不接社区流，填的是占位文字。
 
 用法：
+    python overlay_demo.py --play      # 看得见：假文档窗口 + 覆盖层盖住它下半截（不碰真屏幕）
     python overlay_demo.py --self      # 零屏幕：造一块假文档 → 采样 → 覆盖 → 量误差
     python overlay_demo.py             # 真桌面：盖在窗口那块位置，采它下面的像素
     python overlay_demo.py --rect 100,80,900,220
@@ -386,6 +387,66 @@ def run_self(qapp):
     return 0 if not bad else 1
 
 
+def run_play(app):
+    """看得见的那种 demo：开一个"假文档"窗口，再用覆盖层盖住它的下半截。
+
+    全程不碰真实屏幕（图是从我们自己的窗口 grab 出来的），所以随便看、随便盖。
+    Esc 关掉，两分钟自己退。
+    """
+    truth = dict(font_px=18, pitch=26, left=24, top=14, bg="#fbfbf7", fg="#262626")
+    doc = FakeDoc(QRect(0, 0, 760, 520).size(), **truth)
+    g = QApplication.primaryScreen().availableGeometry()
+    doc.move(g.x() + 90, g.y() + 70)
+    doc.setWindowTitle("下面这份是假文档（真值 18px / 行距 26px）")
+    doc.show()
+    doc.raise_()
+    app.processEvents()
+    state = {}
+
+    def cover():
+        img = doc.grab().toImage()
+        y0 = 157                                   # 故意选成不是行距整数倍
+        rect = QRect(0, y0, 760, 300)
+        st = measure(img.copy(0, y0, rect.width(), rect.height()))
+        if not st.get("ok"):
+            print("量不出来：%s" % st.get("why"))
+            app.quit()
+            return
+        view = MatchedView(rect, st)
+        pad = _phase_pad(img, rect, st)
+        view.pad_top = pad
+        view.restyle()
+        src2 = dict(st)
+        src2["top"] = pad
+        own, _rounds = view.calibrate(src2)
+        gp = doc.mapToGlobal(doc.rect().topLeft())
+        view.move(gp.x(), gp.y() + y0)
+        view.setFocusPolicy(Qt.StrongFocus)
+        view.show()
+        view.raise_()
+        view.activateWindow()
+        view.setFocus()
+
+        def on_key(e):
+            if e.key() == Qt.Key_Escape:
+                app.quit()
+            elif e.key() == Qt.Key_R:
+                view.hide()
+                app.processEvents()
+                QTimer.singleShot(200, cover)
+
+        view.keyPressEvent = on_key
+        state["view"] = view
+        print("覆盖层已盖上：行距 %d、左边距 %d、相位外推 %d；覆盖层自量 行距=%s 墨顶=%s"
+              % (st["pitch"], st["left"], pad,
+                 own.get("pitch") if own else "?", own.get("top") if own else "?"))
+        print("（下半截是我们的字，上半截是原文档；接缝处应该接得上。Esc 关掉，R 重来）")
+
+    QTimer.singleShot(900, cover)
+    QTimer.singleShot(180000, app.quit)
+    return app.exec_()
+
+
 def run_live(qapp, args):
     rect = None
     for i, a in enumerate(args):
@@ -450,6 +511,8 @@ def main(argv):
     app = QApplication(argv)
     if "--self" in argv:
         return run_self(app)
+    if "--play" in argv:
+        return run_play(app)
     return run_live(app, argv)
 
 
