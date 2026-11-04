@@ -3377,6 +3377,86 @@ _h3, _ok3 = app_mod.acquire_single_instance(create=lambda: (1000002, 0), attempt
                                             sleep=lambda s: None)
 check("一次就抢到时不睡也不重试", _ok3 is True and _h3 == 1000002, _h3)
 
+# ===== AE 轮：两本书来回切，各自的阅读进度不能互相吃掉 =====
+import io
+import tempfile as _tf
+
+_bk_dir = _tf.mkdtemp(prefix="srbooks")
+_bk_a = os.path.join(_bk_dir, "甲书.txt")
+_bk_b = os.path.join(_bk_dir, "乙书.txt")
+for _p, _tag in ((_bk_a, "甲"), (_bk_b, "乙")):
+    with io.open(_p, "w", encoding="utf-8") as _f:
+        _f.write("\n".join(["%s书第%d段：这是用来验证换书之后回来还在原地的一段文字。" % (_tag, i)
+                            for i in range(400)]))
+
+_cfg_bak = dict(w.config)
+_save_bak = w.save_config
+w.save_config = lambda *a, **k: w._stash_book_pos()   # 只按书记账，不落盘
+
+
+def _read_to(pos):
+    w.local_start_index = int(pos)
+    w.config["last_local_pos"] = int(pos)
+    w.save_config()
+
+
+w.open_local_path(_bk_a)
+_read_to(5000)
+print("\n[AE] 甲书读到 %d" % w.local_start_index)
+w.open_local_path(_bk_b)
+_b0 = w.local_start_index
+_read_to(900)
+print("[AE] 换乙书：从 %d 开始，读 900" % _b0)
+w.open_local_path(_bk_a)
+_back_a = w.local_start_index
+print("[AE] 切回甲书：落在 %d（期望 5000）" % _back_a)
+w.open_local_path(_bk_b)
+_back_b = w.local_start_index
+print("[AE] 再切回乙书：落在 %d（期望 900）" % _back_b)
+
+check("换书之后回到甲书，还在读到的地方", _back_a == 5000, _back_a)
+check("换书之后回到乙书，还在读到的地方", _back_b == 900, _back_b)
+
+# 表里两本各记各的（键是规范化绝对路径）
+_pos_map = dict(w.config.get("local_book_positions") or {})
+check("两本书的位置各自记在按书表里",
+      _pos_map.get(w.book_pos_key(_bk_a)) == 5000 and _pos_map.get(w.book_pos_key(_bk_b)) == 900,
+      _pos_map)
+
+# 从没打开过的第三本：0，而且不能把前两本的记性冲掉
+_bk_c = os.path.join(_bk_dir, "丙书.txt")
+with io.open(_bk_c, "w", encoding="utf-8") as _f:
+    _f.write("\n".join(["丙书第%d段：没读过的一本。" % i for i in range(50)]))
+w.open_local_path(_bk_c)
+_c_start = w.local_start_index
+check("没读过的书打开是 0，且不影响别的书",
+      _c_start == 0
+      and int((w.config.get("local_book_positions") or {}).get(w.book_pos_key(_bk_b), -1)) == 900,
+      (_c_start, dict(w.config.get("local_book_positions") or {})))
+
+# 表不能无限长：塞到 80 本，落盘前裁到 60
+_keep = w.config.setdefault("local_book_positions", {})
+for _i in range(80):
+    _keep["C:\\假想\\书%02d.txt" % _i] = _i
+w._stash_book_pos()
+check("按书记忆的表会裁剪（不无限长）",
+      len(w.config.get("local_book_positions") or {}) <= 60,
+      len(w.config.get("local_book_positions") or {}))
+
+# 刚升级上来：按书表还是空的，只有老的 last_local_file/last_local_pos 那一个坑位
+_lp_tab = w.config.get("local_book_positions")
+w.config["local_book_positions"] = {}
+w.config["last_local_file"] = _bk_a
+w.config["last_local_pos"] = 4321
+w.open_local_path(_bk_a)
+check("升级上来（表还是空的）也接得上老坑位，不从头上开始",
+      w.local_start_index == 4321, w.local_start_index)
+w.config["local_book_positions"] = _lp_tab
+
+w.config.clear()
+w.config.update(_cfg_bak)
+w.save_config = _save_bak
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 print("\n================ 结果 ================")

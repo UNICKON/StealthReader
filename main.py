@@ -185,7 +185,9 @@ DEFAULT_CONFIG = {
     "window_width": 400,
     "window_height": 300,
     "last_local_file": "",
-    "last_local_pos": 0
+    "last_local_pos": 0,
+    # 按书索引的阅读进度：{规范化绝对路径: 读到第几个字}。只留最近 60 本。
+    "local_book_positions": {}
 }
 
 # 内置的安全文档：有人看到屏幕时顶上的那份"工作文档"。
@@ -3499,23 +3501,8 @@ class StealthReader(QWidget):
         )
 
         if file_path:
-            # 检查是否是同一本书
-            last_file = self.config.get("last_local_file", "")
-
-            is_same_file = False
-            if last_file:
-                try:
-                    is_same_file = os.path.normpath(file_path) == os.path.normpath(last_file)
-                except:
-                    is_same_file = (file_path == last_file)
-
-            if is_same_file:
-                # 是同一本书：恢复上次进度
-                saved_pos = self.config.get("last_local_pos", 0)
-                self.load_local_file(file_path, target_pos=saved_pos)
-            else:
-                # 是新书：从头开始
-                self.load_local_file(file_path, target_pos=0)
+            # 按"这本书自己"记的位置续读：同一本接着读，换了书切回来也接着读
+            self.open_local_path(file_path)
 
     def load_local_file(self, file_path, target_pos=0):
         try:
@@ -4094,8 +4081,67 @@ class StealthReader(QWidget):
         else:
             self.config = DEFAULT_CONFIG.copy()
 
+    def book_pos_key(self, file_path):
+        """按书记进度用的键：绝对路径、大小写不敏感（Windows 上同一个文件两种写法算一本）。"""
+        if not file_path:
+            return ""
+        try:
+            return os.path.normcase(os.path.abspath(file_path))
+        except Exception:
+            return str(file_path)
+
+    def book_pos_for(self, file_path):
+        """这本书上次读到哪（没读过就是 0）。
+
+        表里还没有这本书时，退回老的那一个坑位（last_local_file/last_local_pos）：
+        刚升级上来的配置只有那个坑位，不能让正在读的这本突然从头开始。
+        """
+        key = self.book_pos_key(file_path)
+        table = self.config.get("local_book_positions")
+        try:
+            if isinstance(table, dict) and key in table:
+                return max(0, int(table.get(key) or 0))
+            if key and key == self.book_pos_key(self.config.get("last_local_file", "")):
+                return max(0, int(self.config.get("last_local_pos") or 0))
+        except (TypeError, ValueError):
+            return 0
+        return 0
+
+    def _stash_book_pos(self):
+        """把"这本书读到哪"记进按书索引的表（落盘前调一次）。
+
+        以前只有一个 last_local_file/last_local_pos 坑位：换本书，那本书的位置就被写成 0，
+        再切回来还是 0——等于把上一本的进度吃掉了。表只留最近 60 本（没人同时读 60 本），
+        配置不会越长越大。安全文档/背诵/社区卡片那些模式 local_file_path 是空的，这里直接跳过，
+        不会把不是书的坐标记进书里。
+        """
+        # __init__ 里可能先调过一次 save_config，那时这俩属性还没建：用 getattr 兜住
+        if not (getattr(self, "is_local_mode", False) and getattr(self, "local_file_path", "")):
+            return
+        key = self.book_pos_key(self.local_file_path)
+        if not key:
+            return
+        table = self.config.get("local_book_positions")
+        if not isinstance(table, dict):
+            table = {}
+        try:
+            pos = max(0, int(self.config.get("last_local_pos") or 0))
+        except (TypeError, ValueError):
+            pos = 0
+        if key in table:
+            del table[key]            # 重新插到末尾 = 记成"最近一次读的"
+        table[key] = pos
+        while len(table) > 60:
+            table.pop(next(iter(table)))
+        self.config["local_book_positions"] = table
+
+    def open_local_path(self, file_path):
+        """打开一本书：位置按**这本书自己**记的算——同一本接着读，换了书切回来也接着读。"""
+        self.load_local_file(file_path, target_pos=self.book_pos_for(file_path))
+
     def save_config(self):
         try:
+            self._stash_book_pos()
             self.config["window_width"] = self.width()
             self.config["window_height"] = self.height()
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
