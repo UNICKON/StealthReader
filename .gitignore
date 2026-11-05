@@ -28,3 +28,9 @@ feed_auth.json.bak
 
 # overlay_demo.py 跑出来的对照图（本机工件，不进版本库）
 overlay_*.png
+
+# 自带字体：文件放 fonts/ 里私有加载，二进制不进仓库
+fonts/*.ttf
+fonts/*.otf
+fonts/*.ttc
+fonts/*.otc

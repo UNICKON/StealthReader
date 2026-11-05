@@ -1108,15 +1108,29 @@ check("菜单里列出了当前来源的板块（%s）" % w.feed_source().label,
 # 起点要**显式钉住**：这条以前依赖"进来时恰好停在甲板"，而真 config 里可能记着乙板
 # （上一轮探针跑完留下的），于是 `feed_goto_channel` 走"和目标一样就直接 False"那条，
 # 断言就假红了。探针不许依赖上一轮人/上一次运行留下的状态。
+# 真人报"切了板块不刷新"：以前是先取数、回来了才重画，中间那几秒屏幕上还是上一栏的内容。
+# 现在要求**当场就清空旧列表并按新栏目开取**。
+# 这里**不能盯 feed_busy**：离线夹具的取数线程可能抢在断言之前跑完（信号一被处理就把它
+# 置回 False），量到的是"已经取完了"而不是"没取"——这条以前就这么假红过一次。
+# 改成记 feed_load 到底被调了哪一趟，跟线程快慢无关。
+_calls = []
+_orig_load = w.feed_load
+
+
+def _spy_load(what, *a, **k):
+    _calls.append(what)
+    return _orig_load(what, *a, **k)
+
+
+w.feed_load = _spy_load
 w.config.pop("feed_board_boardsrc", None)
 w.feed_nav.channel = "甲板"
-check("换板块当场生效", w.feed_goto_channel("乙板") and w.feed_nav.channel == "乙板",
-      w.feed_nav.channel)
-# 真人报"切了板块不刷新"：以前是先取数、回来了才重画，中间那几秒屏幕上还是上一栏的内容。
-# 现在要求**当场就把列表清空并开取**，而不是等数据回来才动。
-check("换板块当场就把列表清空并开取（不是等数据回来才动）",
-      w.feed_nav.view == "list" and w.feed_nav.posts == [] and w.feed_busy is True,
-      (w.feed_nav.view, len(w.feed_nav.posts), w.feed_busy))
+_switched = w.feed_goto_channel("乙板")
+w.feed_load = _orig_load
+check("换板块当场生效", _switched and w.feed_nav.channel == "乙板", w.feed_nav.channel)
+check("换板块当场就按新栏目开取（不是等数据回来才动）",
+      w.feed_nav.view == "list" and "list" in _calls,
+      (w.feed_nav.view, _calls, w.feed_busy))
 pump(lambda: not w.feed_busy)
 check("换过的板块按来源记进 config", w.config.get("feed_board_boardsrc") == "乙板",
       w.config.get("feed_board_boardsrc"))
@@ -3377,6 +3391,27 @@ _h3, _ok3 = app_mod.acquire_single_instance(create=lambda: (1000002, 0), attempt
                                             sleep=lambda s: None)
 check("一次就抢到时不睡也不重试", _ok3 is True and _h3 == 1000002, _h3)
 
+# ===== 29b. 自带字体：fonts/ 里的字私有加载（MiSans 这类不装进系统）=====
+print("\n=== 29b. 自带字体私有加载 ===")
+import io
+import shutil
+_fdir = _tf.mkdtemp(prefix="srfonts")
+_ftmp = os.path.join(_fdir, "arial_copy.ttf")
+_src_ttf = r"C:\Windows\Fonts\arial.ttf"
+shutil.copyfile(_src_ttf, _ftmp) if os.path.exists(_src_ttf) else None
+io.open(os.path.join(_fdir, "坏的字体.ttf"), "wb").write(b"not a font at all")
+io.open(os.path.join(_fdir, "说明.txt"), "w", encoding="utf-8").write("ignore me")
+
+_loaded = app_mod.load_bundled_fonts(_fdir)
+check("fonts/ 里的 ttf 能被私有加载（坏文件和非字体文件跳过，不抛）",
+      "Arial" in _loaded, _loaded)
+check("没有 fonts/ 目录时就返回空表（不影响启动）",
+      app_mod.load_bundled_fonts(os.path.join(_fdir, "不存在")) == [], None)
+check("字体栈里 MiSans 排在最前（装了就是它，没装才往下落）",
+      feed_mod.FEED_TYPE_SCHEMES["lingxi"]["family"].lstrip().startswith('"MiSans"'),
+      feed_mod.FEED_TYPE_SCHEMES["lingxi"]["family"][:40])
+
+
 # ===== 29. 社区页两套排版方案：灵犀 / DSH Desktop（真人 2026-11-05 的对照表）=====
 print("\n=== 29. 社区页排版方案：灵犀 / DSH Desktop ===")
 import feed as feed_mod
@@ -3475,6 +3510,17 @@ if _combos is not None and _combos.count() == 3:
         if _combos.itemData(_i) == (_cfg_scheme_bak or "lingxi"):
             _combos.setCurrentIndex(_i)
     w.config["feed_type_scheme"] = _cfg_scheme_bak
+# QFontComboBox + 动态字体 = 退出时 0xC0000005（量过），所以下拉框一律用 FontFamilyCombo
+check("字体下拉框不是 QFontComboBox（它跟自带字体一起会让进程退出时崩）",
+      type(_dlg29.feed_font_combo).__name__ != "QFontComboBox"
+      and isinstance(_dlg29.feed_font_combo, app_mod.FontFamilyCombo),
+      type(_dlg29.feed_font_combo).__name__)
+_check_combo = app_mod.FontFamilyCombo()
+_check_combo.setFamily("Microsoft YaHei")
+check("没有的族名（别名）也如实选中，不会静默掉到第一项",
+      _check_combo.family().lower() in ("microsoft yahei", "微软雅黑"),
+      _check_combo.family())
+_check_combo.deleteLater()
 _dlg29.deleteLater()
 pump(lambda: False, 0.1)
 

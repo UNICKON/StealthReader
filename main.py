@@ -35,7 +35,8 @@ from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject
                           QThread, QTimer, QEvent, QUrl)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
                          QFontMetrics, QTextCursor, QTextBlockFormat, QWheelEvent,
-                         QPixmap, QIcon, QPainterPath, QTextCharFormat, QPalette)
+                         QPixmap, QIcon, QPainterPath, QTextCharFormat, QPalette,
+                         QFontDatabase)
 
 # 隐形背诵：AnkiConnect 客户端。缺文件也不能让整个阅读器起不来，所以单独兜一层。
 try:
@@ -98,6 +99,125 @@ def _resource_dir():
 
 APP_DIR = _app_dir()
 RES_DIR = _resource_dir()
+
+FONT_EXTS = (".ttf", ".otf", ".ttc", ".otc")
+
+
+class FontFamilyCombo(QComboBox):
+    """字体下拉框（族名列表 + 每种字体自己当样本）。
+
+    **故意不用 QFontComboBox**：进程里一旦用 addApplicationFont 加载过自带字体
+    （见 `load_bundled_fonts`），QFontComboBox 在进程退出时会访问已销毁的字体库，
+    Windows 上直接 0xC0000005 崩（两种平台都量过；换成普通 QComboBox + 族名列表就不崩）。
+
+    接口跟 QFontComboBox 对齐（currentFont / setCurrentFont / currentFontChanged），
+    这样建立下拉框的老代码不用改。
+    """
+
+    currentFontChanged = pyqtSignal(QFont)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fill()
+        self.currentIndexChanged.connect(self._emit_font_changed)
+
+    def _fill(self):
+        self.clear()
+        try:
+            fams = sorted(QFontDatabase().families())
+        except Exception:
+            fams = []
+        for fam in fams:
+            self.addItem(fam)
+            # 每一条用它自己那种字画名字：一眼能看出圆不圆、粗不粗
+            try:
+                self.setItemData(self.count() - 1, QFont(fam), Qt.FontRole)
+            except Exception:
+                pass
+
+    def refresh(self):
+        """字体表变了（比如刚私有加载了自带字体）就重填，保留当前选中项。"""
+        cur = self.currentText()
+        self.blockSignals(True)
+        self._fill()
+        self.blockSignals(False)
+        self.setFamily(cur)
+
+    def family(self):
+        return str(self.currentText() or "")
+
+    def setFamily(self, name):
+        """选中某个族名。认不出来也**如实保留**，不许静默停在第一项。
+
+        以前这里直接 findText，找不到就留在 index 0——config 里写着
+        "Microsoft YaHei"（字体表里只列了"微软雅黑"这种本地化名）时，下拉框会停到
+        列表第一项（这台机器是 Arial），等于悄悄把人的字体换掉。
+        """
+        name = str(name or "").strip()
+        if not name:
+            return
+        idx = self.findText(name)
+        if idx < 0:
+            idx = self.findText(name, Qt.MatchFixedString)   # 大小写/全角不管
+        if idx < 0:
+            self.addItem(name)
+            try:
+                self.setItemData(self.count() - 1, QFont(name), Qt.FontRole)
+            except Exception:
+                pass
+            idx = self.count() - 1
+        self.blockSignals(True)
+        self.setCurrentIndex(idx)
+        self.blockSignals(False)
+
+    # ---- 跟 QFontComboBox 对齐 ----
+    def currentFont(self):
+        return QFont(self.family())
+
+    def setCurrentFont(self, font):
+        try:
+            self.setFamily(font.family())
+        except Exception:
+            pass
+
+    def _emit_font_changed(self, _idx=0):
+        self.currentFontChanged.emit(self.currentFont())
+
+
+def load_bundled_fonts(font_dir=None):
+    """把程序目录 `fonts/` 里的字体**私有加载**（QFontDatabase.addApplicationFont）。
+
+    为什么要私有加载，而不是让人装进系统：这类字是**只有这个窗口要用**的
+    （社区页排版方案里的 MiSans —— 灵犀那套字看着更圆，靠的就是它）。装进系统等于替人
+    改机器、还得管理员权限；私有加载只在进程内生效，把文件删掉就彻底没了。
+
+    字体族名要**另起一张表**：`QFont("MiSans")` 在本机没装时会被 Qt 悄悄替成宋体
+    （实测：墨点 1244 vs 雅黑 2260），所以主题里的字体栈必须先命中真装了的族名。
+
+    返回真正加载成功的族名列表（不是文件名）。
+    """
+    root = font_dir or os.path.join(APP_DIR, "fonts")
+    if not os.path.isdir(root):
+        return []
+    got = []
+    try:
+        names = sorted(os.listdir(root))
+    except Exception:
+        return []
+    for name in names:
+        if not name.lower().endswith(FONT_EXTS):
+            continue
+        path = os.path.join(root, name)
+        try:
+            fid = QFontDatabase.addApplicationFont(path)
+            if fid < 0:
+                continue
+            for fam in QFontDatabase.applicationFontFamilies(fid):
+                if fam and fam not in got:
+                    got.append(fam)
+        except Exception:
+            continue
+    return got
 
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
@@ -2527,7 +2647,7 @@ class SettingsDialog(QDialog):
         self.font_spin.valueChanged.connect(self.on_font_change)
         self.add_row(lay, "字号", self.font_spin)
 
-        self.font_combo = QFontComboBox()
+        self.font_combo = FontFamilyCombo()
         self.font_combo.setCurrentFont(QFont(self.config.get("font_family", "Microsoft YaHei")))
         self.font_combo.currentFontChanged.connect(self.on_font_change)
         self.add_row(lay, "字体", self.font_combo)
@@ -2734,14 +2854,14 @@ class SettingsDialog(QDialog):
         col = self.new_page("社区")
 
         lay = self.new_card(col, "版式")
-        self.feed_font_check = QCheckBox("社区页用单独字体")
+        self.feed_font_check = QCheckBox("社区页用单独字体（会盖掉排版方案里的字体栈）")
         self.feed_font_check.setChecked(bool(self.config.get("feed_font_family")
                                              or self.config.get("feed_font_size")))
         self.feed_font_check.toggled.connect(self.on_feed_font_change)
         self.add_wide(lay, self.feed_font_check,
-                      "社区统一流（Ctrl+Alt+F）的字体和字号默认和书页完全一样。\n"
-                      "勾上就能单独调：社区流是长文档，一屏里信息多，\n"
-                      "用比书页小一两号字更合适（书页的字号不受影响）。")
+                      "不勾：字号和字体跟着「排版方案」走（灵犀 = MiSans 优先 → 雅黑，\n"
+                      "DSH = 系统字体栈）。勾上：下面这两个值直接盖掉方案里的字体和字号，\n"
+                      "方案只剩行高、段间距、标题阶梯、代码字号还在生效。")
 
         feed_font_row = QWidget()
         feed_font_row.setObjectName("formRow")
@@ -2753,7 +2873,7 @@ class SettingsDialog(QDialog):
         self.feed_font_spin.setValue(int(self.config.get("feed_font_size")
                                          or self.config.get("font_size") or 14))
         self.feed_font_spin.valueChanged.connect(self.on_feed_font_change)
-        self.feed_font_combo = QFontComboBox()
+        self.feed_font_combo = FontFamilyCombo()
         self.feed_font_combo.setCurrentFont(QFont(self.config.get("feed_font_family")
                                                   or self.config.get("font_family", "Microsoft YaHei")))
         self.feed_font_combo.currentFontChanged.connect(self.on_feed_font_change)
@@ -10153,6 +10273,15 @@ if __name__ == '__main__':
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    # 自带字体（可选）：<程序目录>/fonts/*.ttf 私有加载，不动系统字体表
+    try:
+        _fonts = load_bundled_fonts()
+        if _fonts:
+            log_event("自带字体已加载：%s" % "、".join(_fonts))
+        else:
+            log_event("自带字体：fonts/ 里没有可加载的字体（不影响启动）")
+    except Exception as _font_err:
+        log_event("自带字体加载失败：%s" % _font_err)
     ex = StealthReader()
     _hidden = parse_hidden_flag(sys.argv)
     if not _hidden:
