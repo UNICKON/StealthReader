@@ -184,6 +184,53 @@ class FontFamilyCombo(QComboBox):
         self.currentFontChanged.emit(self.currentFont())
 
 
+# 阅读页（走 QFont 的那几处）的字体回退链：真有的就用，没有的按这个顺序往下落
+BOOK_FONT_FALLBACKS = ("MiSans", "Microsoft YaHei", "微软雅黑", "Segoe UI")
+_FONT_MISSING_LOGGED = set()
+
+
+def installed_families():
+    """本机真有的字体族（**含** fonts/ 私有加载的那些）。"""
+    try:
+        return set(QFontDatabase().families())
+    except Exception:
+        return set()
+
+
+def resolve_font_family(name, why=""):
+    """把配置里的族名解析成**这台机器上真有**的族名，并记一条替换日志。
+
+    为什么非做这一步不可：`QFont("MiSans")` 在没装的机器上**不报错**——Qt 直接把它
+    替成默认衬线字体（本机是宋体）。同一行 17px 字实测：
+
+        请求 MiSans → 墨点 1244 / 墨量 251235
+        微软雅黑     → 墨点 2260 / 墨量 475702
+        宋体         → 墨点 1499 / 墨量 382245
+
+    所以"看着像宋体"从来不是错觉，就是这条静默替换。富文本那边的 font-family 链本来
+    就按"能命中才用"走（量过：'MiSans','微软雅黑' 与 '微软雅黑' 渲染指纹一致），
+    不受影响；走 **QFont** 的地方必须过这里：书页正文、卡片、页脚量宽、社区页控件字体。
+    """
+    name = str(name or "").strip()
+    fams = installed_families()
+    if not fams:
+        return name                      # 字体库都量不到（如 offscreen），别乱改人的配置
+    if name in fams:
+        return name
+    lower = {f.lower(): f for f in fams}
+    if name and name.lower() in lower:
+        return lower[name.lower()]
+    for cand in ([name] if name else []) + [f for f in BOOK_FONT_FALLBACKS if f != name]:
+        real = cand if cand in fams else lower.get(cand.lower())
+        if real:
+            if name and real != name and name not in _FONT_MISSING_LOGGED:
+                _FONT_MISSING_LOGGED.add(name)
+                log_event("字体「%s」这台机器上没有，实际用「%s」（把字体文件放进 fonts/ 重启就能用上）"
+                          % (name, real))
+            return real
+    return name
+
+
 def load_bundled_fonts(font_dir=None):
     """把程序目录 `fonts/` 里的字体**私有加载**（QFontDatabase.addApplicationFont）。
 
@@ -3764,7 +3811,7 @@ class StealthReader(QWidget):
 
     def _book_font(self):
         """阅读页该用的字体：**只看配置**，不看控件此刻是什么（那可能刚被别的页换过）。"""
-        return QFont(self.config.get("font_family", "Microsoft YaHei"),
+        return QFont(resolve_font_family(self.config.get("font_family", "Microsoft YaHei")),
                      int(self.config.get("font_size", 14)))
 
     def _pin_book_font(self, tag=""):
@@ -6684,7 +6731,8 @@ class StealthReader(QWidget):
         两个键各自独立：只配字号就只换字号，字体用界面栈。取值夹在 11~22，
         免得 config.json 里手写个 0 或 999 把页面弄成一行一个字。
         """
-        fam = str(self.config.get("feed_font_family") or "").strip() or "Microsoft YaHei UI"
+        fam = resolve_font_family(str(self.config.get("feed_font_family")
+                                      or "").strip() or "Microsoft YaHei UI")
         scheme = {}
         try:
             scheme = dict(feed_mod.FEED_TYPE_SCHEMES.get(feed_mod.feed_scheme_key(self.config))
@@ -8310,7 +8358,7 @@ class StealthReader(QWidget):
         不能用 `review_bar.fontMetrics()`：那是页脚控件自己的默认字体（约 12px），
         而按钮上的字是样式表给的 16px——量出来偏小，判"够宽"于是永远不触发紧凑模式（踩过）。
         """
-        font = QFont(self.config.get("font_family", "Microsoft YaHei"))
+        font = QFont(resolve_font_family(self.config.get("font_family", "Microsoft YaHei")))
         font.setPixelSize(self.review_bar_font_px())
         return QFontMetrics(font)
 
@@ -8458,8 +8506,9 @@ class StealthReader(QWidget):
         书页那套（首行缩进两字 + 两端对齐 + 行距 1.6）放在卡片上会让它一眼不像文档模板，
         所以按卡片重套一遍块格式；颜色/透明度仍由 apply_style 那套统管。
         """
-        self.text_edit.setFont(QFont(self.config.get("font_family", "Microsoft YaHei"),
-                                     self.config["font_size"]))
+        self.text_edit.setFont(QFont(
+            resolve_font_family(self.config.get("font_family", "Microsoft YaHei")),
+            self.config["font_size"]))
         block_format = QTextBlockFormat()
         block_format.setLineHeight(100, QTextBlockFormat.ProportionalHeight)
         block_format.setAlignment(Qt.AlignHCenter)
@@ -8846,7 +8895,7 @@ class StealthReader(QWidget):
         # 刷样式会重排（字号/行距/页边距都在里面），重排前先认住"现在正看的那一行"，
         # 重绘时拿它当页首——否则每次刷样式都从本页最上面重铺，看着就是"阅读进度老是跳回"。
         anchor = self.current_top_offset()
-        font_family = self.config.get('font_family', 'Microsoft YaHei')
+        font_family = resolve_font_family(self.config.get('font_family', 'Microsoft YaHei'))
         font_size = self.config['font_size']
         font = QFont(font_family, font_size)
 
@@ -10283,6 +10332,14 @@ if __name__ == '__main__':
     except Exception as _font_err:
         log_event("自带字体加载失败：%s" % _font_err)
     ex = StealthReader()
+    # 启动时把"配置要的字体"和"实际用上的字体"都写进日志：字体没装时 Qt 是静默替换的，
+    # 不写这一行，人只能凭"看着像宋体"猜。
+    try:
+        log_event("阅读字体：配置「%s」→ 实际「%s」（%spx）" % (
+            ex.config.get("font_family"), ex._book_font().family(),
+            int(ex.config.get("font_size", 14))))
+    except Exception as _font_log_err:
+        log_event("阅读字体：写日志失败 %s" % _font_log_err)
     _hidden = parse_hidden_flag(sys.argv)
     if not _hidden:
         ex.show()

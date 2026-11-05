@@ -10,6 +10,7 @@
 import base64
 import hashlib
 import json
+import io
 import os
 import re
 import shutil
@@ -3112,6 +3113,21 @@ _ih._to_comment = lambda c, i: feed_mod.Comment(cid=str(c["id"]), author="甲",
                                                created="", score=0, body=[])
 _ih_c, _ih_w = _ih.comments(feed_mod.Post(source="ithome", pid="1", title="t"))
 check("IT之家 44 条评论一条都不丢", len(_ih_c) == 44, len(_ih_c))
+
+# ===== 24. 字体接线：阅读页不许绕过解析直接 QFont(配置值) =====
+print("\n=== 24. 阅读页字体接线 ===")
+_main_src = io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "main.py"), encoding="utf-8").read()
+_bare = [ln.strip() for ln in _main_src.split("\n")
+         if 'QFont(self.config.get("font_family"' in ln
+         or "QFont(self.config.get('font_family'" in ln]
+# 设置页里"把配置值选进下拉框"那一处只是拿 QFont 当族名载体，不参与绘制，允许留着
+check("裸传族名只允许剩下拉框选值那一处，绘制的四处都过 resolve_font_family",
+      len(_bare) == 1 and "setCurrentFont" in _bare[0], _bare)
+check("书页 / 卡片 / 页脚量宽 / 社区控件 四处都过 resolve_font_family",
+      _main_src.count("resolve_font_family(") >= 6, _main_src.count("resolve_font_family("))
+check("回退链里 MiSans 排第一（和灵犀的方案栈对齐）",
+      'BOOK_FONT_FALLBACKS = ("MiSans"' in _main_src, None)
 
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]

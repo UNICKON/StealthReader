@@ -3411,6 +3411,31 @@ check("字体栈里 MiSans 排在最前（装了就是它，没装才往下落�
       feed_mod.FEED_TYPE_SCHEMES["lingxi"]["family"].lstrip().startswith('"MiSans"'),
       feed_mod.FEED_TYPE_SCHEMES["lingxi"]["family"][:40])
 
+# ---- 阅读页（走 QFont 的那几处）也要过解析：没装的族名不许静默变宋体 ----
+check("阅读页字体回退链第一顺位是 MiSans（和灵犀那套一致）",
+      app_mod.BOOK_FONT_FALLBACKS[0] == "MiSans", app_mod.BOOK_FONT_FALLBACKS[:3])
+
+_logged = []
+_old_log = app_mod.log_event
+_old_fams = app_mod.installed_families
+app_mod.log_event = lambda msg, *a, **k: _logged.append(str(msg))
+app_mod.installed_families = lambda: {"MiSans", "微软雅黑"}
+check("装了 MiSans 就用 MiSans（别名解析不误伤真字体）",
+      app_mod.resolve_font_family("MiSans") == "MiSans", None)
+app_mod.installed_families = lambda: {"微软雅黑"}
+check("没装 MiSans：落到微软雅黑，而不是让 Qt 悄悄替成宋体",
+      app_mod.resolve_font_family("MiSans") == "微软雅黑", None)
+check("替换要留一条日志（人得知道发生了什么）",
+      any("MiSans" in m and "微软雅黑" in m for m in _logged), _logged[:2])
+app_mod.installed_families = lambda: set()
+check("字体库量不到（如 offscreen）就原样返回，别把人配置里写的字改掉",
+      app_mod.resolve_font_family("MiSans") == "MiSans", None)
+app_mod.installed_families = lambda: {"Microsoft YaHei UI", "微软雅黑"}
+check("大小写/别名不同也算同一个字（Microsoft YaHei UI 不会被误判成没装）",
+      app_mod.resolve_font_family("microsoft yahei ui") == "Microsoft YaHei UI", None)
+app_mod.installed_families = _old_fams
+app_mod.log_event = _old_log
+
 
 # ===== 29. 社区页两套排版方案：灵犀 / DSH Desktop（真人 2026-11-05 的对照表）=====
 print("\n=== 29. 社区页排版方案：灵犀 / DSH Desktop ===")

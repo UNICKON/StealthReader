@@ -5,12 +5,19 @@
 不用装进系统：程序启动时会用 QFontDatabase.addApplicationFont 私有加载，
 日志里能看到「自带字体已加载：<族名>」。把文件删掉重启就彻底没了。
 
-为什么要它：社区页的「灵犀」排版方案字体栈是
-    MiSans → MiSans VF → Microsoft YaHei → 微软雅黑 → PingFang SC → Segoe UI
-本机没装 MiSans 时，Qt 只能落到雅黑；`QFont("MiSans")` 这种写法更糟——本机没这个族时
-Qt 会悄悄替成**宋体**（实测同一行字：MiSans → 墨点 1244，雅黑 → 2260）。所以要走
-「字体栈先命中真装了的族名」这条，文件放这里就够了。
+现在放着的（2026-11-05 装）：MiSans 七个字重
+    MiSans-Thin / ExtraLight / Light / Regular / Medium / Demibold / Bold
+族名是 `MiSans`（其余几个也各自是一个族名，如 `MiSans Light`），
+Qt 里 `MiSans` 这一个族带 Bold/Demibold/Light/Medium/Thin 全套样式，
+所以 `font-weight:600` 这类富文本字重也真的会跟着变粗。
 
-MiSans 是小米放出来的免费可商用字体，官网 https://hyperos.mi.com/font/download ，
-下载后会有 MiSans-Regular.ttf / MiSans-Medium.ttf 等几个文件，丢进来即可。
-（.ttf 二进制不进 git：见 .gitignore）
+为什么需要它：
+- 社区页「灵犀」方案的字体栈第一顺位就是 MiSans；
+- 阅读页（书页正文、卡片、页脚）会先过 `resolve_font_family()`：
+  真有 MiSans 就用 MiSans，没有就落到 微软雅黑，**不会**让 Qt 悄悄替成宋体。
+  实测同一行 17px 字：请求 MiSans 而没装 → 暗像素 1244 / 墨量 251235（就是宋体那副样子），
+  装了 MiSans → 2660 / 481950，雅黑 Regular → 2315 / 410454，宋体 → 1499 / 314790。
+
+来源与许可：MiSans 由小米发布（https://hyperos.mi.com/font/），其许可协议允许免费使用，
+但**不允许再分发字体文件本身**，所以 `fonts/*.ttf` 不进仓库（见 .gitignore），
+只留在本机。程序里用到 MiSans 的地方已在 README 注明。
