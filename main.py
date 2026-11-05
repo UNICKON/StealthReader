@@ -1640,6 +1640,9 @@ for _ch in "CEJKORVZ":
 BOOK_KEY_NAMES = {
     0x20: "space", 0x21: "pageup", 0x22: "pagedown",
     0x25: "left", 0x26: "up", 0x27: "right", 0x28: "down",
+    # 真人 2026-11-05：「ce 模式 cd 翻页不该打破模式」。c/d 也是书页键：
+    # 不列在这儿，偷瞄时按一下就会落到最后那条"其他键 → 退出偷瞄"上。
+    0x43: "c", 0x44: "d",
 }
 
 # 窗口内的 Qt 键 → 复习键名。窗口内这一套走 keyPressEvent，不经过任何钩子：
@@ -8606,9 +8609,9 @@ class StealthReader(QWidget):
             self.scroll_lines(1)
         elif name == "up":
             self.scroll_lines(-1)
-        elif name in ("space", "pagedown", "right"):
+        elif name in ("space", "pagedown", "right", "d"):
             self.scroll_page(1)
-        elif name in ("pageup", "left"):
+        elif name in ("pageup", "left", "c"):
             self.scroll_page(-1)
 
     def on_review_key(self, name):

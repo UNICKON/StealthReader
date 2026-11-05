@@ -747,6 +747,45 @@ check("翻页保留 2 行上文（退回的距离正好等于往上两行）",
       _ov2 < _ov0 and _back.position() == _ov2, (_ov2, _ov0, _back.position()))
 w.config["page_overlap_lines"] = 2
 
+
+# 偷瞄（ce）里按 c/d：要能翻页，而且**不能**把偷瞄收起来（真人 2026-11-05）
+def _peek_jump(name, start):
+    w.is_local_mode = True
+    w.local_file_path = "probe_peek.txt"
+    w.local_full_text = _PROBE_LONG
+    w.local_start_index = start
+    w.local_page_history = []
+    w.local_chapters = []
+    w.local_heading_offsets = set()
+    w.apply_style()
+    w.render_local_page()
+    qapp.processEvents()
+    before = w.local_start_index
+    w.peek_mode = True
+    try:
+        w.on_peek_book_key(name)
+    finally:
+        alive = w.peek_mode
+        w.peek_mode = False
+    return before, w.local_start_index, alive
+
+
+_pk_right, _pk_a_right, _ = _peek_jump("right", 0)
+_pk_b, _pk_a_d, _pk_live_d = _peek_jump("d", 0)
+check("偷瞄里 d 也往下翻（和 → 同一处），偷瞄没收起来",
+      _pk_a_d == _pk_a_right and _pk_live_d and _pk_a_d > _pk_b,
+      (_pk_a_d, _pk_a_right, _pk_live_d))
+
+_pk_left, _pk_a_left, _ = _peek_jump("left", _pk_a_right)
+_pk_c_b, _pk_a_c, _pk_live_c = _peek_jump("c", _pk_a_right)
+check("偷瞄里 c 也往上翻（和 ← 同一处），偷瞄没收起来",
+      _pk_a_c == _pk_a_left and _pk_live_c and _pk_a_c < _pk_c_b,
+      (_pk_a_c, _pk_a_left, _pk_live_c))
+
+check("钩子层认 c/d（BOOK_KEY_NAMES 有 0x43/0x44，否则会落到“任意键退出偷瞄”）",
+      app_mod.BOOK_KEY_NAMES.get(0x43) == "c" and app_mod.BOOK_KEY_NAMES.get(0x44) == "d",
+      (app_mod.BOOK_KEY_NAMES.get(0x43), app_mod.BOOK_KEY_NAMES.get(0x44)))
+
 # 8.4 进出社区页不许改坏书页排版，社区页字体又能单独调
 LAYOUT_TEXT = ("第一段用来量排版。" * 40) + "\n" + ("第二段也有点内容。" * 40)
 w.is_local_mode = True

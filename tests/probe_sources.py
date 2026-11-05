@@ -3136,6 +3136,13 @@ check("d 和 → / 空格 / PageDown 在同一个分支里（往下翻）",
 check("c 和 ← / PageUp 在同一个分支里（往上翻）",
       "[Qt.Key_Left, Qt.Key_PageUp, Qt.Key_C]" in _main_src, None)
 
+check("偷瞄的书页键里有 d（往下翻）",
+      '"space", "pagedown", "right", "d"' in _main_src, None)
+check("偷瞄的书页键里有 c（往上翻）",
+      '"pageup", "left", "c"' in _main_src, None)
+check("BOOK_KEY_NAMES 里挂了 c/d 的 vkCode",
+      "0x43: \"c\", 0x44: \"d\"" in _main_src, None)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23
