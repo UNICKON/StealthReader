@@ -3377,6 +3377,107 @@ _h3, _ok3 = app_mod.acquire_single_instance(create=lambda: (1000002, 0), attempt
                                             sleep=lambda s: None)
 check("一次就抢到时不睡也不重试", _ok3 is True and _h3 == 1000002, _h3)
 
+# ===== 29. 社区页两套排版方案：灵犀 / DSH Desktop（真人 2026-11-05 的对照表）=====
+print("\n=== 29. 社区页排版方案：灵犀 / DSH Desktop ===")
+import feed as feed_mod
+
+_BASE_CFG = {"text_color": "rgba(200, 200, 200, 255)"}
+
+
+def _theme_for(scheme, **extra):
+    cfg = dict(_BASE_CFG)
+    cfg["feed_type_scheme"] = scheme
+    cfg.update(extra)
+    return feed_mod.theme_from_config(cfg)
+
+
+_t_lx = _theme_for("lingxi")
+_s_lx = feed_mod._scale(_t_lx)
+check("灵犀：正文 16px / 行高 162.5% / 段间距 8px / 标题 24·21·18 / 代码 13px",
+      (_t_lx["size"], _s_lx["line"], _s_lx["gap"], _s_lx["h1"], _s_lx["h2"], _s_lx["h3"],
+       _s_lx["code"]) == (16, 162.5, 8, 24, 21, 18, 13),
+      (_t_lx["size"], _s_lx["line"], _s_lx["gap"], _s_lx["h1"], _s_lx["h2"], _s_lx["h3"],
+       _s_lx["code"]))
+
+_t_ds = _theme_for("dsh")
+_s_ds = feed_mod._scale(_t_ds)
+check("DSH：正文 14px / 行高 171.4% / 段间距 16px / 标题 21·19·18 / 代码 11px",
+      (_t_ds["size"], _s_ds["line"], _s_ds["gap"], _s_ds["h1"], _s_ds["h2"], _s_ds["h3"],
+       _s_ds["code"]) == (14, 171.4, 16, 21, 19, 18, 11),
+      (_t_ds["size"], _s_ds["line"], _s_ds["gap"], _s_ds["h1"], _s_ds["h2"], _s_ds["h3"],
+       _s_ds["code"]))
+
+_t_cx = _theme_for("classic")
+_s_cx = feed_mod._scale(_t_cx)
+check("经典：还是 15px / 175% / 段间距 9 / 标题只大 1px（老样子没被改坏）",
+      (_t_cx["size"], _s_cx["line"], _s_cx["gap"], _s_cx["h1"], _s_cx["code"]) ==
+      (15, 175.0, 9, 16, 14),
+      (_t_cx["size"], _s_cx["line"], _s_cx["gap"], _s_cx["h1"], _s_cx["code"]))
+
+check("灵犀的字体是 MiSans 优先 → 雅黑",
+      "MiSans" in _t_lx["family"] and "YaHei" in _t_lx["family"], _t_lx["family"])
+check("DSH 用纯系统字体栈（不写 MiSans）",
+      "MiSans" not in _t_ds["family"] and "YaHei" in _t_ds["family"], _t_ds["family"])
+check("字体单独配过就听配的（不被方案覆盖）",
+      "Courier" in feed_mod.theme_from_config(
+          dict(_BASE_CFG, feed_type_scheme="lingxi",
+               feed_font_family="Courier New"))["family"],
+      feed_mod.theme_from_config(dict(_BASE_CFG, feed_type_scheme="lingxi",
+                                      feed_font_family="Courier New"))["family"])
+
+_s_20 = feed_mod._scale(_theme_for("lingxi", feed_font_size=20))
+check("字号单独调过就整体联动：20px 时标题 30 / 代码 16 / 段间距 10",
+      (_s_20["h1"], _s_20["code"], _s_20["gap"]) == (30, 16, 10),
+      (_s_20["h1"], _s_20["code"], _s_20["gap"]))
+
+check("认不出来的方案名回到默认（不抛）",
+      feed_mod.feed_scheme_key({"feed_type_scheme": "??? "}) == feed_mod.FEED_SCHEME_DEFAULT,
+      feed_mod.feed_scheme_key({"feed_type_scheme": "??? "}))
+check("设置页能选到三套方案", len(feed_mod.feed_scheme_names()) == 3,
+      feed_mod.feed_scheme_names())
+
+
+class _B(object):
+    """只为渲染检查造的最小正文块。"""
+    def __init__(self, kind, text="正文一段", url="", lang=""):
+        self.kind, self.text, self.url, self.lang = kind, text, url, lang
+
+
+_html_lx = "".join(feed_mod._block_paragraphs(
+    [_B(feed_mod.BLOCK_P), _B(feed_mod.BLOCK_H, "小标题"), _B(feed_mod.BLOCK_CODE, "x = 1")],
+    _t_lx))
+check("灵犀渲染出来的 HTML：正文行高 162.5%、段间距 8px、标题 21px、代码 13px",
+      "line-height:162.5%" in _html_lx and "margin:8px 0 0 0" in _html_lx
+      and "font-size:21px" in _html_lx and "font-size:13px" in _html_lx,
+      _html_lx[:160])
+
+_html_ds = "".join(feed_mod._block_paragraphs(
+    [_B(feed_mod.BLOCK_P), _B(feed_mod.BLOCK_H, "小标题"), _B(feed_mod.BLOCK_CODE, "x = 1")],
+    _t_ds))
+check("DSH 渲染出来的 HTML：行高 171.4%、段间距 16px、标题 19px、代码 11px",
+      "line-height:171.4%" in _html_ds and "margin:16px 0 0 0" in _html_ds
+      and "font-size:19px" in _html_ds and "font-size:11px" in _html_ds,
+      _html_ds[:160])
+
+# 设置页那个下拉框：切一下要当场落进 config
+_cfg_scheme_bak = w.config.get("feed_type_scheme")
+_dlg29 = app_mod.SettingsDialog(w.config, w)
+_combos = getattr(_dlg29, "feed_scheme_combo", None)
+check("设置页里有「排版方案」下拉框", _combos is not None and _combos.count() == 3,
+      None if _combos is None else [_combos.itemData(i) for i in range(_combos.count())])
+if _combos is not None and _combos.count() == 3:
+    for _i in range(_combos.count()):
+        if _combos.itemData(_i) == "dsh":
+            _combos.setCurrentIndex(_i)
+    check("切到 DSH 当场写进 config", w.config.get("feed_type_scheme") == "dsh",
+          w.config.get("feed_type_scheme"))
+    for _i in range(_combos.count()):
+        if _combos.itemData(_i) == (_cfg_scheme_bak or "lingxi"):
+            _combos.setCurrentIndex(_i)
+    w.config["feed_type_scheme"] = _cfg_scheme_bak
+_dlg29.deleteLater()
+pump(lambda: False, 0.1)
+
 # ===== AE 轮：两本书来回切，各自的阅读进度不能互相吃掉 =====
 import io
 import tempfile as _tf

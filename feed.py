@@ -1174,6 +1174,48 @@ def _font_css(family):
     return fam.strip() or FEED_FONT_STACK
 
 
+# --- 两套排版方案（真人 2026-11-05 给的对照表）----------------------------------
+# 表里的数字都是"正文 16 / 14px 时"的绝对值。正文被 feed_font_size 改过，就整体按
+# 正文的缩放系数联动（标题、代码、段间距一起走），不会出现"字放大了标题没跟上"。
+FEED_SCHEME_DEFAULT = "lingxi"
+FEED_TYPE_SCHEMES = {
+    # 灵犀：正文 16px、行高 1.625、段间距 8px、标题 24/21/18、代码 13px、MiSans 优先 → 雅黑
+    "lingxi": {
+        "name": "灵犀",
+        "body": 16, "line": 1.625, "gap": 8,
+        "h": (24, 21, 18), "code": 13,
+        "family": ('"MiSans", "MiSans VF", "Microsoft YaHei", "微软雅黑", '
+                   '"PingFang SC", "Segoe UI", sans-serif'),
+    },
+    # DSH Desktop：正文 14px、行高 1.714、段间距 16px、标题 21/19/18、代码 11px、纯系统字体栈
+    "dsh": {
+        "name": "DSH Desktop",
+        "body": 14, "line": 1.714, "gap": 16,
+        "h": (21, 19, 18), "code": 11,
+        "family": None,                    # None = 用界面那套系统字体栈
+    },
+    # 经典：一直是 15px / 175%，标题只比正文大 1px（真人以前说"标题太大太显眼"）
+    "classic": {
+        "name": "经典",
+        "body": FEED_SIZE_DEFAULT, "line": 1.75, "gap": 9,
+        "h": (FEED_SIZE_DEFAULT + 1, FEED_SIZE_DEFAULT, FEED_SIZE_DEFAULT - 1),
+        "code": None,                      # None = 跟 sub 一样（老行为）
+        "family": None,
+    },
+}
+
+
+def feed_scheme_key(cfg):
+    """config 里记的方案名（认不出来就回到默认那个，不抛）。"""
+    key = str((cfg or {}).get("feed_type_scheme") or "").strip().lower()
+    return key if key in FEED_TYPE_SCHEMES else FEED_SCHEME_DEFAULT
+
+
+def feed_scheme_names():
+    """[(key, 显示名)]，给设置页下拉框用。"""
+    return [(k, v["name"]) for k, v in FEED_TYPE_SCHEMES.items()]
+
+
 def _clip(text, limit):
     """压成一行、超长截断。
 
@@ -1186,11 +1228,12 @@ def _clip(text, limit):
     return s[:limit].rstrip("，。、；：,.;:!?！？ ") + "…"
 
 
-def _scale(theme):
-    """字号阶梯：全部由社区页自己那个字号推出来，一份数字管全文。
+def _list_scale(theme):
+    """**列表/评论**的字号阶梯：全部由社区页自己那个字号推出来，一份数字管全文。
 
     标题**只比正文大 1px**（真人两轮反馈："标题太大太显眼"）——靠加粗和亮一档的强调色
     分层就够了，字号别再往上顶；一屏里标题比正文还抢眼的话，读起来像公告栏不像信息流。
+    正文块（帖子正文、小节标题、代码）不走这套，走下面的 `_scale`（按方案表）。
     """
     s = int(theme["size"])
     return {
@@ -1199,6 +1242,34 @@ def _scale(theme):
         "body": s,
         "sub": max(11, s - 1),
         "meta": max(10, int(round(s * 0.72))),
+    }
+
+
+def _scale(theme):
+    """**正文块**的字号/行高/段间距/代码字号：按排版方案（灵犀 / DSH / 经典）算。
+
+    方案表里的数字以"正文 16/14px"为基准；正文一旦被 feed_font_size 改过，标题、代码、
+    段间距按同一个系数联动（灵犀 24/21/18 对 16 是 1.5/1.3125/1.125 倍，DSH 21/19/18
+    对 14 是 1.5/1.357/1.286 倍——两家的一级标题都是正文的 1.5 倍）。
+    """
+    key = theme.get("scheme") or FEED_SCHEME_DEFAULT
+    sch = FEED_TYPE_SCHEMES.get(key) or FEED_TYPE_SCHEMES[FEED_SCHEME_DEFAULT]
+    s = int(theme["size"])
+    base = float(sch["body"] or FEED_SIZE_DEFAULT)
+    k = s / base
+    h = [max(10, int(round(v * k))) for v in sch["h"]]
+    code = sch.get("code")
+    return {
+        "title": h[0],
+        "head": h[1],
+        "h1": h[0], "h2": h[1], "h3": h[2],
+        "body": s,
+        "sub": max(11, s - 1),
+        "meta": max(10, int(round(s * 0.72))),
+        "line": max(100.0, round(float(sch["line"]) * 100, 1)),   # 行高百分比（1.625 → 162.5）
+        "gap": max(0, int(round(sch["gap"] * k))),          # 段间距 px
+        "hgap": max(0, int(round((sch["gap"] + 8) * k))),   # 标题上方留白
+        "code": max(9, int(round(code * k))) if code else max(11, s - 1),
     }
 
 
@@ -1217,12 +1288,14 @@ def theme_from_config(cfg, width_px=420, text_color=None):
     两边的可读性都不塌。
     """
     p = _parse_color(text_color if text_color is not None else cfg.get("text_color"))
+    scheme = feed_scheme_key(cfg)
+    sch = FEED_TYPE_SCHEMES[scheme]
     try:
         size = int(cfg.get("feed_font_size") or 0)
     except Exception:
         size = 0
     if not 11 <= size <= 22:                   # 没配、或者配了个不可能的数值
-        size = FEED_SIZE_DEFAULT
+        size = int(sch["body"])                # 方案自己的正文字号（灵犀 16 / DSH 14）
     return {
         "text": _rgba(p),
         "mark": _rgba(_toward_mid(p, -0.34)),      # 标题/强调：比正文更抢眼（浅色正文→更白）
@@ -1230,7 +1303,8 @@ def theme_from_config(cfg, width_px=420, text_color=None):
         "faint": _rgba(_toward_mid(p, 0.42)),      # 更次要（时间、统计、来源）
         "accent": _rgba(_accent(p)),               # 来源名：色相偏蓝，亮度不动
         "size": size,
-        "family": _font_css(cfg.get("feed_font_family")),
+        "scheme": scheme,
+        "family": _font_css(cfg.get("feed_font_family") or sch["family"]),
         "lowkey": bool(cfg.get("feed_lowkey", False)),
         "width": max(240, int(width_px)),
     }
@@ -1371,8 +1445,8 @@ def render_list(posts, nav, theme):
     """
     if not posts:
         return _wrap(theme, f'<p style="margin:24px 0 0 0; color:{theme["faint"]};'
-                            f' font-size:{_scale(theme)["sub"]}px;">还没有内容</p>')
-    f = _scale(theme)
+                            f' font-size:{_list_scale(theme)["sub"]}px;">还没有内容</p>')
+    f = _list_scale(theme)
     parts = []
     for i, p in enumerate(posts):
         gap = 22 if i else 0                 # 条与条之间用留白分开，不画线
@@ -1493,7 +1567,7 @@ def render_comment_tree(nav, theme):
     vis = nav.visible_comments()
     if not vis:
         return ""
-    f = _scale(theme)
+    f = _list_scale(theme)
     parts = []
     for c, depth, _p in vis:
         depth = max(0, int(depth))
@@ -1645,17 +1719,17 @@ def _block_paragraphs(blocks, theme):
             out.append(_table_html(b.text, theme, f, nowrap=(b.lang or "") == "wide"))
             continue
         if b.kind == BLOCK_H:
-            style = (f'margin:17px 0 0 0; font-size:{f["head"]}px; line-height:150%;'
-                     f' font-weight:bold; color:{theme["mark"]};')
+            style = (f'margin:{f["hgap"]}px 0 0 0; font-size:{f["head"]}px;'
+                     f' line-height:140%; font-weight:bold; color:{theme["mark"]};')
         elif b.kind == BLOCK_QUOTE:
-            style = (f'margin:10px 0 0 12px; font-size:{f["body"]}px; line-height:175%;'
-                     f' color:{theme["dim"]};')
+            style = (f'margin:{f["gap"] + 1}px 0 0 12px; font-size:{f["body"]}px;'
+                     f' line-height:{f["line"]:g}%; color:{theme["dim"]};')
         elif b.kind == BLOCK_CODE:
-            style = (f'margin:10px 0 0 0; font-size:{f["sub"]}px; line-height:150%;'
-                     f' color:{theme["dim"]}; font-family:Consolas,monospace;')
+            style = (f'margin:{f["gap"] + 1}px 0 0 0; font-size:{f["code"]}px;'
+                     f' line-height:150%; color:{theme["dim"]}; font-family:Consolas,monospace;')
         else:
-            style = (f'margin:9px 0 0 0; font-size:{f["body"]}px; line-height:175%;'
-                     f' color:{theme["text"]};')
+            style = (f'margin:{f["gap"]}px 0 0 0; font-size:{f["body"]}px;'
+                     f' line-height:{f["line"]:g}%; color:{theme["text"]};')
         text = ("· " + b.text) if b.kind == BLOCK_LIST else b.text
         out.append(f'<p style="{style}">{_nl(text)}</p>')
     return out

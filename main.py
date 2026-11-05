@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QSpinBox, QDoubleSpinBox, QPushButton, QSystemTrayIcon, QStyle,
                              QColorDialog, QCheckBox, QHBoxLayout,
                              QFrame, QTextEdit, QShortcut, QListWidget,
-                             QListWidgetItem, QLabel, QFontComboBox, QSizePolicy, QFileDialog,
+                             QListWidgetItem, QLabel, QFontComboBox, QComboBox, QSizePolicy, QFileDialog,
                              QInputDialog, QMessageBox, QToolTip, QTabWidget, QScrollArea,
                              QStackedWidget, QGridLayout, QGraphicsOpacityEffect)
 from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject,
@@ -179,6 +179,9 @@ DEFAULT_CONFIG = {
                                          # 单个字母只在窗口里有焦点时算（挂全局钩子会跟打字打架）；
                                          # 写成 ctrl+alt+l 这种组合就注册成全局热键
     "feed_lowkey": False,                # 低调显示：社区页不出图、[图] 占位，工位上更不显眼
+    # 社区页正文排版方案："lingxi"（灵犀：16px/1.625、段间距 8、标题 24/21/18、代码 13）
+    # / "dsh"（14px/1.714、段间距 16、标题 21/19/18、代码 11）/ "classic"（老样子 15px/175%）
+    "feed_type_scheme": "lingxi",
     "ghost_mode": False,
     "auto_mode": False,
     "antishot_mode": False,
@@ -2385,7 +2388,7 @@ class SettingsDialog(QDialog):
             key: self.config.get(key) for key in
             ("font_size", "font_family", "line_spacing", "paragraph_spacing",
              "page_margin_chars", "first_line_indent", "paragraph_indent",
-             "feed_font_size", "feed_font_family")
+             "feed_font_size", "feed_font_family", "feed_type_scheme")
             # 注意 **不包含 arrow_scroll_lines**（滚动行数）：它不是"排版预览"，
             # 屏幕上没有预览可退；以前点「取消」会把它悄悄改回旧值再落盘，
             # 表现出来就是"调了滚动行数没生效"（真人报过两次）。
@@ -2761,6 +2764,23 @@ class SettingsDialog(QDialog):
         feed_font_row.setEnabled(self.feed_font_check.isChecked())
         self.add_row(lay, "字号 / 字体", feed_font_row)
 
+        try:
+            _schemes = list(feed_mod.feed_scheme_names())
+        except Exception:
+            _schemes = [("lingxi", "灵犀"), ("dsh", "DSH Desktop"), ("classic", "经典")]
+        self.feed_scheme_combo = QComboBox()
+        for _key, _name in _schemes:
+            self.feed_scheme_combo.addItem(_name, _key)
+        try:
+            _cur = feed_mod.feed_scheme_key(self.config)
+        except Exception:
+            _cur = "lingxi"
+        for _i in range(self.feed_scheme_combo.count()):
+            if self.feed_scheme_combo.itemData(_i) == _cur:
+                self.feed_scheme_combo.setCurrentIndex(_i)
+        self.feed_scheme_combo.currentIndexChanged.connect(self.on_feed_scheme_change)
+        self.add_row(lay, "排版方案", self.feed_scheme_combo)
+
         lay = self.new_card(col, "来源")
         self.source_checks = {}
         try:
@@ -3023,6 +3043,20 @@ class SettingsDialog(QDialog):
         self.config["paragraph_indent"] = self.para_indent_check.isChecked()
         if self.main_window:
             self.main_window.apply_style()
+            self.main_window.save_config()
+
+    def on_feed_scheme_change(self, _index=None):
+        """社区页排版方案：灵犀 / DSH Desktop / 经典。写进 config，当场重排。
+
+        正文块的字号、行高、段间距、标题阶梯、代码字号都跟着方案走（见 feed._scale）。
+        """
+        try:
+            key = str(self.feed_scheme_combo.currentData() or feed_mod.FEED_SCHEME_DEFAULT)
+        except Exception:
+            key = "lingxi"
+        self.config["feed_type_scheme"] = key
+        if self.main_window:
+            self.main_window.apply_style()      # 社区页正开着的话就地换排版
             self.main_window.save_config()
 
     def on_feed_font_change(self, _value=None):
@@ -6531,12 +6565,19 @@ class StealthReader(QWidget):
         免得 config.json 里手写个 0 或 999 把页面弄成一行一个字。
         """
         fam = str(self.config.get("feed_font_family") or "").strip() or "Microsoft YaHei UI"
+        scheme = {}
+        try:
+            scheme = dict(feed_mod.FEED_TYPE_SCHEMES.get(feed_mod.feed_scheme_key(self.config))
+                          or {})
+        except Exception:
+            scheme = {}
         try:
             size = int(self.config.get("feed_font_size") or 0)
         except (TypeError, ValueError):
             size = 0
         if not 11 <= size <= 22:
-            size = getattr(feed_mod, "FEED_SIZE_DEFAULT", 15)
+            # 没单独配字号：吃方案自己的正文字号（灵犀 16 / DSH 14 / 经典 15）
+            size = int(scheme.get("body") or getattr(feed_mod, "FEED_SIZE_DEFAULT", 15))
         return QFont(fam, size)
 
     def feed_theme(self):

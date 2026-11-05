@@ -1964,23 +1964,29 @@ check("已经落过地的块再经过一次不会被当成坏地址丢掉（幂�
 
 # ---------------------------------------------------------------- 21
 print("\n=== 21. 版式：字号阶梯 / 细线 / 截断 / 前端不出现说明性文字 ===")
+# 两层各不相同：**列表/评论**还是"标题只比正文大 1px"（真人两轮反馈"标题太大太显眼"），
+# **帖子正文块**走排版方案（真人 2026-11-05 给的灵犀 / DSH 对照表）。分开量。
 _th = feed_mod.theme_from_config({"feed_font_size": 15}, 520)
-_sc = feed_mod._scale(_th)
-check("字号阶梯随社区页字号走，标题 > 正文 > 摘要 > 元信息",
+_sc = feed_mod._list_scale(_th)
+check("列表阶梯随社区页字号走，标题 > 正文 > 摘要 > 元信息",
       _sc["title"] > _sc["body"] > _sc["sub"] > _sc["meta"], _sc)
 _th22 = feed_mod.theme_from_config({"feed_font_size": 22}, 520)
-_sc22 = feed_mod._scale(_th22)
-check("标题只比正文大 1px（真人：标题太大太显眼）",
+_sc22 = feed_mod._list_scale(_th22)
+check("列表标题只比正文大 1px（真人：标题太大太显眼）",
       _sc["title"] == _sc["body"] + 1 and _sc22["title"] == _sc22["body"] + 1
       and _sc22["title"] > _sc["title"] and _sc22["meta"] > _sc["meta"], (_sc, _sc22))
-check("没配就用 15px + 界面无衬线字体栈（不再拿书页的宋体大字号顶上来）",
-      feed_mod.theme_from_config({}, 520)["size"] == 15
+_dt = feed_mod._scale(feed_mod.theme_from_config({}, 520))
+check("正文块默认吃灵犀方案：16px / 行高 162.5% / 标题 24（1.5 倍）/ 代码 13",
+      (_dt["body"], _dt["line"], _dt["h1"], _dt["code"]) == (16, 162.5, 24, 13), _dt)
+check("没配就按默认方案（灵犀：16px + MiSans 优先 → 雅黑）",
+      feed_mod.theme_from_config({}, 520)["size"] == 16
+      and "MiSans" in feed_mod.theme_from_config({}, 520)["family"]
       and "YaHei" in feed_mod.theme_from_config({}, 520)["family"],
       feed_mod.theme_from_config({}, 520))
-check("配了社区字体就听配置的；配了个不可能的值就退回默认",
+check("配了社区字体就听配置的；配了个不可能的值就退回方案默认（16）",
       feed_mod.theme_from_config({"feed_font_size": 18,
                                   "feed_font_family": "微软雅黑"}, 520)["size"] == 18
-      and feed_mod.theme_from_config({"feed_font_size": 999}, 520)["size"] == 15)
+      and feed_mod.theme_from_config({"feed_font_size": 999}, 520)["size"] == 16)
 _long = "标题" * 60
 check("长标题会被截断并加省略号（一屏不被一条帖子占满）",
       len(feed_mod._clip(_long, feed_mod.TITLE_CLIP)) <= feed_mod.TITLE_CLIP + 1
