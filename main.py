@@ -9028,21 +9028,34 @@ class StealthReader(QWidget):
         if self.rect().contains(local_pos): return
 
         if self.config.get("ghost_mode", False):
-            # 幽灵态下正文会变透明，高亮色块必须一起藏起来，
-            # 否则"透明窗口上浮着几条彩色带子"，一眼就露馅
-            self.ghost_veiled = True
-            self.text_edit.setExtraSelections([])
-            if self.config.get("auto_mode", False):
-                # 变色龙：窗口底色留着（那是跟壁纸配出来的），只把"字"藏掉。
-                # 注意社区页/卡片页的正文是**内联颜色**，改控件 `color` 压不住它们，
-                # 所以这里罩一层 alpha=0 的图形效果（见 set_ghost_veil）。
-                self.chameleon_timer.stop()
-                self.content_frame.set_draw_corners(False)
-                self.set_ghost_veil(True)
-                self.setWindowOpacity(1.0)
-            else:
-                self.setWindowOpacity(0.005)
+            self._ghost_out()
         super().leaveEvent(event)
+
+    def _ghost_out(self):
+        """幽灵态（鼠标离开窗口）：把字藏掉；融景**实色档**下整扇窗一起淡出去。
+
+        老档（alpha 2）的底色本来就是"几乎全透、只借桌面颜色"，留着它正好——
+        所以只藏字、窗口不淡。实色档的底色是不透明的（alpha 255），只藏字会剩下
+        一块**实色空白**（真人 2026-11-05：「背景实色的时候鼠标不在页面应该是透明的，
+        现在是实色空白」），所以这一档跟普通档一样，让窗口整体淡到几乎看不见。
+        """
+        # 幽灵态下正文会变透明，高亮色块必须一起藏起来，
+        # 否则"透明窗口上浮着几条彩色带子"，一眼就露馅
+        self.ghost_veiled = True
+        self.text_edit.setExtraSelections([])
+        if self.config.get("auto_mode", False):
+            # 变色龙：窗口底色留着（那是跟壁纸配出来的），只把"字"藏掉。
+            # 注意社区页/卡片页的正文是**内联颜色**，改控件 `color` 压不住它们，
+            # 所以这里罩一层 alpha=0 的图形效果（见 set_ghost_veil）。
+            self.chameleon_timer.stop()
+            self.content_frame.set_draw_corners(False)
+            self.set_ghost_veil(True)
+            if self.config.get("auto_bg_solid", False):
+                self.setWindowOpacity(0.005)
+            else:
+                self.setWindowOpacity(1.0)
+        else:
+            self.setWindowOpacity(0.005)
 
     def is_in_resize_area(self, pos):
         rect = self.rect()

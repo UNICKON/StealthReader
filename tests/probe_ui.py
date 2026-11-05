@@ -333,6 +333,9 @@ try:
     app_mod.QCursor = _FakeCursor
     w.config["ghost_mode"] = True
     w.config["auto_mode"] = True
+    _solid0 = w.config.get("auto_bg_solid")
+    w.config["auto_bg_solid"] = False                # 这一节量的是老档（几乎全透）
+    w.apply_style()
     _sb0 = w.text_edit.verticalScrollBar().value()
     w.leaveEvent(QEvent(QEvent.Leave))
     _eff = w.text_edit.graphicsEffect()
@@ -341,7 +344,7 @@ try:
           None if _eff is None else _eff.opacity())
     check("幽灵态：ghost_veiled 标记置上、划线高亮一起藏",
           w.ghost_veiled is True and not w.text_edit.extraSelections(), w.ghost_veiled)
-    check("幽灵态：窗口不整体淡出（变色龙底色留着）",
+    check("幽灵态（老档）：窗口不整体淡出（变色龙底色留着）",
           abs(w.windowOpacity() - 1.0) < 1e-6, w.windowOpacity())
     check("幽灵态不重排：滚动位置一点没动",
           w.text_edit.verticalScrollBar().value() == _sb0,
@@ -365,6 +368,7 @@ finally:
     w.adjust_color_to_background = _adjust_bak
     w.config["ghost_mode"] = _gmode0
     w.config["auto_mode"] = _amode0
+    w.config["auto_bg_solid"] = _solid0
     w.set_ghost_veil(False)
     w.apply_style()
 
@@ -3931,6 +3935,47 @@ finally:
 
 check("盯前台那张表的节奏调快了（150ms 一拍，两拍约 0.3 秒）",
       w.peek_watch_timer.interval() == 150, w.peek_watch_timer.interval())
+
+print("\n=== 32. 幽灵态：实色档鼠标离开后要整窗淡出（不能剩一块实色空白）===")
+
+_g_cache = (w.config.get("auto_mode"), w.config.get("auto_bg_solid"),
+            w.config.get("ghost_mode"))
+try:
+    w.show()
+    w.config["auto_mode"] = True
+    w.config["auto_bg_solid"] = True
+    w.config["ghost_mode"] = True
+    w.apply_style()
+    _op_before = w.windowOpacity()
+    w._ghost_out()
+    _op_solid = w.windowOpacity()
+    _veiled = bool(getattr(w, "_ghost_veil_on", False))
+    _timer_off = not w.chameleon_timer.isActive()
+    check("实色档 + 鼠标离开：整扇窗淡到几乎看不见（不是只剩一块实色底）",
+          _op_before > 0.9 and _op_solid <= 0.01, (_op_before, _op_solid))
+    check("字也一起藏了、盯着取色的表停了", _veiled and _timer_off, (_veiled, _timer_off))
+
+    w.apply_style()
+    check("回来立刻恢复：不透明 + 罩子摘掉",
+          w.windowOpacity() > 0.9 and not getattr(w, "_ghost_veil_on", False),
+          (w.windowOpacity(), getattr(w, "_ghost_veil_on", False)))
+
+    w.config["auto_bg_solid"] = False
+    w.apply_style()
+    w._ghost_out()
+    _op_veil = w.windowOpacity()
+    check("老档（几乎全透）鼠标离开：窗口不淡（只藏字，底色本来就是透的）",
+          _op_veil > 0.9, _op_veil)
+
+    w.config["auto_mode"] = False
+    w.apply_style()
+    w._ghost_out()
+    _op_plain = w.windowOpacity()
+    check("普通档（非融景）鼠标离开：整窗淡到几乎看不见", _op_plain <= 0.01, _op_plain)
+finally:
+    (w.config["auto_mode"], w.config["auto_bg_solid"],
+     w.config["ghost_mode"]) = _g_cache
+    w.apply_style()
 
 w.config.clear()
 w.config.update(_cfg_bak)

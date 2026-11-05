@@ -3211,6 +3211,12 @@ check("点到任务栏当场退出：左键那三种消息 + 命中判定",
 check("盯前台的节奏是 150ms 一拍（两拍约 0.3 秒）",
       "self.peek_watch_timer.setInterval(150)" in _main_src, None)
 
+check("幽灵态抽成 _ghost_out，实色档下整窗淡出（0.005）、老档保持不淡",
+      "def _ghost_out(" in _main_src
+      and "self._ghost_out()" in _main_src
+      and 'if self.config.get("auto_bg_solid", False):' in _main_src
+      and "self.setWindowOpacity(0.005)" in _main_src, None)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23
