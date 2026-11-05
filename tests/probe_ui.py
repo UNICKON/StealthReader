@@ -679,6 +679,7 @@ pump(lambda: not w.feed_busy)
 check("真按键 `[` 能切回来", w.feed_source().key == _key_before, w.feed_source().key)
 w.exit_feed_mode(reason="probe")
 
+from PyQt5.QtGui import QTextCursor  # noqa: E402
 # ===== 8.3b 阅读页 d/c 翻页：和左右箭头同一套（真人 2026-11-05）=====
 print("\n=== 8.3b 阅读页 d/c 翻页 ===")
 _PROBE_LONG = "永和九年岁在癸丑暮春之初会于会稽山阴之兰亭，修禊事也。" * 400
@@ -703,23 +704,48 @@ def _local_jump(key, start, modifiers=Qt.NoModifier, text=_PROBE_LONG):
 
 
 _b_right, _a_right = _local_jump(Qt.Key_Right, 0)
-_b_c, _a_c = _local_jump(Qt.Key_C, 0)
-check("c 往下翻，落到和 → 完全同一处",
-      _a_c == _a_right and _a_c > _b_c, (_a_c, _a_right))
+_b_d, _a_d = _local_jump(Qt.Key_D, 0)
+check("d 往下翻，落到和 → 完全同一处",
+      _a_d == _a_right and _a_d > _b_d, (_a_d, _a_right))
 
 _mid = max(0, _a_right)  # 翻过一页的位置，用来测往回翻
 _b_left, _a_left = _local_jump(Qt.Key_Left, _mid)
-_b_d, _a_d = _local_jump(Qt.Key_D, _mid)
-check("d 往上翻，落到和 ← 完全同一处",
-      _a_d == _a_left and _a_d < _b_d, (_a_d, _a_left))
+_b_c, _a_c = _local_jump(Qt.Key_C, _mid)
+check("c 往上翻，落到和 ← 完全同一处",
+      _a_c == _a_left and _a_c < _b_c, (_a_c, _a_left))
 
-_b_ctrl, _a_ctrl = _local_jump(Qt.Key_C, _mid, Qt.ControlModifier)
-check("ctrl+c 不算翻页（单键只在纯按时生效，别抢复制）",
+_b_ctrl, _a_ctrl = _local_jump(Qt.Key_D, _mid, Qt.ControlModifier)
+check("ctrl+d 不算翻页（单键只在纯按时生效）",
       _a_ctrl == _b_ctrl, (_b_ctrl, _a_ctrl))
 
-_b_shift, _a_shift = _local_jump(Qt.Key_C, 0, Qt.ShiftModifier)
-check("shift+c 仍然算单键（和 shift+箭头一个待遇）",
+_b_shift, _a_shift = _local_jump(Qt.Key_D, 0, Qt.ShiftModifier)
+check("shift+d 仍然算单键（和 shift+箭头一个待遇）",
       _a_shift == _a_right, (_a_shift, _a_right))
+
+
+def _next_step(start, overlap):
+    w.is_local_mode = True
+    w.local_file_path = "probe_overlap.txt"
+    w.local_full_text = _PROBE_LONG
+    w.local_start_index = start
+    w.local_page_history = []
+    w.local_chapters = []
+    w.local_heading_offsets = set()
+    w.config["page_overlap_lines"] = overlap
+    w.apply_style()
+    w.render_local_page()
+    qapp.processEvents()
+    return w.calc_next_page_start()
+
+
+_ov2 = _next_step(0, 2)
+_ov0 = _next_step(0, 0)
+_back = QTextCursor(w.text_edit.document())
+_back.setPosition(_ov0)
+_back.movePosition(QTextCursor.Up, QTextCursor.MoveAnchor, 2)
+check("翻页保留 2 行上文（退回的距离正好等于往上两行）",
+      _ov2 < _ov0 and _back.position() == _ov2, (_ov2, _ov0, _back.position()))
+w.config["page_overlap_lines"] = 2
 
 # 8.4 进出社区页不许改坏书页排版，社区页字体又能单独调
 LAYOUT_TEXT = ("第一段用来量排版。" * 40) + "\n" + ("第二段也有点内容。" * 40)

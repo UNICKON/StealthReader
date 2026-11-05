@@ -3131,10 +3131,10 @@ check("回退链里 MiSans 排第一（和灵犀的方案栈对齐）",
 
 # ===== 25. 阅读页 d/c 翻页接线 =====
 print("\n=== 25. 阅读页 d/c 翻页 ===")
-check("c 和 → / 空格 / PageDown 在同一个分支里（往下翻）",
-      "[Qt.Key_Right, Qt.Key_Space, Qt.Key_PageDown, Qt.Key_C]" in _main_src, None)
-check("d 和 ← / PageUp 在同一个分支里（往上翻）",
-      "[Qt.Key_Left, Qt.Key_PageUp, Qt.Key_D]" in _main_src, None)
+check("d 和 → / 空格 / PageDown 在同一个分支里（往下翻）",
+      "[Qt.Key_Right, Qt.Key_Space, Qt.Key_PageDown, Qt.Key_D]" in _main_src, None)
+check("c 和 ← / PageUp 在同一个分支里（往上翻）",
+      "[Qt.Key_Left, Qt.Key_PageUp, Qt.Key_C]" in _main_src, None)
 
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]

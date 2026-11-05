@@ -10120,11 +10120,12 @@ class StealthReader(QWidget):
             # 整页翻留给空格/PageDown/PageUp/左右箭头
             self.scroll_lines(1 if key == Qt.Key_Down else -1)
         # 真人 2026-11-05：「阅读页 d c 上下翻页，和左右箭头同」。
-        # c 往下翻（等于 →），d 往上翻（等于 ←）——方向和社区页那套一致
-        # （C = 下一个社区、D = 上一个社区），不另立一套规矩。
-        elif key in [Qt.Key_Right, Qt.Key_Space, Qt.Key_PageDown, Qt.Key_C]:
+        # d = 往下翻（= →，page_down 的直觉），c = 往上翻（= ←）。
+        # 注意方向：一开始我按"c 下、d 上"接的，真人当场发现往回翻、没有那两行
+        # 重叠痕迹（往回翻本来就不重叠）——所以 d 才是下翻。
+        elif key in [Qt.Key_Right, Qt.Key_Space, Qt.Key_PageDown, Qt.Key_D]:
             self.scroll_page(1)
-        elif key in [Qt.Key_Left, Qt.Key_PageUp, Qt.Key_D]:
+        elif key in [Qt.Key_Left, Qt.Key_PageUp, Qt.Key_C]:
             self.scroll_page(-1)
 
     def closeEvent(self, event):
