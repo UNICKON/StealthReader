@@ -43,12 +43,11 @@ SOURCE_DOMAINS = {
     "linuxdo": ["linux.do"],
     "v2ex": ["v2ex.com"],
     "hupu": ["hupu.com"],
-    "weread": ["weread.qq.com", "qq.com"],
     "ithome": ["ithome.com"],
 }
 
 # 界面上"能不能自动找"的名单（`SOURCE_DOMAINS` 的键），顺序就是设置里那一列的顺序
-AUTO_KEYS = ("zhihu", "weibo", "nga", "xhs", "linuxdo", "v2ex", "hupu", "weread")
+AUTO_KEYS = ("zhihu", "weibo", "nga", "xhs", "linuxdo", "v2ex", "hupu")
 
 
 class CookieReadError(Exception):

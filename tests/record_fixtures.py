@@ -391,67 +391,6 @@ def _trim_xhs_note(state, nid, desc_limit=400, imgs=2):
     }}}}
 
 
-def _trim_weread_shelf(shelf, keep=3):
-    """书架：只留 3 本 + 适配器用到的字段；`bookProgress` 只留这几本的。
-
-    挑的时候优先挑**有进度**的（0% 的书记不到"读到哪了"这层重点）。"""
-    books = [b for b in (shelf.get("books") or []) if isinstance(b, dict) and b.get("bookId")]
-    prog = {str(p.get("bookId")): p for p in (shelf.get("bookProgress") or [])
-            if isinstance(p, dict) and p.get("bookId")}
-    with_prog = [b for b in books if str(b["bookId"]) in prog]
-    pick = (with_prog + books)[:keep]
-    ids = [str(b["bookId"]) for b in pick]
-    out_books = []
-    for b in pick:
-        out_books.append({
-            "bookId": str(b["bookId"]), "title": b.get("title"), "author": b.get("author"),
-            "cover": b.get("cover"), "deepLink": b.get("deepLink"),
-            "finishReading": b.get("finishReading"), "readUpdateTime": b.get("readUpdateTime"),
-        })
-    out_prog = []
-    for bid in ids:
-        p = prog.get(bid)
-        if not p:
-            continue
-        out_prog.append({k: p.get(k) for k in
-                         ("bookId", "progress", "chapterUid", "chapterIdx", "readingTime",
-                          "updateTime", "synckey")})
-    return {"books": out_books, "bookProgress": out_prog}
-
-
-def _trim_weread_chapters(chs, book_id, keep=3, cur_uid=0):
-    """章节表：留前 3 章 **+ 当前读到的那一章**，其余字段只留适配器用到的。
-
-    为什么要专门把当前章塞进来：只看前 3 章的话，"目录里 ▶ 标出读到哪一章"这条就没法验
-    （实测这本书读到第 10 章，前 3 章里根本没有它）。"""
-    one = ((chs or {}).get("data") or [{}])
-    one = one[0] if one and isinstance(one[0], dict) else {}
-    ups = [c for c in (one.get("updated") or []) if isinstance(c, dict)]
-    if not ups:
-        return None
-    pick = ups[:keep]
-    if cur_uid:
-        extra = [c for c in ups if int(c.get("chapterUid") or 0) == int(cur_uid)]
-        if extra and all(int(c.get("chapterUid") or 0) != int(cur_uid) for c in pick):
-            pick = pick + extra
-    pick.sort(key=lambda c: int(c.get("chapterIdx") or 0))
-    return {"data": [{"bookId": str(book_id), "updated": [
-        {k: c.get(k) for k in ("chapterUid", "chapterIdx", "title", "wordCount", "paid", "level")}
-        for c in pick]}]}
-
-
-def _trim_weread_progress(pr, limit=60):
-    """进度：`summary` 是**书里的原句**，只留前 60 字（跟知乎正文、小红书正文一个规矩）。"""
-    book = (pr or {}).get("book")
-    if not isinstance(book, dict):
-        return None
-    keep = {k: book.get(k) for k in
-            ("bookId", "progress", "chapterUid", "chapterIdx", "readingTime", "updateTime")}
-    if book.get("summary"):
-        keep["summary"] = str(book["summary"])[:limit]
-    return {"bookId": str((pr or {}).get("bookId") or book.get("bookId") or ""), "book": keep}
-
-
 # ---------------------------------------------------------------- 搜索
 
 def _trim_zhihu_search(obj, keep=6):
@@ -920,44 +859,6 @@ def record(which):
     if which in ("", "v2ex"):
         print("V2EX（本机网络连不上是常态，连上才录）")
         save("v2ex_hot.json", "https://www.v2ex.com/api/topics/hot.json")
-    if which in ("", "weread"):
-        print("微信读书（要 Cookie）")
-        cred = auth_for("weread")
-        if not cred:
-            print("  没配 Cookie，跳过")
-        else:
-            ref = {"Referer": "https://weread.qq.com/", "Origin": "https://weread.qq.com"}
-            shelf = fetch_json("https://weread.qq.com/web/shelf/sync", cred, ref)
-            if not isinstance(shelf, dict) or not (shelf.get("books") or []):
-                print("  书架没拿到（Cookie 过期了？），跳过")
-            else:
-                trimmed_shelf = _trim_weread_shelf(shelf)
-                save_raw("weread_shelf.json", trimmed_shelf,
-                         note="已裁剪：只留 3 本 + 适配器用到的字段")
-                # 章节表 / 进度录的是**书架上第一本**（不是随手挑一本）：三份夹具要能互相对上，
-                # 否则探针里"章节里有当前章"这种检查根本没法验（第一版就是各录各的，对不上）。
-                target = str((trimmed_shelf["books"] or [{}])[0].get("bookId") or "")
-                cur_uid = 0
-                for p in (trimmed_shelf.get("bookProgress") or []):
-                    if str(p.get("bookId")) == target:
-                        cur_uid = int(p.get("chapterUid") or 0)
-                chs = fetch_json("https://weread.qq.com/web/book/chapterInfos", cred, ref,
-                                 payload={"bookIds": [target]})
-                trimmed = _trim_weread_chapters(chs, target, cur_uid=cur_uid)
-                if trimmed:
-                    save_raw("weread_chapters.json", trimmed,
-                             note="已裁剪：前 3 章 + 当前读到的那一章")
-                else:
-                    print("  章节表没拿到，没录")
-                pr = fetch_json("https://weread.qq.com/web/book/getProgress", cred, ref,
-                                params={"bookId": target})
-                trimmed = _trim_weread_progress(pr)
-                if trimmed:
-                    save_raw("weread_progress.json", trimmed,
-                             note="已裁剪：summary 只留前 60 字（那是书里的原句）")
-                else:
-                    print("  进度没拿到，没录")
-
     if which in ("", "search"):
         record_search()
 

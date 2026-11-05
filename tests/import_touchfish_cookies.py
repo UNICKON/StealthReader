@@ -22,7 +22,6 @@ MAP = {
     "touchfish.linuxDoCookie": "linuxdo",
     "touchfish.weiboCookie": "weibo",
     "touchfish.xhsCookie": "xhs",
-    "touchfish.wereadCookie": "weread",
     "touchfish.v2exCookie": "v2ex",
     "touchfish.douyinCookie": "douyin",       # 我们不做抖音，留着只为"看得见"
 }
@@ -33,7 +32,6 @@ MARK = {
     "linuxdo": ["_t", "cf_clearance", "_cfuvid"],
     "weibo": ["SUB", "SUBP", "SSOLoginState"],
     "xhs": ["web_session", "a1", "webId"],
-    "weread": ["wr_skey", "wr_vid"],
     "v2ex": ["A2", "V2EX_LANG"],
 }
 

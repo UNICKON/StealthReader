@@ -26,7 +26,7 @@ StealthReader 是一个 Windows 桌面阅读器。窗口呈无边框、置顶、
 把 MiSans 的 ttf 放进 `fonts/` 后重启，书页就真是 MiSans（同一行实测暗像素 2660/墨量 481950，
 比雅黑粗、和宋体明显不同）。MiSans 版权属小米，按其许可协议仅在本机使用、不再分发，
 所以 `fonts/*.ttf` 不进仓库。
-- 可连接 Legado 的 Web 服务读取书架与正文，也可浏览微信读书的书架与阅读进度。
+- 本地书架：读过的书 + 程序目录里 `books/` 下放着的 txt/epub/md，一列排开、各记各的进度，双击接着读。
 
 ### 社区
 
@@ -299,7 +299,7 @@ python main.py
 
 首次运行会在程序目录生成 `config.json`，各项设置保存在其中，也可以在设置界面修改。
 
-- **书籍**：从菜单打开本地 TXT 或 EPUB 文件。使用 Legado 时，在设置中填写其 Web 服务地址。
+- **书籍**：右键「本地书架」挑一本接着读（双击），或「打开本地书籍」选一个 TXT / EPUB 文件。把书扔进程序目录的 `books/` 也会出现在书架里。
 - **社区**：按 `Ctrl+Alt+F` 进入。需要登录的来源在设置中填写 Cookie，或使用 Cookie 导入功能。
 - **卡片**：需要本地 Anki 正在运行，并安装 [AnkiConnect](https://ankiweb.net/shared/info/2055492159) 插件。安装后按 `Ctrl+Alt+A` 进入，可在设置中选择牌组。
 
@@ -309,7 +309,6 @@ python main.py
 
 | 键 | 说明 |
 | --- | --- |
-| `ip` | Legado Web 服务地址 |
 | `opacity` `font_family` `font_size` | 窗口透明度与正文字体 |
 | `line_spacing` `paragraph_spacing` `page_margin_chars` `first_line_indent` | 排版参数 |
 | `page_overlap_lines` | 翻页时保留的上一页行数，默认 2；设为 0 则新一页从上一页的下一行开始 |
@@ -331,7 +330,7 @@ python main.py
 
 ## 数据与隐私
 
-程序不收集使用数据，也不向作者或第三方发送统计信息。访问网络仅发生在以下情况：打开社区页、使用联网书源、浏览微信读书书架、启用 Cookie 导入。
+程序不收集使用数据，也不向作者或第三方发送统计信息。访问网络仅发生在以下情况：打开社区页、启用 Cookie 导入。书和书架都不联网。
 
 程序目录中会生成以下文件：
 
@@ -349,7 +348,7 @@ python main.py
 
 - 仅支持 Windows。
 - 社区部分为只读，且依赖各站点公开接口，接口变动或风控收紧时可能需要更新 Cookie 或等待适配。
-- 微信读书仅支持书架与阅读进度，不包含正文、划线导出。
+- 书架只管本机的 txt / epub / md：没有网络书源，也没有在线章节。
 - 提供的是压缩包而非安装程序，也不包含自动更新。
 
 ## 项目结构
@@ -364,7 +363,6 @@ python main.py
 | `feed_cookies.py` | 从本机浏览器读取 Cookie |
 | `xhs_sign.py` | 小红书请求签名 |
 | `anki_client.py` | AnkiConnect 客户端 |
-| `weread.py` | 微信读书书架与进度 |
 | `hupu_boards.py` | 虎扑板块表 |
 
 ## 测试

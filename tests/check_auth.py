@@ -207,13 +207,6 @@ def check_v2ex(S, save):
     S.req("最热", "https://www.v2ex.com/api/topics/hot.json", save="hot" if save else None)
 
 
-def check_weread(S, save):
-    print("  微信读书（批次 F：书架 → 章节 → 喂进本地的书管线）")
-    S.req("书架", "https://weread.qq.com/web/shelf/sync?synckey=0",
-          headers={"Referer": "https://weread.qq.com/"},
-          save="shelf" if save else None)
-
-
 def check_xhs(S, save):
     print("  小红书（免登录只有空壳；带上 Cookie 看服务端渲不渲染）")
     for label, url in (("探索页", "https://www.xiaohongshu.com/explore"),
@@ -235,7 +228,7 @@ def check_chiphell(S, save):
 
 CHECKS = (("zhihu", check_zhihu), ("weibo", check_weibo), ("nga", check_nga),
           ("linuxdo", check_linuxdo), ("v2ex", check_v2ex),
-          ("weread", check_weread), ("xhs", check_xhs), ("chiphell", check_chiphell))
+          ("xhs", check_xhs), ("chiphell", check_chiphell))
 
 
 def main():

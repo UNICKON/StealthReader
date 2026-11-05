@@ -6,7 +6,6 @@ import os
 if not getattr(sys, "frozen", False):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "libs"))
 
-import requests
 import json
 import hashlib
 import re
@@ -65,15 +64,6 @@ except Exception as _feed_import_err:      # pragma: no cover
     feed_mod = None
     feed_net = None
     FEED_IMPORT_HINT = f"社区统一流需要 feed.py（本目录下），当前加载失败：{_feed_import_err}"
-
-# 微信读书书架：只到"读到哪了"（正文不做，原因写在 weread.py 里）。同样缺文件也不该起不来。
-try:
-    import weread as weread_mod
-    WEREAD_OK = True
-except Exception as _weread_import_err:     # pragma: no cover
-    weread_mod = None
-    WEREAD_OK = False
-    WEREAD_IMPORT_HINT = f"微信读书书架需要 weread.py（本目录下），当前加载失败：{_weread_import_err}"
 
 # 启用高分屏支持
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -310,7 +300,6 @@ def clamp_config_number(config, key, default, low, high):
 
 
 DEFAULT_CONFIG = {
-    "ip": "http://192.168.1.10:1122",
     "opacity": 0.9,
     "font_size": 14,
     "font_family": "Microsoft YaHei",
@@ -357,7 +346,12 @@ DEFAULT_CONFIG = {
     "last_local_file": "",
     "last_local_pos": 0,
     # 按书索引的阅读进度：{规范化绝对路径: 读到第几个字}。只留最近 60 本。
-    "local_book_positions": {}
+    "local_book_positions": {},
+    # 书架用的两本账：全书多少字、上次读是什么时候（和位置表同进同出，同样只留 60 本）
+    "local_book_totals": {},
+    "local_book_times": {},
+    # 书架里点过「移出书架」的（books/ 目录里的书删不掉文件，只能先记着不显示）
+    "local_book_hidden": []
 }
 
 # 内置的安全文档：有人看到屏幕时顶上的那份"工作文档"。
@@ -967,6 +961,75 @@ def load_epub_text(path):
     """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...])。"""
     text, chapters, _headings, _links = _load_epub(path)
     return text, chapters
+
+
+def read_book_text_quietly(path):
+    """只读地把一本书读成纯文本（书架算"一共多少字"用）。
+
+    读不了就返回空串：书架是列表不是阅读器，某本坏了不该弹窗、也不该记一条错误日志。
+    """
+    if not path:
+        return ""
+    try:
+        if not os.path.exists(path):
+            return ""
+    except Exception:
+        return ""
+    if path.lower().endswith(".epub"):
+        try:
+            text, _chapters = load_epub_text(path)
+            return text or ""
+        except Exception:
+            return ""
+    for enc in ("utf-8-sig", "gb18030", "utf-16"):
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return f.read()
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            return ""
+    return ""
+
+
+BOOK_EXTS = (".txt", ".epub", ".md")
+SHELF_KEEP = 60          # 书架只留最近这么多本（和位置表一致）
+
+
+def list_book_files(folder):
+    """books/ 目录第一层里的书（不递归：里面再深的目录不算书架）。"""
+    if not folder or not os.path.isdir(folder):
+        return []
+    out = []
+    try:
+        for name in os.listdir(folder):
+            if os.path.splitext(name)[1].lower() in BOOK_EXTS:
+                full = os.path.join(folder, name)
+                if os.path.isfile(full):
+                    out.append(full)
+    except Exception:
+        return []
+    return out
+
+
+def when_text(ts):
+    """时间戳 → "3 小时前" / "5 天前" / "2026-03-02"（书架那一列）。"""
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    delta = max(0.0, time.time() - ts)
+    if delta < 300:
+        return "刚刚"
+    if delta < 3600:
+        return "%d 分钟前" % int(delta // 60)
+    if delta < 86400:
+        return "%d 小时前" % int(delta // 3600)
+    if delta < 86400 * 30:
+        return "%d 天前" % int(delta // 86400)
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
 
 
 # ================= txt 的标题识别（没有结构信息，只能按字面规则猜） =================
@@ -1985,447 +2048,125 @@ class ReaderTextEdit(QTextEdit):
         self._pin_cursor()
 
 
-# ================= 独立窗口：书籍选择器 =================
-class BookSelector(QDialog):
-    def __init__(self, main_window, parent=None):
-        super().__init__(parent)
-        self.main_window = main_window
-        # 直接点"X"关掉时没人给 selected_book 赋值，open_book_selector 里那句读它会 AttributeError
-        # （取消 = 崩，实测过）。这里给个默认值，取消就是"什么都没选"。
-        self.selected_book = None
-        self.setWindowTitle("📚 书架")
-        self.resize(400, 500)
-        self.setStyleSheet(DARK_STYLESHEET + SETTINGS_QSS)
-        self.initUI()
-        self.populate_list(self.main_window.books)
+# ================= 独立窗口：本地书架 =================
+class LocalShelfDialog(QDialog):
+    """📚 本地书架：一列书 + 各自读到百分之几。
 
-    def initUI(self):
-        layout = QVBoxLayout()
-        top_layout = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍 搜索书名或作者...")
-        self.search_input.textChanged.connect(self.filter_books)
-        top_layout.addWidget(self.search_input)
-
-        btn_refresh = QPushButton("🔄 刷新")
-        btn_refresh.setFixedWidth(60)
-        btn_refresh.clicked.connect(self.manual_refresh)
-        top_layout.addWidget(btn_refresh)
-
-        layout.addLayout(top_layout)
-        self.list_widget = QListWidget()
-        self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
-        layout.addWidget(self.list_widget)
-        self.setLayout(layout)
-
-    def manual_refresh(self):
-        self.setWindowTitle("📚 书架 (加载中...)")
-        self.main_window.fetch_bookshelf_silent()
-
-    def update_data(self, books):
-        self.setWindowTitle(f"📚 书架 (共 {len(books)} 本)")
-        current_search = self.search_input.text()
-        if current_search:
-            self.filter_books(current_search)
-        else:
-            self.populate_list(books)
-
-    def populate_list(self, books_to_show):
-        self.list_widget.clear()
-        if not books_to_show: return
-        for book in books_to_show:
-            display_text = f"{book['name']} - {book['author']}"
-            item = QListWidgetItem(display_text)
-            item.setData(Qt.UserRole, book)
-            self.list_widget.addItem(item)
-
-    def filter_books(self, text):
-        text = text.lower()
-        filtered = []
-        for book in self.main_window.books:
-            if text in book['name'].lower() or text in book['author'].lower():
-                filtered.append(book)
-        self.populate_list(filtered)
-
-    def on_item_double_clicked(self, item):
-        self.selected_book = item.data(Qt.UserRole)
-        self.accept()
-
-
-# ================= 独立窗口：微信读书书架 =================
-class WereadShelfLoader(QThread):
-    """把书架取回来（网络活别放界面线程）。"""
-
-    loaded = pyqtSignal(list)
-    failed = pyqtSignal(str)
-
-    def __init__(self, client):
-        super().__init__()
-        self.client = client
-
-    def run(self):
-        try:
-            self.loaded.emit(self.client.shelf())
-        except Exception as e:
-            self.failed.emit(str(e))
-
-
-class WereadBookLoader(QThread):
-    """某一本的章节表 + 读到哪。章节表挂了就只报那一句，进度挂了不影响章节显示。"""
-
-    loaded = pyqtSignal(list, dict)
-    failed = pyqtSignal(str)
-
-    def __init__(self, client, book_id):
-        super().__init__()
-        self.client = client
-        self.book_id = book_id
-
-    def run(self):
-        try:
-            chapters = self.client.chapters(self.book_id)
-        except Exception as e:
-            self.failed.emit(str(e))
-            return
-        try:
-            prog = self.client.progress(self.book_id)
-        except Exception:
-            prog = {}
-        self.loaded.emit(chapters, prog)
-
-
-class WereadShelfDialog(QDialog):
-    """📖 微信读书 · 我的书架：**这一层只到"读到哪了"**。
-
-    给的是书名/作者/进度/当前章/"最后停在哪一行"，双击一本书去网页版接着读。
-    **正文不在这里**：那要绕过微信读书专门防程序取正文的那套签名与校验（见 weread.py 开头），
-    不做。所以这个窗口是"书架 + 我读到哪了"，不是一个阅读器——不假装。
+    书架不另存一份"书架表"：书从哪来 = 读过的那几本（local_book_positions）
+    加上 books/ 目录里扔着的文件；进度 = 上次读到第几个字 / 全书多少字。
+    好处是删掉文件它自己就消失，不存在两套账对不上的情况。
     """
 
-    def __init__(self, client, parent=None):
+    def __init__(self, window, parent=None):
         super().__init__(parent)
-        self.client = client
+        self.win = window
         self.books = []
-        self.current = None
-        self.chapters = []
-        self._loaders = []              # 还活着的取数线程（见 _spawn：跑着的 QThread 被回收会崩）
-        self.setWindowTitle("📖 微信读书 · 我的书架")
-        self.setStyleSheet(DARK_STYLESHEET)
-        self.resize(780, 540)
+        self.selected = None
+        self._scan = None
+        self.setWindowTitle("📚 本地书架")
+        self.resize(560, 580)
+        self.setStyleSheet(DARK_STYLESHEET + SETTINGS_QSS)
         self.initUI()
         self.reload()
 
-    # -- 线程 ------------------------------------------------------------------
-    def _spawn(self, loader, on_ok, on_fail):
-        """起一个取数线程，并保证它**跑着的时候不会被回收**。
-
-        QThread 在自己还在跑的时候被销毁，Qt 会直接把进程 abort（实测：窗口一关，
-        整个 StealthReader 没了，日志里就一句 "QThread: Destroyed while thread is still running"）。
-        所以线程统一从这里起：记在 self._loaders 里，finished 之后才摘掉。"""
-        self._loaders.append(loader)
-        loader.loaded.connect(on_ok)
-        loader.failed.connect(on_fail)
-        loader.finished.connect(lambda l=loader: self._drop(l))
-        loader.start()
-
-    def _drop(self, loader):
-        if loader in self._loaders:
-            self._loaders.remove(loader)
-        try:
-            loader.deleteLater()
-        except Exception:
-            pass
-
-    def _settle_loaders(self, ms=3000):
-        """关窗口前等一等还在跑的取数（等不到也走，但至少别让它在跑的时候被销毁）。"""
-        for loader in list(self._loaders):
-            try:
-                if loader.isRunning():
-                    loader.wait(ms)
-            except Exception:
-                pass
-        self._loaders = []
-
-    def done(self, code):
-        self._settle_loaders()
-        super().done(code)
-
-    def closeEvent(self, event):
-        self._settle_loaders()
-        super().closeEvent(event)
-
     def initUI(self):
-        outer = QVBoxLayout()
+        layout = QVBoxLayout(self)
         top = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍 搜书名或作者…")
-        self.search_input.textChanged.connect(self.filter_books)
-        top.addWidget(self.search_input)
-        outer.addLayout(top)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("🔍 搜书名")
+        self.search.textChanged.connect(self.refill)
+        top.addWidget(self.search)
+        btn_pick = QPushButton("📂 打开…")
+        btn_pick.clicked.connect(self.pick_file)
+        top.addWidget(btn_pick)
+        btn_refresh = QPushButton("🔄 刷新")
+        btn_refresh.clicked.connect(self.reload)
+        top.addWidget(btn_refresh)
+        layout.addLayout(top)
 
-        middle = QHBoxLayout()
         self.list_widget = QListWidget()
-        self.list_widget.setFixedWidth(340)
-        self.list_widget.currentItemChanged.connect(self.on_book_picked)
-        self.list_widget.itemDoubleClicked.connect(self.on_book_opened)
-        middle.addWidget(self.list_widget)
+        self.list_widget.itemDoubleClicked.connect(self.on_activate)
+        layout.addWidget(self.list_widget)
 
-        right = QVBoxLayout()
-        self.info_label = QLabel("正在取书架…")
-        self.info_label.setWordWrap(True)
-        self.info_label.setAlignment(Qt.AlignTop)
-        self.info_label.setStyleSheet("color: #cfcfcf;")
-        right.addWidget(self.info_label)
-        self.chapter_widget = QListWidget()
-        self.chapter_widget.itemDoubleClicked.connect(self.on_chapter_opened)
-        right.addWidget(self.chapter_widget)
-        middle.addLayout(right)
-        outer.addLayout(middle)
+        self.hint = QLabel("")
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
 
         bottom = QHBoxLayout()
-        self.open_btn = QPushButton("🌐 去微信读书接着读")
-        self.open_btn.clicked.connect(self.open_in_browser)
-        self.open_btn.setEnabled(False)
-        bottom.addWidget(self.open_btn)
-        refresh_btn = QPushButton("🔄 刷新")
-        refresh_btn.clicked.connect(self.reload)
-        bottom.addWidget(refresh_btn)
-        close_btn = QPushButton("关闭")
-        close_btn.clicked.connect(self.accept)
-        bottom.addWidget(close_btn)
-        outer.addLayout(bottom)
-        self.setLayout(outer)
+        btn_forget = QPushButton("移出书架")
+        btn_forget.clicked.connect(self.forget_selected)
+        bottom.addWidget(btn_forget)
+        bottom.addStretch(1)
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(self.reject)
+        bottom.addWidget(btn_close)
+        layout.addLayout(bottom)
 
-    # -- 取数 -------------------------------------------------------------
+    # --- 数据 ---
     def reload(self):
-        if not self.client.available:
-            self.setWindowTitle("📖 微信读书 · 没有 Cookie")
-            self.info_label.setText(
-                "没有配微信读书的 Cookie。\n\n"
-                "把浏览器里的 Cookie 写进 feed_auth.json 的 weread 里，例如：\n"
-                '    {"weread": {"cookie": "wr_vid=…; wr_skey=…"}}\n\n'
-                "装了 VS Code 的摸鱼插件的话，可以直接搬过来：\n"
-                "    python tests\\import_touchfish_cookies.py --apply")
-            return
-        self.setWindowTitle("📖 微信读书 · 正在取书架…")
-        self._spawn(WereadShelfLoader(self.client), self.on_shelf, self.on_failed)
+        self.books = self.win.shelf_books()
+        self.refill()
+        # 没有字数的那几本，让主窗口后台读一遍（读完从信号里回来）
+        self.win.scan_shelf_totals([(b["key"], b["path"]) for b in self.books
+                                    if not b.get("total")])
 
-    def on_shelf(self, books):
-        self.books = books
-        self.setWindowTitle("📖 微信读书 · 我的书架（%d 本）" % len(books))
-        self.filter_books(self.search_input.text())
-        if not books:
-            self.info_label.setText("书架上没有书（或者这个 Cookie 对应的账号没有书架数据）。")
+    def refresh_from_config(self):
+        """后台把字数算回来了：重读一遍账，列表原地刷新。"""
+        self.books = self.win.shelf_books()
+        self.refill()
 
-    def on_failed(self, msg):
-        self.setWindowTitle("📖 微信读书 · 取数失败")
-        self.info_label.setText("取书架失败：%s" % msg)
-        log_event(f"微信读书：取书架失败 {msg}")
-
-    def filter_books(self, text):
-        text = (text or "").lower().strip()
-        shown = [b for b in self.books
-                 if not text or text in b["title"].lower() or text in b["author"].lower()]
+    def refill(self, *_):
+        needle = (self.search.text() or "").strip().lower()
+        rows = [b for b in self.books if not needle or needle in b["title"].lower()]
         self.list_widget.clear()
-        for b in shown:
-            mark = "✅ " if b["finished"] else ""
-            item = QListWidgetItem("%s%s · %s   %d%%" % (mark, b["title"], b["author"], b["progress"]))
+        for b in rows:
+            item = QListWidgetItem(self.row_text(b))
             item.setData(Qt.UserRole, b)
+            item.setToolTip("%s\n%s" % (b["path"], b.get("tip", "")))
             self.list_widget.addItem(item)
-        if shown:
-            self.list_widget.setCurrentRow(0)
+        self.setWindowTitle("📚 本地书架（%d 本）" % len(self.books))
+        if not rows:
+            self.hint.setText("书架是空的：右键「打开本地书籍」读一本就会出现在这里，"
+                              "也可以把 txt / epub 放进 books/ 目录。")
         else:
-            self.info_label.setText("没有匹配的书。")
-            self.chapter_widget.clear()
-            self.current = None
-            self.open_btn.setEnabled(False)
+            pending = sum(1 for b in rows if not b.get("total"))
+            tip = "双击接着读；每本书的进度各记各的。"
+            if pending:
+                tip += "（%d 本还在算字数）" % pending
+            self.hint.setText(tip)
 
-    # -- 选中一本书 ---------------------------------------------------------
-    def on_book_picked(self, item, _prev=None):
-        if item is None:
+    @staticmethod
+    def row_text(b):
+        pct = b.get("pct")
+        prog = "  --" if pct is None else "%3d%%" % int(round(pct))
+        return "%s  %s  %s" % (b["title"], prog, b.get("when", ""))
+
+    def current_book(self):
+        item = self.list_widget.currentItem()
+        return item.data(Qt.UserRole) if item else None
+
+    def on_activate(self, item):
+        b = item.data(Qt.UserRole)
+        if b:
+            self.selected = b
+            self.accept()
+
+    def pick_file(self):
+        options = QFileDialog.Options() | QFileDialog.DontUseNativeDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择书籍文件", "",
+            "书籍 (*.txt *.epub *.md);;纯文本 (*.txt *.md);;EPUB (*.epub);;All Files (*)",
+            options=options)
+        if path:
+            self.selected = {"path": path}
+            self.accept()
+
+    def forget_selected(self):
+        b = self.current_book()
+        if not b:
             return
-        book = item.data(Qt.UserRole)
-        self.current = book
-        self.open_btn.setEnabled(True)
-        self.chapters = []
-        self.chapter_widget.clear()
-        self.info_label.setText("《%s》\n正在取章节和进度…" % book["title"])
-        self._spawn(WereadBookLoader(self.client, book["id"]),
-                    lambda chs, pr, b=book: self.on_book_detail(b, chs, pr),
-                    self.on_chapter_failed)
-
-    def on_book_detail(self, book, chapters, prog):
-        if not self.current or self.current["id"] != book["id"]:
-            return                      # 选中的书已经换了，这份结果作废
-        self.chapters = chapters
-        cur_uid = int(prog.get("chapter_uid") or book.get("chapter_uid") or 0)
-        cur_idx = int(prog.get("chapter_idx") or book.get("chapter_idx") or 0)
-        cur = None
-        for c in chapters:
-            if cur_uid and c["uid"] == cur_uid:
-                cur = c
-                break
-        if cur is None and 0 < cur_idx <= len(chapters):
-            cur = chapters[cur_idx - 1]
-        pct = int(prog.get("progress") if prog.get("progress") is not None else book["progress"])
-        lines = ["《%s》  %s" % (book["title"], book["author"]),
-                 "读到 %d%%" % pct
-                 + ("（第 %d 章，共 %d 章）" % (cur_idx, len(chapters)) if chapters else "")]
-        mins = int((prog.get("reading_time") or book.get("reading_time") or 0))
-        if mins:
-            lines.append("累计阅读 %s" % _human_minutes(mins))
-        if cur:
-            lines.append("当前章：%s" % cur["title"])
-        if prog.get("summary"):
-            lines.append("最后停在这一行：%s" % prog["summary"])
-        lines.append("")
-        lines.append("下面是目录（▶ 是读到的那一章）。正文不在这里：微信读书的正文要绕过它自己的"
-                     "保护才拿得到，所以这个窗口只帮你记住读到哪、并送你去网页版接着读。")
-        self.info_label.setText("\n".join(lines))
-        self.chapter_widget.clear()
-        for c in chapters:
-            prefix = "▶ " if (cur and c["uid"] == cur["uid"]) else "   "
-            words = ("%d 字" % c["words"]) if c["words"] else ""
-            lock = "🔒 " if c["paid"] else ""
-            row = QListWidgetItem("%s%s%s%s" % (prefix, lock, c["title"], ("   " + words) if words else ""))
-            row.setData(Qt.UserRole, c)
-            self.chapter_widget.addItem(row)
-            if cur and c["uid"] == cur["uid"]:
-                self.chapter_widget.setCurrentItem(row)
-        if cur:
-            self.chapter_widget.scrollToItem(self.chapter_widget.currentItem())
-
-    def on_chapter_failed(self, msg):
-        self.info_label.setText("取章节失败：%s" % msg)
-
-    # -- 去网页版读 ---------------------------------------------------------
-    def open_in_browser(self):
-        book = self.current
-        if not book:
-            return
-        url = book.get("url") or ""
-        if not url:
-            return
-        try:
-            os.startfile(url)
-            log_event(f"微信读书：打开 {book['title']}")
-        except Exception as e:
-            log_event(f"微信读书：打开失败 {e}")
-
-    def on_book_opened(self, item):
-        self.on_book_picked(item)
-        self.open_in_browser()
-
-    def on_chapter_opened(self, item):
-        # 章节这一列只是"目录 + 读到哪"，双击交回给他自己选的浏览器页面
-        self.open_in_browser()
-
-
-def _human_minutes(seconds):
-    """秒 → "1 小时 25 分" / "12 分" / "不到 1 分"（书架里那个 readingTime 是秒）。"""
-    if seconds < 60:
-        return "不到 1 分"
-    m = int(seconds // 60)
-    if m < 60:
-        return "%d 分" % m
-    return "%d 小时 %d 分" % (m // 60, m % 60)
-
-
-# ================= 独立窗口：目录选择器 =================
-class ChapterLoader(QThread):
-    loaded = pyqtSignal(list)
-    failed = pyqtSignal(str)
-
-    def __init__(self, ip, book_url):
-        super().__init__()
-        self.ip = ip
-        self.book_url = book_url
-
-    def run(self):
-        try:
-            url = f"{self.ip}/getChapterList"
-            res = requests.get(url, params={"url": self.book_url}, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                if data['isSuccess']:
-                    self.loaded.emit(data['data'])
-                else:
-                    self.failed.emit(data.get('errorMsg', '未知错误'))
-            else:
-                self.failed.emit(f"HTTP {res.status_code}")
-        except Exception as e:
-            self.failed.emit(str(e))
-
-
-class TocSelector(QDialog):
-    def __init__(self, ip, book_url, current_index, cached_toc=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("📖 目录加载中...")
-        self.resize(400, 600)
-        self.ip = ip
-        self.book_url = book_url
-        self.selected_index = None
-        self.main_window = parent
-        self.target_index = current_index
-        self.loader = None
-        self.setStyleSheet(DARK_STYLESHEET)
-
-        self.initUI()
-
-        if cached_toc and len(cached_toc) > 0:
-            self.on_loaded(cached_toc)
-        else:
-            self.loader = ChapterLoader(ip, book_url)
-            self.loader.loaded.connect(self.on_loaded)
-            self.loader.failed.connect(self.on_failed)
-            self.loader.start()
-
-    def initUI(self):
-        layout = QVBoxLayout()
-        self.status_label = QLabel("正在从手机获取目录...")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.status_label)
-
-        self.list_widget = QListWidget()
-        self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
-        self.list_widget.hide()
-        layout.addWidget(self.list_widget)
-        self.setLayout(layout)
-
-    def on_loaded(self, chapters):
-        try:
-            self.setWindowTitle(f"📖 目录 (共 {len(chapters)} 章)")
-            self.status_label.hide()
-            self.list_widget.show()
-
-            if self.main_window:
-                self.main_window.current_toc = chapters
-
-            for i, chapter in enumerate(chapters):
-                title = str(chapter.get('title', f'第 {i + 1} 章'))
-                item = QListWidgetItem(title)
-                idx = chapter.get('index', i)
-                item.setData(Qt.UserRole, idx)
-                self.list_widget.addItem(item)
-                if i == self.target_index:
-                    item.setSelected(True)
-                    self.list_widget.scrollToItem(item, QListWidget.PositionAtCenter)
-        except Exception as e:
-            self.status_label.setText(f"数据解析错误: {str(e)}")
-            self.status_label.show()
-
-    def on_failed(self, msg):
-        self.status_label.setText(f"目录加载失败: {msg}")
-
-    def on_item_double_clicked(self, item):
-        self.selected_index = item.data(Qt.UserRole)
-        self.accept()
-
-    def closeEvent(self, event):
-        if self.loader and self.loader.isRunning():
-            self.loader.terminate()
-            self.loader.wait()
-        super().closeEvent(event)
+        self.win.forget_book(b["path"])
+        self.reload()
 
 
 # ================= 独立窗口：本地书籍目录（epub） =================
@@ -2685,7 +2426,6 @@ class SettingsDialog(QDialog):
         self.build_page_feed()
         self.build_page_ui()
         self.build_page_privacy()
-        self.build_page_source()
 
     def build_page_read(self):
         col = self.new_page("阅读")
@@ -3164,16 +2904,6 @@ class SettingsDialog(QDialog):
 
         col.addStretch(1)
 
-    def build_page_source(self):
-        col = self.new_page("数据源")
-
-        lay = self.new_card(col, "Legado")
-        self.ip_input = QLineEdit(self.config.get("ip"))
-        self.add_row(lay, "地址", self.ip_input,
-                     "本机 Legado 的地址，例如 http://127.0.0.1:1122。")
-
-        col.addStretch(1)
-
     def on_auto_mode_toggled(self, checked):
         self.btn_bg_color.setEnabled(not checked)
         self.btn_text_color.setEnabled(not checked)
@@ -3315,7 +3045,6 @@ class SettingsDialog(QDialog):
             self.safe_doc_input.setText(path)
 
     def accept(self):
-        self.config["ip"] = self.ip_input.text().strip()
         self.config["font_size"] = self.font_spin.value()
         self.config["font_family"] = self.font_combo.currentFont().family()
         self.config["line_spacing"] = self.spacing_spin.value()
@@ -3438,7 +3167,6 @@ class StealthReader(QWidget):
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
     peek_wheel_signal = pyqtSignal(int)
     peek_exit_signal = pyqtSignal(str)
-    bookshelf_updated_signal = pyqtSignal(list)
     # 背诵模式的按键也来自钩子线程（那里不能碰界面），一律发信号回主线程处理
     review_key_signal = pyqtSignal(str)
     # 社区页的键也来自钩子线程（偷瞄时窗口不聚焦，只能在全局层收），发回主线程处理
@@ -3450,12 +3178,6 @@ class StealthReader(QWidget):
         super().__init__()
         self.load_config()
         self.is_settings_open = False
-
-        # --- 网络书架数据 ---
-        self.books = []
-        self.current_book = None
-        self.current_chapter_index = 0
-        self.current_toc = []
 
         # --- 本地书籍数据 ---
         self.is_local_mode = False  # 模式标记
@@ -3609,7 +3331,6 @@ class StealthReader(QWidget):
         self._last_resize_repage = 0.0
         self.last_toggle_time = 0
         self.local_shortcut = None
-        self.book_selector_dialog = None
         self.oldPos = QPoint(0, 0)
 
         self.chameleon_timer = QTimer(self)
@@ -3656,7 +3377,6 @@ class StealthReader(QWidget):
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
         self.feed_key_signal.connect(self.on_feed_peek_key, Qt.QueuedConnection)
         self.book_key_signal.connect(self.on_peek_book_key, Qt.QueuedConnection)
-        self.bookshelf_updated_signal.connect(self.on_bookshelf_updated)
         # 最后一道保险：任何退出路径（托盘退出、右键退出、关窗、异常退出）都要停掉 Anki
         # 后台线程。QThread 还在跑就被析构，PyQt 会直接崩，而且 Anki 可能停在"藏起来"的状态。
         try:
@@ -3673,11 +3393,8 @@ class StealthReader(QWidget):
         if self.config.get("last_local_file") and os.path.exists(self.config["last_local_file"]):
             self.update_text_signal.emit("正在恢复上次阅读...", False)
             QTimer.singleShot(500, self.restore_last_local_file)
-        elif self.config["ip"] and self.config["ip"].startswith("http"):
-            self.fetch_bookshelf_silent()
-            self.update_text_signal.emit("初始化完成。\n右键菜单可打开本地TXT文件。", False)
         else:
-            self.update_text_signal.emit("欢迎使用。\n右键打开本地书籍或设置Legado。", False)
+            self.update_text_signal.emit("欢迎使用。\n右键菜单打开本地书籍或书架。", False)
 
         if self.config.get("antishot_mode", False):
             QTimer.singleShot(100, lambda: set_window_protection(int(self.winId()), True))
@@ -3750,6 +3467,7 @@ class StealthReader(QWidget):
             self.is_local_mode = True
             self.local_file_path = file_path
             self.local_full_text = content
+            self.note_book_opened(file_path, len(content))   # 书架：字数和「上次读」
             self.local_chapters = chapters
             self.local_heading_offsets = headings
             self.book_links = links          # TXT 没有链接，这里是空表
@@ -4236,30 +3954,6 @@ class StealthReader(QWidget):
                 self.config["last_local_pos"] = self.local_start_index
                 self.save_config()
 
-        else:
-            # --- 网络模式 ---
-            # 【关键保护】如果还没选书，直接拦截滚动，防止崩溃
-            if not self.current_book:
-                return
-
-            scrollbar = self.text_edit.verticalScrollBar()
-            current_val = scrollbar.value()
-            max_val = scrollbar.maximum()
-            min_val = scrollbar.minimum()
-
-            target_val = current_val + (direction * (self.text_edit.viewport().height() - 30))
-
-            if direction > 0:
-                if current_val >= max_val:
-                    self.next_chapter()
-                else:
-                    scrollbar.setValue(min(target_val, max_val))
-            else:
-                if current_val <= min_val:
-                    self.prev_chapter()
-                else:
-                    scrollbar.setValue(max(target_val, min_val))
-
     def scroll_lines(self, direction):
         """方向键 = 逐行滚动，和滚轮完全同一套（含缓冲区边沿的衔接）。
 
@@ -4338,10 +4032,170 @@ class StealthReader(QWidget):
         while len(table) > 60:
             table.pop(next(iter(table)))
         self.config["local_book_positions"] = table
+        self.note_book_read(key)      # 书架「上次读」那一列
 
     def open_local_path(self, file_path):
         """打开一本书：位置按**这本书自己**记的算——同一本接着读，换了书切回来也接着读。"""
         self.load_local_file(file_path, target_pos=self.book_pos_for(file_path))
+
+    # --- 本地书架（书从哪来 = 读过的 + books/ 目录；进度 = 上次读到第几个字） ---
+    def shelf_dir(self):
+        return os.path.join(APP_DIR, "books")
+
+    def shelf_books(self):
+        """书架上现在有什么：一列 dict，按"最近读的"排前面。"""
+        table = self.config.get("local_book_positions")
+        if not isinstance(table, dict):
+            table = {}
+        totals = self.config.get("local_book_totals")
+        if not isinstance(totals, dict):
+            totals = {}
+        times = self.config.get("local_book_times")
+        if not isinstance(times, dict):
+            times = {}
+        hidden = self.config.get("local_book_hidden")
+        if not isinstance(hidden, list):
+            hidden = []
+        hidden = set(hidden)
+
+        paths = {}
+        for key in table:                       # 读过的（历史里存的是规范化路径）
+            paths[key] = key
+        for p in list_book_files(self.shelf_dir()):
+            paths.setdefault(self.book_pos_key(p), p)
+
+        # 位置表里存的是 normcase 过的路径（全小写）。直接拿它当书名，ASCII 文件名就成了小写，
+        # 所以按目录问一次真名——每个目录只列一次，不逐本扫盘。
+        real_names = {}
+
+        def real_path(path):
+            folder, name = os.path.split(path)
+            if folder not in real_names:
+                try:
+                    real_names[folder] = {n.lower(): n for n in os.listdir(folder)}
+                except Exception:
+                    real_names[folder] = {}
+            return os.path.join(folder, real_names[folder].get(name.lower(), name))
+
+        rows = []
+        for key, path in paths.items():
+            if key in hidden:
+                continue                    # 移出过的书：目录里还有也不显示
+            path = real_path(path)
+            if not os.path.exists(path):
+                continue                        # 文件没了就不在书架上（不留空壳）
+            if os.path.splitext(path)[1].lower() not in BOOK_EXTS:
+                continue
+            try:
+                total = int(totals.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                total = 0
+            pos = self.book_pos_for(path)
+            try:
+                last = float(times.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                last = 0.0
+            rows.append({
+                "key": key,
+                "path": path,
+                "title": os.path.splitext(os.path.basename(path))[0],
+                "pos": pos,
+                "total": total,
+                "pct": (100.0 * min(pos, total) / total) if total > 0 else None,
+                "when": when_text(last),
+                "last": last,
+                "tip": ("读到第 %d 字 / 共 %d 字" % (pos, total)) if total else "字数还没算出来",
+            })
+        rows.sort(key=lambda r: (-r["last"], r["title"]))
+        return rows
+
+    def apply_shelf_totals(self, totals):
+        """书架线程算出来的字数落盘（下次开书架不用重算）。"""
+        if not isinstance(totals, dict) or not totals:
+            return
+        table = self.config.get("local_book_totals")
+        if not isinstance(table, dict):
+            table = {}
+        for k, n in totals.items():
+            try:
+                n = int(n)
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                table[k] = n
+        self.config["local_book_totals"] = table
+        self.save_config()
+
+    def note_book_opened(self, path, total):
+        """一本书刚被打开：记下它的字数和"上次读的时间"。"""
+        key = self.book_pos_key(path)
+        if not key:
+            return
+        # 又打开它 = 收回「移出书架」的意思
+        hidden = self.config.get("local_book_hidden")
+        if isinstance(hidden, list) and key in hidden:
+            self.config["local_book_hidden"] = [k for k in hidden if k != key]
+        if total:
+            table = self.config.get("local_book_totals")
+            if not isinstance(table, dict):
+                table = {}
+            table[key] = int(total)
+            self.config["local_book_totals"] = table
+        self.note_book_read(key)
+
+    def note_book_read(self, key):
+        if not key:
+            return
+        times = self.config.get("local_book_times")
+        if not isinstance(times, dict):
+            times = {}
+        times[key] = time.time()
+        while len(times) > SHELF_KEEP:
+            times.pop(next(iter(times)))
+        self.config["local_book_times"] = times
+
+    def forget_book(self, path):
+        """从书架移出：位置/字数/时间三本账一起删，文件本身不动。
+
+        books/ 目录里的书删账之后还会被目录重新扫出来，所以再加一条"隐藏"记录；
+        下次真的打开它，note_book_opened 会把这条收回——移出不是删除。
+        """
+        key = self.book_pos_key(path)
+        if not key:
+            return
+        for name in ("local_book_positions", "local_book_totals", "local_book_times"):
+            table = self.config.get(name)
+            if isinstance(table, dict):
+                table.pop(key, None)
+        hidden = self.config.get("local_book_hidden")
+        if not isinstance(hidden, list):
+            hidden = []
+        if key not in hidden:
+            hidden.append(key)
+            while len(hidden) > SHELF_KEEP:
+                hidden.pop(0)
+        self.config["local_book_hidden"] = hidden
+        self.save_config()
+
+    def open_local_shelf(self):
+        """📚 本地书架：双击一本就接着上次读到的地方读。"""
+        try:
+            os.makedirs(self.shelf_dir(), exist_ok=True)   # 空目录也留着：往里扔书就上架
+        except Exception:
+            pass
+        was_auto = self.config.get("auto_mode")
+        if was_auto:
+            self.setWindowOpacity(0.95)
+            self.content_frame.setStyleSheet(f"background-color: {self.config['bg_color']};")
+            self.content_frame.set_mode(False)
+        dialog = LocalShelfDialog(self, self)
+        chosen = None
+        if dialog.exec_() == QDialog.Accepted:
+            chosen = dialog.selected
+        dialog.deleteLater()
+        self.apply_style()
+        if chosen and chosen.get("path"):
+            self.open_local_path(chosen["path"])
 
     def save_config(self):
         try:
@@ -4364,11 +4218,6 @@ class StealthReader(QWidget):
             scrollbar.setValue(scrollbar.maximum())
         else:
             scrollbar.setValue(0)
-
-    def on_bookshelf_updated(self, books):
-        self.books = books
-        if self.book_selector_dialog and self.book_selector_dialog.isVisible():
-            self.book_selector_dialog.update_data(books)
 
     def refresh_hotkeys(self):
         hotkey_str = self.config.get("boss_key", "Esc")
@@ -5077,8 +4926,8 @@ class StealthReader(QWidget):
                 # （以前排在后面，没选书时托盘里进社区页滚轮是死的）。
                 self._local_wheel_step(delta, pixel_dy)
                 return True
-            # 【关键保护】如果既没选书，也不是本地模式，直接拦截滚轮不处理
-            if not self.is_local_mode and not self.current_book:
+            # 现在只剩本地书这一种：没打开书就不滚（空文档算几何会崩）
+            if not self.is_local_mode:
                 return True
 
             # 本地书页（到缓冲区边沿自动衔接）和网络书（滚不动才换章）都走这一条，
@@ -5350,6 +5199,7 @@ class StealthReader(QWidget):
         tray_menu.addAction("隐形背诵（Anki 卡片）").triggered.connect(self.toggle_review_mode)
         tray_menu.addAction("社区统一流（知乎/V2EX…）").triggered.connect(self.toggle_feed_mode)
         tray_menu.addAction("叫回 Anki 窗口").triggered.connect(self.rescue_anki_window)
+        tray_menu.addAction("本地书架…").triggered.connect(self.open_local_shelf)
         tray_menu.addAction("打开本地书籍…").triggered.connect(self.open_local_file_dialog)
         tray_menu.addAction("设置…").triggered.connect(self.open_settings)
         tray_menu.addSeparator()
@@ -5437,7 +5287,6 @@ class StealthReader(QWidget):
                 # 退出偷瞄，窗口刚露脸又被收走（日志里 14:14:12 就是这么一闪的）。
                 self._drop_peek_state()
             self.dismiss_action_panel(cancelled=True)   # 连同待确认的划选一起作废
-            self.sync_progress_async()
             if self.is_local_mode and not self._book_veiled():
                 # 收起来 = "先看到这儿"：记视口顶那一行，而不是本页页首（页内滚过会差一屏）
                 self.config["last_local_pos"] = self.current_top_offset()
@@ -5520,7 +5369,6 @@ class StealthReader(QWidget):
             return
         self._drop_peek_state()
         self.apply_style()                # 先恢复正常样式，免得偷瞄那套样式留到下次露脸
-        self.sync_progress_async()
         self.hide()
         log_event(f"偷瞄退出（{reason or '未说明'}）→ 窗口已隐藏")
 
@@ -5660,15 +5508,6 @@ class StealthReader(QWidget):
         sb = self.text_edit.verticalScrollBar()
         before = sb.value()
         sb.setValue(int(round(before + px)))
-        if not self.current_book:
-            return
-        if not flip:
-            return                          # 滚轮：到头就停，别自动换下一章（那是整页跳）
-        if sb.value() == before:            # 网络书：滚不动了才换章
-            if px > 0:
-                self.next_chapter()
-            else:
-                self.prev_chapter()
 
     def _local_wheel_step(self, delta, pixel_dy=0):
         """滚轮一格（120）= 设置里的行数，和方向键同一套手感。
@@ -5800,8 +5639,6 @@ class StealthReader(QWidget):
             "local_page_history": list(self.local_page_history),
             "local_chapters": self.local_chapters,
             "local_heading_offsets": self.local_heading_offsets,
-            "current_book": self.current_book,
-            "current_chapter_index": self.current_chapter_index,
             "display_text": self.text_edit.toPlainText(),
         }
 
@@ -5843,14 +5680,6 @@ class StealthReader(QWidget):
             self.render_local_page()
             if write_progress:
                 self.config["last_local_pos"] = self.local_start_index
-        elif snap.get("current_book"):
-            # 网络书：按记住的章节重新拉一次，走原来那条渲染路径
-            self.is_local_mode = False
-            self.displaying_local_text = False
-            self.current_book = snap.get("current_book")
-            self.current_chapter_index = int(snap.get("current_chapter_index", 0))
-            self.apply_style()
-            self.fetch_chapter_content(self.current_book["bookUrl"], self.current_chapter_index, False)
         else:
             self.is_local_mode = False
             self.displaying_local_text = False
@@ -9012,175 +8841,6 @@ class StealthReader(QWidget):
                 self.setWindowOpacity(0.005)
         super().leaveEvent(event)
 
-    def fetch_bookshelf_silent(self):
-        threading.Thread(target=self._fetch_bookshelf_thread, daemon=True).start()
-
-    def _fetch_bookshelf_thread(self):
-        try:
-            url = f"{self.config['ip']}/getBookshelf"
-            res = requests.get(url, timeout=3)
-            if res.status_code == 200:
-                data = res.json()
-                self.bookshelf_updated_signal.emit(data.get("data", []))
-        except:
-            pass
-
-    def fetch_toc_silent(self, book_url):
-        threading.Thread(target=self._fetch_toc_thread, args=(book_url,), daemon=True).start()
-
-    def _fetch_toc_thread(self, book_url):
-        try:
-            url = f"{self.config['ip']}/getChapterList"
-            res = requests.get(url, params={"url": book_url}, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                if data['isSuccess']:
-                    self.current_toc = data['data']
-        except:
-            pass
-
-    def open_book_selector(self):
-        self.fetch_bookshelf_silent()
-        self.book_selector_dialog = BookSelector(self, self)
-
-        was_auto = self.config.get("auto_mode")
-        if was_auto:
-            self.setWindowOpacity(0.95)
-            self.content_frame.setStyleSheet(f"background-color: {self.config['bg_color']};")
-            self.content_frame.set_mode(False)
-
-        if self.book_selector_dialog.exec_() == QDialog.Accepted:
-            if self.book_selector_dialog.selected_book:
-                self.load_book(self.book_selector_dialog.selected_book)
-
-        self.apply_style()
-        self.book_selector_dialog = None
-
-    def open_weread_shelf(self):
-        """📖 微信读书 · 我的书架（只到"读到哪了"，正文不做——见 weread.py）。"""
-        if not WEREAD_OK:
-            self.update_text_signal.emit(WEREAD_IMPORT_HINT, False)
-            log_event(WEREAD_IMPORT_HINT)
-            return
-        client = weread_mod.build_weread(
-            cache_root=os.path.join(APP_DIR, "cache"),
-            root=APP_DIR, log=log_event)
-        self.weread_dialog = WereadShelfDialog(client, self)
-        self.weread_dialog.exec_()
-        self.weread_dialog = None
-        self.apply_style()
-
-    def open_toc_selector(self):
-        if not self.current_book:
-            self.update_text_signal.emit("请先选择一本书！", False)
-            return
-
-        if not hasattr(self, 'current_toc') or self.current_toc is None:
-            self.current_toc = []
-
-        was_auto = self.config.get("auto_mode")
-        if was_auto:
-            self.setWindowOpacity(0.95)
-            self.content_frame.setStyleSheet(f"background-color: {self.config['bg_color']};")
-            self.content_frame.set_mode(False)
-
-        toc = TocSelector(self.config['ip'], self.current_book['bookUrl'],
-                          self.current_chapter_index, self.current_toc, self)
-
-        if toc.exec_() == QDialog.Accepted:
-            if toc.selected_index is not None:
-                self.current_chapter_index = toc.selected_index
-                self.update_text_signal.emit(f"跳转到章节: {self.current_chapter_index}", False)
-                self.fetch_chapter_content(self.current_book['bookUrl'], self.current_chapter_index, False)
-
-        self.apply_style()
-
-    def load_book(self, book):
-        self.is_local_mode = False  # 切换回网络模式
-        self.current_book = book
-        self.current_chapter_index = book.get('durChapterIndex', 0)
-        self.current_toc = []
-        self.update_text_signal.emit(f"打开: {book['name']}", False)
-        self.fetch_chapter_content(book['bookUrl'], self.current_chapter_index, False)
-        self.fetch_toc_silent(book['bookUrl'])
-
-    def fetch_chapter_content(self, book_url, chapter_index, scroll_to_bottom=False):
-        t = threading.Thread(target=self._fetch_chapter_thread,
-                             args=(book_url, chapter_index, scroll_to_bottom), daemon=True)
-        t.start()
-
-    def _fetch_chapter_thread(self, book_url, chapter_index, scroll_to_bottom):
-        try:
-            chapter_title = ""
-            if hasattr(self, 'current_toc') and self.current_toc:
-                if 0 <= chapter_index < len(self.current_toc):
-                    chapter_title = self.current_toc[chapter_index].get('title', '')
-
-            if not chapter_title:
-                chapter_title = f"第 {chapter_index + 1} 章"
-
-            url = f"{self.config['ip']}/getBookContent"
-            params = {'url': book_url, 'index': chapter_index}
-            res = requests.get(url, params=params, timeout=5)
-
-            if res.status_code == 200:
-                data = res.json()
-                if not data.get("isSuccess"):
-                    self.update_text_signal.emit(f"读取失败: {data.get('errorMsg')}", False)
-                    return
-
-                raw_content = data.get("data", "")
-                content = raw_content.replace("<br>", "\n").replace("&nbsp;", " ")
-
-                full_text = f"【 {chapter_title} 】\n\n{content}"
-
-                self.update_text_signal.emit(full_text, scroll_to_bottom)
-                self.sync_progress_async()
-            else:
-                self.update_text_signal.emit(f"HTTP错误: {res.status_code}", False)
-        except Exception as e:
-            self.update_text_signal.emit(f"网络错误: {str(e)}", False)
-
-    def sync_progress_async(self):
-        if not self.current_book or self.is_local_mode or self._book_veiled(): return
-        threading.Thread(target=self._sync_task, daemon=True).start()
-
-    def _sync_task(self):
-        try:
-            title = ""
-            if self.current_toc and 0 <= self.current_chapter_index < len(self.current_toc):
-                title = self.current_toc[self.current_chapter_index].get("title", "")
-
-            data = {
-                "name": self.current_book['name'],
-                "author": self.current_book['author'],
-                "durChapterIndex": self.current_chapter_index,
-                "durChapterPos": 0,
-                "durChapterTime": int(time.time() * 1000),
-                "durChapterTitle": title
-            }
-            url = f"{self.config['ip']}/saveBookProgress"
-            requests.post(url, json=data, timeout=3)
-        except:
-            pass
-
-    def next_chapter(self):
-        # 【新增保护】防止 current_book 为 None
-        if not self.current_book:
-            return
-        self.current_chapter_index += 1
-        self.update_text_signal.emit("加载下一章...", False)
-        self.fetch_chapter_content(self.current_book['bookUrl'], self.current_chapter_index, False)
-
-    def prev_chapter(self):
-        # 【新增保护】防止 current_book 为 None
-        if not self.current_book:
-            return
-        if self.current_chapter_index > 0:
-            self.current_chapter_index -= 1
-            self.update_text_signal.emit("加载上一章...", False)
-            self.fetch_chapter_content(self.current_book['bookUrl'], self.current_chapter_index, True)
-
     def is_in_resize_area(self, pos):
         rect = self.rect()
         resize_rect = QRect(rect.width() - self.resize_margin,
@@ -9978,6 +9638,7 @@ class StealthReader(QWidget):
             cmenu.addSeparator()
             cmenu.addAction("❌ 退出").triggered.connect(self.quit_app)
             return cmenu
+        cmenu.addAction("📚 本地书架").triggered.connect(self.open_local_shelf)
         cmenu.addAction("📂 打开本地书籍 (TXT/EPUB)").triggered.connect(self.open_local_file_dialog)
         cmenu.addAction("🃏 隐形背诵（Anki 卡片）").triggered.connect(self.toggle_review_mode)
         cmenu.addAction("🌐 社区统一流（知乎/V2EX/微博…）").triggered.connect(self.toggle_feed_mode)
@@ -9993,10 +9654,6 @@ class StealthReader(QWidget):
         copy_action = cmenu.addAction("📋 复制选中文字")
         copy_action.triggered.connect(self.copy_selection)
         copy_action.setEnabled(bool(self.text_edit.textCursor().hasSelection()))
-        cmenu.addSeparator()
-        cmenu.addAction("📚 网络书架 (搜索)").triggered.connect(self.open_book_selector)
-        cmenu.addAction("📖 微信读书 · 我的书架").triggered.connect(self.open_weread_shelf)
-        cmenu.addAction("📖 章节目录 (网络)").triggered.connect(self.open_toc_selector)
         cmenu.addSeparator()
         cmenu.addAction("⚙️ 设置").triggered.connect(self.open_settings)
         cmenu.addSeparator()
@@ -10073,8 +9730,6 @@ class StealthReader(QWidget):
             self.apply_style()
             self.apply_feed_sources()
             self.refresh_hotkeys()
-            if self.config["ip"].startswith("http"):
-                self.fetch_bookshelf_silent()
         else:
             self.apply_style()
 
@@ -10139,7 +9794,6 @@ class StealthReader(QWidget):
             self.exit_feed_mode(reason="close")     # 社区页也收起：书页按快照回来
         self.shutdown_anki()     # X 关窗是最常用的退出方式：这里也必须把后台线程停干净
         self.dismiss_action_panel(cancelled=True)
-        self.sync_progress_async()
         self.save_window_pos()
         if self.is_local_mode and not self._book_veiled():
             self.config["last_local_pos"] = self.current_top_offset()   # 视口顶那一行，不是页首
@@ -10177,10 +9831,6 @@ class StealthReader(QWidget):
         try:
             if self.feed_mode:
                 self.exit_feed_mode(reason="restart")
-            try:
-                self.sync_progress_async()
-            except Exception:
-                pass
             if self.is_local_mode and not self._book_veiled():
                 self.config["last_local_pos"] = self.current_top_offset()
             self.save_window_pos()

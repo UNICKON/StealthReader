@@ -340,59 +340,6 @@ else:
         except Exception as e:
             note("小红书这条路这次没走通：%s: %s" % (type(e).__name__, e))
 
-    # 微信读书：只到"读到哪了"。正文那条路（e_*/t_* 那套签名与校验）故意不走，见 weread.py
-    print("\n=== 5. 微信读书（要 Cookie，只到\"读到哪了\"）===")
-    try:
-        import weread                                                    # noqa: E402
-        wr = weread.build_weread(cache_root=CACHE, root=SR)
-    except Exception as e:
-        wr = None
-        note("weread.py 没起来：%s: %s" % (type(e).__name__, e))
-    if wr is None:
-        pass
-    elif not wr.available:
-        note("feed_auth.json 里没有微信读书的 Cookie，跳过")
-    else:
-        try:
-            t0 = time.time()
-            books = wr.shelf()
-            check("微信读书（带 Cookie）：书架拿到了（%d 本，%.1fs）" % (len(books), time.time() - t0),
-                  len(books) >= 3, len(books))
-            # 书名人人都有；作者不一定——自己传上去的书（z-library 那种）微信读书就没有作者，实测 57 本里 2 本
-            check("微信读书（带 Cookie）：书名都在，进度是 0-100",
-                  all(b["title"] for b in books) and all(0 <= b["progress"] <= 100 for b in books),
-                  (sum(1 for b in books if not b["author"]), len(books)))
-            check("微信读书（带 Cookie）：每本都有能打开的网页版地址",
-                  all(b["url"].startswith("https://weread.qq.com/web/") for b in books),
-                  books[0]["url"][:52])
-            read = [b for b in books if b["progress"] > 0]
-            check("微信读书（带 Cookie）：有读到一半的书（书架不是空的壳）", bool(read),
-                  [(b["title"][:10], b["progress"]) for b in read[:3]])
-            if read:
-                one = read[0]
-                chs = wr.chapters(one["id"])
-                check("微信读书（带 Cookie）：《%s》章节表拿到了（%d 章）"
-                      % (one["title"][:10], len(chs)), len(chs) >= 2, len(chs))
-                check("微信读书（带 Cookie）：章节有标题和字数",
-                      all(c["title"] for c in chs[:5]) and any(c["words"] > 0 for c in chs),
-                      [(c["title"][:10], c["words"]) for c in chs[:3]])
-                pr = wr.progress(one["id"])
-                check("微信读书（带 Cookie）：进度对得上（%d%%）" % pr["progress"],
-                      pr["progress"] == one["progress"], (pr["progress"], one["progress"]))
-                check("微信读书（带 Cookie）：当前章在那本书的章节表里",
-                      any(c["uid"] == pr["chapter_uid"] for c in chs) or pr["chapter_uid"] == 0,
-                      (pr["chapter_uid"], len(chs)))
-                check("微信读书（带 Cookie）：没有去碰正文接口（这条线只到\"读到哪了\"）",
-                      not hasattr(wr, "content") and not hasattr(wr, "read"))
-            # 第二次调必须走缓存（书架是 80KB 的东西，不该每开一次窗口都重下一遍）
-            t0 = time.time()
-            again = wr.shelf()
-            check("微信读书（带 Cookie）：第二次开书架走缓存（%.2fs）" % (time.time() - t0),
-                  len(again) == len(books) and (time.time() - t0) < 1.0,
-                  "%.2fs" % (time.time() - t0))
-        except Exception as e:
-            note("微信读书这条路这次没走通：%s: %s" % (type(e).__name__, e))
-
 shutil.rmtree(CACHE, ignore_errors=True)
 print("\n================ 结果 ================")
 print("失败 %d 项%s" % (len(FAILS), ("：" + "；".join(FAILS)) if FAILS else "（无）"))

@@ -486,110 +486,118 @@ try:
 finally:
     w.feed_load = _orig_feed_load
 
-print("\n=== 7. 微信读书书架窗口（只到\"读到哪了\"）===")
+print("\n=== 7. 本地书架：书从哪来、进度怎么算、移出只动账 ===")
 
+import shutil                                                            # noqa: E402
+import tempfile                                                          # noqa: E402
 
-class FakeWeread(object):
-    """替身客户端：数据来自夹具，一个包都不发。"""
+from main import (LocalShelfDialog, list_book_files,                     # noqa: E402
+                  read_book_text_quietly, when_text)
 
-    def __init__(self, books, chapters=None, progress=None, available=True):
-        self.available = available
-        self._books = books
-        self._chapters = chapters or []
-        self._progress = progress or {}
+if w.feed_mode:
+    w.exit_feed_mode(reason="probe")
+_shelf_dir = tempfile.mkdtemp(prefix="sr_shelf_")
+try:
+    _book_a = os.path.join(_shelf_dir, "万历十五年.txt")
+    _book_b = os.path.join(_shelf_dir, "沉默的大多数.txt")
+    with open(_book_a, "w", encoding="utf-8") as f:
+        f.write("第一章 开端\n" + "字" * 399)              # 401 字
+    with open(_book_b, "w", encoding="utf-8") as f:
+        f.write("另一本\n" + "文" * 119)                   # 121 字
+    with open(os.path.join(_shelf_dir, "不该进书架.pdf"), "wb") as f:
+        f.write(b"%PDF-1.4")
+    os.makedirs(os.path.join(_shelf_dir, "子目录"), exist_ok=True)
+    with open(os.path.join(_shelf_dir, "子目录", "深处的书.txt"), "w", encoding="utf-8") as f:
+        f.write("不算")
+    _gbk = os.path.join(_shelf_dir, "国标编码的书.txt")
+    with open(_gbk, "w", encoding="gb18030") as f:
+        f.write("国标编码")
 
-    def shelf(self):
-        return json.loads(json.dumps(self._books))
-
-    def chapters(self, book_id):
-        return json.loads(json.dumps(self._chapters))
-
-    def progress(self, book_id):
-        return json.loads(json.dumps(self._progress))
-
-
-wr_shelf = fixture("weread_shelf.json")
-wr_chs = fixture("weread_chapters.json")
-wr_prg = fixture("weread_progress.json")
-if not (wr_shelf and wr_chs and wr_prg):
-    check("微信读书的夹具在", False, "缺夹具，先跑 tests/record_fixtures.py weread")
-else:
-    # 先让**真的适配器**把夹具揉成窗口要的形状：这样"夹具 → weread.py → 窗口"整条链一起验了
-    class _FxHttp(object):
-        def get_json(self, url, ttl=None, what="", headers=None, timeout=None, **kw):
-            if "/web/shelf/sync" in url:
-                return json.loads(json.dumps(wr_shelf))
-            if "/web/book/getProgress" in url:
-                return json.loads(json.dumps(wr_prg))
-            raise AssertionError("探针里不该请求 " + url)
-
-        def post_json(self, url, payload, ttl=None, what="", headers=None, timeout=None):
-            if "/web/book/chapterInfos" in url:
-                return json.loads(json.dumps(wr_chs))
-            raise AssertionError("探针里不该请求 " + url)
-
-    real = app_mod.weread_mod.Weread(_FxHttp(), {"cookie": "x=1"})
-    wr_books = real.shelf()
-    wr_chapters = real.chapters(wr_books[0]["id"])
-    wr_prog = real.progress(wr_books[0]["id"])
-
-    dlg = app_mod.WereadShelfDialog(FakeWeread(wr_books, wr_chapters, wr_prog))
-    pump(lambda: dlg.list_widget.count() >= 3, 5.0)
-    check("窗口列出了 3 本", dlg.list_widget.count() == 3, dlg.list_widget.count())
-    check("标题里写着本数", "3 本" in dlg.windowTitle(), dlg.windowTitle())
-    row0 = dlg.list_widget.item(0).text()
-    check("第一行是最近读的那本 + 进度", "重新认识你自己" in row0 and "89%" in row0, row0)
-    pump(lambda: "当前章" in dlg.info_label.text(), 5.0)
-    info = dlg.info_label.text()
-    check("详情里写着读到百分之多少", "读到 89%" in info, info.splitlines()[:2])
-    check("详情里写着当前是哪一章", "当前章：" in info, info.splitlines()[:3])
-    check("详情里用了它给的\"最后停在这一行\"", "最后停在这一行：" in info)
-    check("详情里说清了正文为什么不在这里", "正文不在这里" in info)
-    check("目录列出了 4 章", dlg.chapter_widget.count() == 4, dlg.chapter_widget.count())
-    rows = [dlg.chapter_widget.item(i).text() for i in range(dlg.chapter_widget.count())]
-    check("读到的那一章打了 ▶", any(r.startswith("▶ ") for r in rows), rows)
-    dlg.search_input.setText("齐泽克")
-    check("按作者搜只剩 1 本", dlg.list_widget.count() == 1, dlg.list_widget.count())
-    dlg.search_input.setText("")
-    pump(lambda: dlg.list_widget.count() == 3, 5.0)
-    before = len(OPENED)
-    dlg.on_book_opened(dlg.list_widget.item(0))
-    check("双击一本书是去网页版接着读（交给默认浏览器）",
-          len(OPENED) == before + 1 and "/web/reader/" in OPENED[-1],
-          OPENED[-1] if OPENED else "")
-
-    dlg2 = app_mod.WereadShelfDialog(FakeWeread([]))
-    pump(lambda: "没有书" in dlg2.info_label.text(), 5.0)
-    check("空书架有话说，不是一片空白", "没有书" in dlg2.info_label.text(),
-          dlg2.info_label.text()[:24])
-
-    dlg3 = app_mod.WereadShelfDialog(FakeWeread([], available=False))
-    check("没 Cookie 时标题就直说", "Cookie" in dlg3.windowTitle(), dlg3.windowTitle())
-    check("没 Cookie 时告诉去哪儿配", "feed_auth.json" in dlg3.info_label.text())
-    for _d in (dlg, dlg2, dlg3):
-        try:
-            _d.accept()            # 走正常的关闭路径（窗口里会等取数线程收工）
-        except Exception:
-            pass
-    qapp.processEvents()
-
-    # 菜单入口：安全文档模式下菜单是"中性项"（故意不放它），所以先把那层遮罩摘掉再看。
-    # **必须在书页状态下看**：社区页现在有自己的菜单（换社区/换板块），这一节验的是书页那份
-    # （以前社区页复用书页菜单，所以在社区页里也碰巧能看到——探针没摘 feed 其实是在测另一份）。
-    if w.feed_mode:
-        w.exit_feed_mode(reason="probe")
     orig_veiled = w._book_veiled
     w._book_veiled = lambda: False
     menu_texts = [a.text() for a in w.build_context_menu().actions()]
     w._book_veiled = orig_veiled
-    check("右键菜单里有\"微信读书 · 我的书架\"",
-          any("微信读书" in t for t in menu_texts),
-          [t for t in menu_texts if "书架" in t or "微信" in t])
-    w._book_veiled = lambda: True
-    veiled = [a.text() for a in w.build_context_menu().actions()]
-    w._book_veiled = orig_veiled
-    check("遮罩模式下不露出这个入口（跟其它书相关项一个规矩）",
-          not any("微信读书" in t for t in veiled), veiled)
+    check("右键菜单里有「本地书架」，线上那几个入口没了",
+          any("本地书架" in t for t in menu_texts)
+          and not any(("微信读书" in t or "网络书架" in t or "章节目录 (网络)" in t)
+                      for t in menu_texts),
+          [t for t in menu_texts if "书" in t])
+
+    check("书架只认 txt/epub/md，且只认目录第一层",
+          set(os.path.basename(p) for p in list_book_files(_shelf_dir))
+          == {"国标编码的书.txt", "万历十五年.txt", "沉默的大多数.txt"},
+          [os.path.basename(p) for p in list_book_files(_shelf_dir)])
+
+    _orig_dir = w.shelf_dir
+    _orig_save = w.save_config
+    _keys = ("local_book_positions", "local_book_totals", "local_book_times")
+    _backup = {k: json.loads(json.dumps(w.config.get(k) or {})) for k in _keys}
+    w.shelf_dir = lambda: _shelf_dir
+    w.save_config = lambda: None                       # 这一节只验账，不落盘
+    w.scan_shelf_totals = lambda items: None           # 算字数那条后台线程不在这里跑
+
+    key_a = w.book_pos_key(_book_a)
+    w.config["local_book_positions"] = {key_a: 200}
+    w.config["local_book_totals"] = {key_a: 400}
+    w.config["local_book_times"] = {key_a: time.time() - 3700}
+    books = w.shelf_books()
+    titles = [b["title"] for b in books]
+    check("书架 = 读过的 + 目录里的（不认识的扩展名不算）",
+          "万历十五年" in titles and "沉默的大多数" in titles
+          and "不该进书架" not in titles and "深处的书" not in titles, titles)
+    row_a = [b for b in books if b["title"] == "万历十五年"][0]
+    check("进度 = 读到第几个字 / 全书多少字（200/400 = 50%）",
+          row_a["pos"] == 200 and row_a["total"] == 400 and int(row_a["pct"]) == 50,
+          (row_a["pos"], row_a["total"], row_a["pct"]))
+    row_b = [b for b in books if b["title"] == "沉默的大多数"][0]
+    check("没算过字数的写 --（不假装 0%）", row_b["total"] == 0 and row_b["pct"] is None,
+          (row_b["total"], row_b["pct"]))
+    check("最近读的排前面", books[0]["title"] == "万历十五年", titles)
+    check("「上次读」是相对时间", when_text(time.time() - 7200) == "2 小时前",
+          when_text(time.time() - 7200))
+    check("gb18030 的 txt 也能算字数", len(read_book_text_quietly(_gbk)) == 4,
+          len(read_book_text_quietly(_gbk)))
+    check("坏路径 / 空路径不炸",
+          read_book_text_quietly("") == ""
+          and read_book_text_quietly(os.path.join(_shelf_dir, "没有这本.txt")) == "", None)
+
+    dlg = LocalShelfDialog(w, w)
+    check("书架窗口：一行一本，共 3 本",
+          dlg.list_widget.count() == 3 and "3 本" in dlg.windowTitle(),
+          (dlg.list_widget.count(), dlg.windowTitle()))
+    check("书架窗口：有进度的那本标着 50%",
+          any("50%" in dlg.list_widget.item(i).text() for i in range(dlg.list_widget.count())),
+          [dlg.list_widget.item(i).text() for i in range(dlg.list_widget.count())])
+    dlg.search.setText("沉默")
+    check("搜索框按书名过滤", dlg.list_widget.count() == 1, dlg.list_widget.count())
+    dlg.search.setText("")
+
+    target = None
+    for i in range(dlg.list_widget.count()):
+        if "万历十五年" in dlg.list_widget.item(i).text():
+            target = i
+    dlg.list_widget.setCurrentRow(target)
+    dlg.forget_selected()
+    _t = w.config.get("local_book_totals") or {}
+    _p = w.config.get("local_book_positions") or {}
+    check("移出书架：三本账一起删，文件还在",
+          key_a not in _p and key_a not in _t and os.path.exists(_book_a),
+          (key_a in _p, key_a in _t, os.path.exists(_book_a)))
+    check("移出书架后列表少一本（目录里还有那份文件也不再冒出来）",
+          len(w.shelf_books()) == 2, len(w.shelf_books()))
+    check("移出记进隐藏名单", key_a in (w.config.get("local_book_hidden") or []),
+          w.config.get("local_book_hidden"))
+    w.note_book_opened(_book_a, 401)
+    check("再打开它，隐藏名单收回、书架里又有了", len(w.shelf_books()) == 3,
+          (len(w.shelf_books()), w.config.get("local_book_hidden")))
+    dlg.deleteLater()
+
+    w.shelf_dir = _orig_dir
+    w.save_config = _orig_save
+    for k, v in _backup.items():
+        w.config[k] = v
+finally:
+    shutil.rmtree(_shelf_dir, ignore_errors=True)
 
 print("\n=== 8. 点击 / 落点 / 排版隔离 / 社区页字体（这一轮修的六件事里的四件）===")
 
@@ -2448,8 +2456,8 @@ w.peek_mode = False
 _set3 = app_mod.SettingsDialog(w.config, w)
 qapp.processEvents()
 _nav_names = [_set3.nav_list.item(i).text() for i in range(_set3.nav_list.count())]
-check("设置页按功能分了区（阅读/窗口/快捷键/卡片/社区/界面/隐私/数据源）",
-      _nav_names == ["阅读", "窗口", "快捷键", "卡片", "社区", "界面", "隐私", "数据源"],
+check("设置页按功能分了区（阅读/窗口/快捷键/卡片/社区/界面/隐私）",
+      _nav_names == ["阅读", "窗口", "快捷键", "卡片", "社区", "界面", "隐私"],
       _nav_names)
 _card_counts = []
 for _i in range(_set3.page_stack.count()):
@@ -2457,7 +2465,7 @@ for _i in range(_set3.page_stack.count()):
     _card_counts.append(len([c for c in _body.findChildren(QFrame)
                              if c.objectName() == "card"]))
 check("每一页都至少有一张分组卡片（不是一屏平铺的表单）",
-      len(_card_counts) == 8 and all(n >= 1 for n in _card_counts), _card_counts)
+      len(_card_counts) == 7 and all(n >= 1 for n in _card_counts), _card_counts)
 _long_labels = []
 for _lab in _set3.findChildren(QLabel):
     _txt = _lab.text()

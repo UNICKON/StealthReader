@@ -3143,6 +3143,31 @@ check("偷瞄的书页键里有 c（往上翻）",
 check("BOOK_KEY_NAMES 里挂了 c/d 的 vkCode",
       "0x43: \"c\", 0x44: \"d\"" in _main_src, None)
 
+# ===== 26. 线上那套摘掉了，本地书架接上了 =====
+print("\n=== 26. 线上书架/在线章节摘掉，本地书架接上 ===")
+check("main.py 里不再有 Legado 取书架 / 取目录 / 取正文 / 存进度",
+      not any(k in _main_src for k in ("getBookshelf", "getChapterList",
+                                       "getBookContent", "saveBookProgress")), None)
+check("main.py 里不再有微信读书书架（窗口类 / 开关 / 取数）",
+      not any(k in _main_src for k in ("WereadShelfDialog", "WEREAD_OK", "build_weread")), None)
+check("main.py 不再 import weread / requests（线上那套唯一的用处）",
+      "import weread" not in _main_src and "import requests" not in _main_src, None)
+check("默认配置里没有 ip 了", '"ip"' not in _main_src, None)
+check("本地书架窗口在：LocalShelfDialog", "class LocalShelfDialog(QDialog):" in _main_src, None)
+check("书架三本账：位置 / 字数 / 时间",
+      all(('"%s"' % k) in _main_src
+          for k in ("local_book_positions", "local_book_totals", "local_book_times")), None)
+check("双击接着读走 open_local_path", 'self.open_local_path(chosen["path"])' in _main_src, None)
+check("books/ 目录里的书也算书架",
+      "list_book_files" in _main_src and '"books"' in _main_src, None)
+check("开书架时把 books/ 建好（往里扔书就上架）",
+      "os.makedirs(self.shelf_dir(), exist_ok=True)" in _main_src, None)
+check("右键菜单里有本地书架入口", '"\U0001f4da 本地书架"' in _main_src
+      or '"📚 本地书架"' in _main_src, None)
+check("打开一本书就记字数与时间（书架的进度靠这两本账）",
+      "self.note_book_opened(file_path, len(content))" in _main_src
+      and "self.note_book_read(key)" in _main_src, None)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23

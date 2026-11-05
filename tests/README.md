@@ -8,7 +8,6 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 
 & $py -X utf8 tests\probe_sources.py     # 来源层逻辑（零网络）
 & $py -X utf8 tests\probe_ui.py          # 界面集成（零网络，离屏 Qt 走完整窗）
-& $py -X utf8 tests\probe_weread.py      # 微信读书书架那一层（零网络）
 & $py -X utf8 tests\probe_live.py        # 真机联网冒烟（会真的发请求，跑完自清缓存）
 
 & $py -X utf8 tests\check_auth.py        # 凭据自检：我贴的 Cookie 到底管不管用（联网）
@@ -17,26 +16,21 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 & $py -X utf8 tests\import_touchfish_cookies.py --apply   # 从 VS Code 摸鱼插件搬 Cookie（只读它、只写 feed_auth.json）
 ```
 
-## 四个探针各管什么
+## 探针各管什么
 
 | 探针 | 网络 | 管什么 |
 |---|---|---|
 | `probe_sources.py` | **零** | 每个来源的 列表 / 正文 / 评论 映射、统计单位、缓存与断网回落、混流分额与转发、凭据管线、状态码→人话的映射、结构不变量；**NGA 的编码判据（自称 gbk 实为 UTF-8 / 真 GBK / 结构里嵌乱码 / 正常中文不误判）**；**虎扑的版面表、列表 HTML、`__NEXT_DATA__` 正文与回复、翻页拼地址**；知乎三栏、问题→回答→评论三层（回答摆全文、回答底下的评论当子节点、表头写"N 条回答"）；**小红书的 `x-s` 签名（签名明文 / `mns0301_` 串 / `b1` / `x-s-common` / CRC / 自定义 base64，全部钉成和摸鱼插件 JS 版逐字节一致的固定值）、评论解析**；**版式（标题只比正文大 1px、不画分隔线、评论树每层缩进 16px 且子回复是真子节点、字符画确实没了、标题截断与定位文本同源、空评论不补占位句、来源代码里不再有说明句）**；**刷新不吃缓存（`set_fresh` 只影响本线程，且来源内部的内存缓存也要让路）** |
-| `probe_ui.py` | **零** | 真适配器 + 替身 Http 走完整窗：混流席位、`[` `]` 切来源（真 QKeyEvent）、`,` `.` 切栏目、详情、`O` 开原帖、退出不动书的状态、两个"结果晚到"的竞态、按像素点选与落点、进出社区页的排版隔离、社区页字体、**换社区/换板块（菜单里能看见、按来源记忆、后台拉板块表→可搜索的选择器）**、**老板键唤出（刚唤出的收起会被忽略、过临界期照常收起、看得见就不挪窗口、偷瞄残留钩子会被卸掉）**、**按 `R` 刷新：列表和详情都带 `fresh=True`、详情不会被刷新打回列表**、微信读书书架窗口 |
-| `probe_weread.py` | **零** | 微信读书那一层：书架与进度怎么合、章节表怎么排、`errCode` 怎么说人话、没 Cookie 时一个包都不发、POST 缓存不串书；还有两条钉住"**不做正文**"的断言 |
-| `probe_live.py` | 真 | 真站能不能拿到、缓存第二次是否 0 秒、混流是否并行、整窗真拉一遍、**配了 Cookie 的站正文/评论通不通**、微信读书书架 |
+| `probe_ui.py` | **零** | 真适配器 + 替身 Http 走完整窗：混流席位、`[` `]` 切来源（真 QKeyEvent）、`,` `.` 切栏目、详情、`O` 开原帖、退出不动书的状态、两个"结果晚到"的竞态、按像素点选与落点、进出社区页的排版隔离、社区页字体、**换社区/换板块（菜单里能看见、按来源记忆、后台拉板块表→可搜索的选择器）**、**老板键唤出（刚唤出的收起会被忽略、过临界期照常收起、看得见就不挪窗口、偷瞄残留钩子会被卸掉）**、**按 `R` 刷新：列表和详情都带 `fresh=True`、详情不会被刷新打回列表**、**本地书架（书从哪来 / 进度怎么算 / 移出只动账 / 搜索过滤）** |
+| `probe_live.py` | 真 | 真站能不能拿到、缓存第二次是否 0 秒、混流是否并行、整窗真拉一遍、**配了 Cookie 的站正文/评论通不通** |
 | `check_auth.py` | 真 | 贴了 Cookie 之后一个站一个站地验证：HTTP 码、返回体顶层键、一句人话结论 |
-
-微信读书的正文**不在**这四个探针的覆盖里，而且不是"还没做"：正文要绕过它自己那套签名 +
-校验（`e_*`/`t_*`），那是它专门防程序取正文的保护措施，不做。原因与断言写在
-`weread.py` 开头和 `probe_weread.py` 第 9 节。
 
 `import_touchfish_cookies.py` 是给"我自己贴 Cookie"这条路减负的：VS Code 摸鱼插件
 （`ylw.touchfish`）已经把各站 Cookie 明文放在 `%APPDATA%\Code\User\settings.json`，
 这个脚本**只读它、只写 `feed_auth.json`**（gitignored），并且**不打印 Cookie 内容**——只报
 "这个站有没有、多少字符、命中了哪个标记"。加 `--apply` 才真的写。
 
-**"零网络"是可以验证的，不是靠自觉**：`probe_sources.py` / `probe_ui.py` / `probe_weread.py`
+**"零网络"是可以验证的，不是靠自觉**：`probe_sources.py` / `probe_ui.py`
 开头把 `requests.get / post / Session.get` 全换成抛异常，而所有适配器拿到的是一个读夹具的替身 Http。
 所以只要探针是绿的，就说明这次一个网络包都没发。
 
@@ -81,10 +75,6 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 | `hupu_boxscore.html` | 虎扑 NBA `nba.hupu.com/games/boxscore/168863`，**裁过**：比分面板 + 分节表 + 两队技术统计表（首发/替补各留 2 人，`统计`/`命中率` 两行原样） |
 | `hupu_playbyplay.html` | 虎扑 NBA `nba.hupu.com/games/playbyplay/168863`（76人 vs 尼克斯，第四节进行中），**裁过**：比分面板 + 从"第一节结束。"起的 10 行（含一条 `colspan` 分隔行） |
 | `hupu_thread.html` | 虎扑帖子页，**裁过**：`__NEXT_DATA__` 只留 `detail.thread`（正文去掉 `data-origin`）和前 6 条回复；挑的是**有文字正文**的那篇（列表里很多是纯图/视频帖，正文一个字都没有） |
-| `weread_unauth_shelf.json` | 微信读书书架接口**没登录时**的真响应（`errCode -2010`） |
-| `weread_shelf.json` | 微信读书书架，**裁过**：只留 3 本 + 适配器用到的字段（书名/作者/封面/`deepLink`/进度） |
-| `weread_chapters.json` | 微信读书章节表，**裁过**：前 3 章 + **当前读到的那一章**（先录的前 3 章里根本没有它，"目录里 ▶ 标出读到哪章"这条就没法验） |
-| `weread_progress.json` | 微信读书进度，**裁过**：`summary` 只留前 60 字（那是**书里的原句**，跟知乎正文一个规矩） |
 
 带 `unauth` / `_403` / `_cf` / `_567` 的那几份是**"失败"的真响应**，专门用来验
 "连不上/没登录时页面说的是实话"——这类路径最容易被写成"假装成功"，所以更要拿真响应盯住。
