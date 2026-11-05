@@ -530,11 +530,14 @@ try:
 
     _orig_dir = w.shelf_dir
     _orig_save = w.save_config
-    _keys = ("local_book_positions", "local_book_totals", "local_book_times")
-    _backup = {k: json.loads(json.dumps(w.config.get(k) or {})) for k in _keys}
+    _keys = ("local_book_positions", "local_book_totals", "local_book_times",
+             "local_book_hidden")
+    _backup = {k: json.loads(json.dumps(w.config.get(k)))
+               for k in _keys if k in w.config}
+    _orig_scan = w.scan_shelf_totals
     w.shelf_dir = lambda: _shelf_dir
     w.save_config = lambda: None                       # 这一节只验账，不落盘
-    w.scan_shelf_totals = lambda items: None           # 算字数那条后台线程不在这里跑
+    w.scan_shelf_totals = lambda items: None           # 算字数那条后台线程不在前半段跑
 
     key_a = w.book_pos_key(_book_a)
     w.config["local_book_positions"] = {key_a: 200}
@@ -592,10 +595,34 @@ try:
           (len(w.shelf_books()), w.config.get("local_book_hidden")))
     dlg.deleteLater()
 
+    # 后半段把真线程放回来：字数算完必须从信号回到账上，窗口才不会一直写 `--`
+    w.scan_shelf_totals = _orig_scan
+    key_b = w.book_pos_key(_book_b)
+    _tot = w.config.get("local_book_totals") or {}
+    _tot.pop(key_b, None)
+    w.config["local_book_totals"] = _tot
+    _want = len(read_book_text_quietly(_book_b))
+    w.scan_shelf_totals([(key_b, _book_b)])
+    _deadline = time.time() + 8
+    while time.time() < _deadline and key_b not in (w.config.get("local_book_totals") or {}):
+        qapp.processEvents()
+        time.sleep(0.05)
+    _got = (w.config.get("local_book_totals") or {}).get(key_b)
+    check("字数在后台算完、从信号回到账上（书架不会一直转）",
+          _got == _want, (_got, _want))
+    _row_b2 = [b for b in w.shelf_books() if b["key"] == key_b]
+    check("算完那本就有进度了（不再写 --）",
+          bool(_row_b2) and _row_b2[0]["total"] == _want and _row_b2[0]["pct"] is not None,
+          _row_b2[0]["total"] if _row_b2 else None)
+
     w.shelf_dir = _orig_dir
     w.save_config = _orig_save
-    for k, v in _backup.items():
-        w.config[k] = v
+    w.scan_shelf_totals = _orig_scan
+    for k in _keys:
+        if k in _backup:
+            w.config[k] = _backup[k]
+        else:
+            w.config.pop(k, None)
 finally:
     shutil.rmtree(_shelf_dir, ignore_errors=True)
 

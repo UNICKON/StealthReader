@@ -3173,6 +3173,8 @@ class StealthReader(QWidget):
     feed_key_signal = pyqtSignal(int)
     # 书页的翻页/滚动键同理：偷瞄里按空格、方向键不该被当成"别的输入"而退出偷瞄
     book_key_signal = pyqtSignal(str)
+    # 书架后台算完字数（epub 要解压，不能在界面线程读），发回主线程
+    shelf_totals_signal = pyqtSignal(dict)
 
     def __init__(self):
         super().__init__()
@@ -3377,6 +3379,7 @@ class StealthReader(QWidget):
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
         self.feed_key_signal.connect(self.on_feed_peek_key, Qt.QueuedConnection)
         self.book_key_signal.connect(self.on_peek_book_key, Qt.QueuedConnection)
+        self.shelf_totals_signal.connect(self.on_shelf_totals, Qt.QueuedConnection)
         # 最后一道保险：任何退出路径（托盘退出、右键退出、关窗、异常退出）都要停掉 Anki
         # 后台线程。QThread 还在跑就被析构，PyQt 会直接崩，而且 Anki 可能停在"藏起来"的状态。
         try:
@@ -4126,6 +4129,36 @@ class StealthReader(QWidget):
         self.config["local_book_totals"] = table
         self.save_config()
 
+    def on_shelf_totals(self, totals):
+        """后台把字数算回来了：落盘；书架窗口还开着就原地刷新一次。"""
+        self.apply_shelf_totals(totals)
+        dlg = getattr(self, "shelf_dialog", None)
+        try:
+            if dlg is not None and dlg.isVisible():
+                dlg.refresh_from_config()
+        except Exception:
+            pass
+
+    def scan_shelf_totals(self, items):
+        """补算"这本书一共多少字"（epub 要解压，几本就能卡一下，所以放线程里）。
+
+        书架窗口不等它：先把没算过的写成 `--`，算完从信号回来再刷一次。
+        """
+        items = list(items)
+        if not items:
+            return
+
+        def work():
+            out = {}
+            for key, path in items:
+                n = len(read_book_text_quietly(path))
+                if n > 0:
+                    out[key] = n
+            if out:
+                self.shelf_totals_signal.emit(out)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def note_book_opened(self, path, total):
         """一本书刚被打开：记下它的字数和"上次读的时间"。"""
         key = self.book_pos_key(path)
@@ -4189,10 +4222,14 @@ class StealthReader(QWidget):
             self.content_frame.setStyleSheet(f"background-color: {self.config['bg_color']};")
             self.content_frame.set_mode(False)
         dialog = LocalShelfDialog(self, self)
+        self.shelf_dialog = dialog                 # 字数算回来时找得到它，原地刷新
         chosen = None
-        if dialog.exec_() == QDialog.Accepted:
-            chosen = dialog.selected
-        dialog.deleteLater()
+        try:
+            if dialog.exec_() == QDialog.Accepted:
+                chosen = dialog.selected
+        finally:
+            self.shelf_dialog = None
+            dialog.deleteLater()
         self.apply_style()
         if chosen and chosen.get("path"):
             self.open_local_path(chosen["path"])

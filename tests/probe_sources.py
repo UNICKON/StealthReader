@@ -3164,6 +3164,10 @@ check("开书架时把 books/ 建好（往里扔书就上架）",
       "os.makedirs(self.shelf_dir(), exist_ok=True)" in _main_src, None)
 check("右键菜单里有本地书架入口", '"\U0001f4da 本地书架"' in _main_src
       or '"📚 本地书架"' in _main_src, None)
+check("字数线程接在信号上（少一个就等于书架永远写 --）",
+      all(s in _main_src for s in ("def scan_shelf_totals", "def on_shelf_totals",
+                                   "shelf_totals_signal.connect(self.on_shelf_totals",
+                                   "self.shelf_dialog = dialog")), None)
 check("打开一本书就记字数与时间（书架的进度靠这两本账）",
       "self.note_book_opened(file_path, len(content))" in _main_src
       and "self.note_book_read(key)" in _main_src, None)
