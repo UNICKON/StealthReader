@@ -3172,6 +3172,35 @@ check("打开一本书就记字数与时间（书架的进度靠这两本账）"
       "self.note_book_opened(file_path, len(content))" in _main_src
       and "self.note_book_read(key)" in _main_src, None)
 
+# ===== 27. 偷瞄盯前台进程 + 融景实色档 =====
+print("\n=== 27. 偷瞄盯前台进程 + 融景实色档 ===")
+check("有 foreground_pid()：前台窗口属于哪个进程", "def foreground_pid():" in _main_src, None)
+check("进偷瞄时记下前台进程、并起那块盯人的表",
+      "self.peek_owner_pid = foreground_pid()" in _main_src
+      and "self.peek_watch_timer.start()" in _main_src, None)
+check("前台换了进程就退出偷瞄（自己和自己人不算）",
+      "def _watch_peek_focus" in _main_src
+      and "pid == self.peek_owner_pid" in _main_src
+      and "pid == os.getpid()" in _main_src
+      and 'self.exit_peek("前台换了进程（%d → %d）" % (owner, pid))' in _main_src, None)
+check("换人要连着两拍才算（只晃一拍不算）",
+      "self.peek_foreign_ticks >= 2" in _main_src
+      and "self.peek_foreign_ticks = 0" in _main_src, None)
+check("退出偷瞄时把盯人的表停掉、进程号清掉",
+      "self.peek_owner_pid = 0" in _main_src
+      and "self.peek_watch_timer.stop()" in _main_src, None)
+check("默认配置里有实色档 auto_bg_solid", '"auto_bg_solid"' in _main_src, None)
+check("实色档 alpha 255、老档 alpha 2",
+      "return 255 if self.solid_bg else 2" in _main_src
+      and "def set_solid_bg" in _main_src, None)
+check("刷样式时按配置给底色定档",
+      'self.content_frame.set_solid_bg(bool(self.config.get("auto_bg_solid", False)))'
+      in _main_src, None)
+check("设置页有「背景用实色」，保存时也带上",
+      '"背景用实色"' in _main_src
+      and 'self.config["auto_bg_solid"] = self.check_solid_bg.isChecked()' in _main_src,
+      None)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23

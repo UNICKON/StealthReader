@@ -2524,6 +2524,8 @@ check("关掉角标之后自动挡不再画左上/右下那两条线",
 
 # 角标只在**鼠标凑近那个角**的时候才画（真人 2026-10-23：「角标在鼠标移到附近的时候才显示」）
 from PyQt5.QtGui import QImage                                            # noqa: E402
+_solid_before = w.config.get("auto_bg_solid")       # 数像素要在"透底"上看（见下）
+w.config["auto_bg_solid"] = False
 w.config["auto_mode"] = True
 w.config["show_corners"] = True
 w.apply_style()
@@ -2578,6 +2580,7 @@ _c_again = _corner_pixels(_fr.width() // 2, _fr.height() // 2)
 check("鼠标挪回中间：两条又都收回去（不是亮过就一直亮）", _c_again == (0, 0), _c_again)
 
 w.config["show_corners"] = False
+w.config["auto_bg_solid"] = _solid_before            # 这一节量完了，把实色档放回去
 w.apply_style()
 qapp.processEvents()
 check("关掉角标：连定时器都不留（不盯着鼠标、也不画）",
@@ -3766,6 +3769,108 @@ w.open_local_path(_bk_a)
 check("升级上来（表还是空的）也接得上老坑位，不从头上开始",
       w.local_start_index == 4321, w.local_start_index)
 w.config["local_book_positions"] = _lp_tab
+
+print("\n=== 30. 融景实色档（背景用采到的颜色、不透明）+ 偷瞄前台换进程就退出 ===")
+
+from PyQt5.QtGui import QColor                                        # noqa: E402
+
+_auto_bak = w.config.get("auto_mode")
+_solid_bak = w.config.get("auto_bg_solid")
+try:
+    # ---- 实色档：同一个颜色，两种 alpha ----
+    w.show()
+    w.config["auto_mode"] = True
+    w.config["auto_bg_solid"] = False
+    w.apply_style()
+    w.content_frame.set_auto_bg_color(QColor(12, 34, 56))
+    _veil = (w.content_frame.auto_bg_fill.red(), w.content_frame.auto_bg_fill.green(),
+             w.content_frame.auto_bg_fill.blue(), w.content_frame.auto_bg_fill.alpha())
+    w.config["auto_bg_solid"] = True
+    w.apply_style()
+    w.content_frame.set_auto_bg_color(QColor(12, 34, 56))
+    _solid = (w.content_frame.auto_bg_fill.red(), w.content_frame.auto_bg_fill.green(),
+              w.content_frame.auto_bg_fill.blue(), w.content_frame.auto_bg_fill.alpha())
+    check("融景老档几乎全透（alpha 2）、实色档不透明（alpha 255）",
+          _veil[3] == 2 and _solid[3] == 255, (_veil, _solid))
+    check("实色档刷出来的就是采到的那个颜色（RGB 原样）",
+          _solid[:3] == (12, 34, 56), _solid)
+
+    w.config["auto_bg_solid"] = False
+    w.apply_style()
+    check("取消实色档又回到几乎全透",
+          w.content_frame.auto_bg_fill.alpha() == 2,
+          w.content_frame.auto_bg_fill.alpha())
+
+    # 设置页里那个勾选框在位，关掉自动挡时不给勾
+    _set4 = app_mod.SettingsDialog(w.config, w)
+    qapp.processEvents()
+    _has_chk = hasattr(_set4, "check_solid_bg")
+    _chk_on = _has_chk and _set4.check_solid_bg.isChecked() is False
+    _set4.check_auto_mode.setChecked(False)          # 关掉自动挡 → 实色档跟着灰掉
+    qapp.processEvents()
+    _grey = _has_chk and not _set4.check_solid_bg.isEnabled()
+    check("设置页有「背景用实色」，且它跟着自动挡一起灰/亮",
+          _has_chk and _chk_on and _grey, (_has_chk, _chk_on, _grey))
+    _set4.reject()
+
+    # ---- 偷瞄：前台进程一变就退出 ----
+    _fg_bak = app_mod.foreground_pid
+    try:
+        w.show()
+        _logged = []
+        _log_bak2 = app_mod.log_event
+        app_mod.log_event = lambda msg, *a, **k: _logged.append(str(msg))
+        try:
+            app_mod.foreground_pid = lambda: 4321
+            w.peek_mode = True
+            w.peek_owner_pid = 4321
+            w._watch_peek_focus()
+            _stays = w.peek_mode
+
+            app_mod.foreground_pid = lambda: 5555     # 换了个进程（不是我们）
+            w._watch_peek_focus()
+            _flicker = w.peek_mode                    # 只晃一拍：还不退
+            w._watch_peek_focus()                     # 同一个陌生进程连着两拍：退
+            _left = (not w.peek_mode) and (not w.isVisible())
+            _said = any("前台换了进程" in s for s in _logged)
+
+            app_mod.foreground_pid = lambda: 0        # 拿不到前台：不乱退
+            w.peek_mode = True
+            w.peek_owner_pid = 4321
+            w._watch_peek_focus()
+            _keep0 = w.peek_mode
+
+            app_mod.foreground_pid = lambda: os.getpid()   # 前台是我们自己
+            w._watch_peek_focus()
+            _keep_self = w.peek_mode
+        finally:
+            app_mod.log_event = _log_bak2
+    finally:
+        app_mod.foreground_pid = _fg_bak
+
+    check("偷瞄时前台没变：不动", _stays, _stays)
+    check("只晃一拍不退（Windows 上焦点会闪一下）", _flicker, _flicker)
+    check("偷瞄时前台换了进程（连着两拍）：退出并藏起来（日志写明是哪个 pid）",
+          _left and _said, (_left, _said))
+    check("拿不到前台（0）不乱退", _keep0, _keep0)
+    check("前台是我们自己（钩子/托盘把窗口叫出来）不乱退", _keep_self, _keep_self)
+
+    check("退出偷瞄时那块盯前台的定时器也停掉了",
+          not w.peek_watch_timer.isActive(), w.peek_watch_timer.isActive())
+finally:
+    w.peek_mode = False
+    w.peek_owner_pid = 0
+    try:
+        w.peek_watch_timer.stop()
+    except Exception:
+        pass
+    w.config["auto_mode"] = _auto_bak
+    w.config["auto_bg_solid"] = _solid_bak
+    try:
+        w.apply_style()
+    except Exception:
+        pass
+    w.show()
 
 w.config.clear()
 w.config.update(_cfg_bak)

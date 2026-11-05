@@ -340,6 +340,8 @@ DEFAULT_CONFIG = {
     "feed_type_scheme": "lingxi",
     "ghost_mode": False,
     "auto_mode": False,
+    # 融景的实色档：背景直接用采到的桌面颜色，不透明（默认还是几乎全透的那一档）
+    "auto_bg_solid": False,
     "antishot_mode": False,
     "window_width": 400,
     "window_height": 300,
@@ -1140,6 +1142,42 @@ def window_rect(hwnd):
         return None
 
 
+_fg_user32 = None
+
+
+def _fg_api():
+    """user32 里拿前台窗口那一套。HWND 在 64 位下是 8 字节指针，
+    不钉 restype 会被按 c_int 截断（截断后也能问出一个 pid，只是那个 pid 是错的）。"""
+    global _fg_user32
+    if _fg_user32 is None:
+        lib = ctypes.windll.user32
+        lib.GetForegroundWindow.restype = ctypes.c_void_p
+        lib.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                                ctypes.POINTER(ctypes.c_ulong)]
+        lib.GetWindowThreadProcessId.restype = ctypes.c_ulong
+        lib.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        _fg_user32 = lib
+    return _fg_user32
+
+
+def foreground_pid():
+    """当前前台窗口属于哪个进程；拿不到就是 0。
+
+    偷瞄时记下这个号：前台换了进程（Alt+Tab、点了别的窗口、别的程序自己弹到前面），
+    书页就该收回去，别挂在别人的窗口上。
+    """
+    try:
+        u = _fg_api()
+        hwnd = u.GetForegroundWindow()
+        if not hwnd:
+            return 0
+        pid = ctypes.c_ulong(0)
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value)
+    except Exception:
+        return 0
+
+
 def force_window_to_primary(hwnd, margin=60):
     """Win32 物理挪回主屏工作区左上角（绕过 Qt 可能过期的坐标映射，挪完 Qt 会自己同步回来）。"""
     try:
@@ -1919,6 +1957,7 @@ class CornerFrame(QFrame):
         self.draw_corners = True          # 设置里的「显示角标」：关掉就是彻底干净的一页
         self.corner_color = QColor(128, 128, 128, 200)
         self.auto_bg_fill = QColor(0, 0, 0, 2)
+        self.solid_bg = False             # 实色档：背景就是这个颜色，alpha 255
         self._hot = (False, False)        # (左上, 右下)：鼠标是不是凑到那个角附近了
         self._hot_timer = QTimer(self)
         self._hot_timer.setInterval(120)
@@ -1929,9 +1968,22 @@ class CornerFrame(QFrame):
         self._sync_hot_timer()
         self.update()
 
+    def _bg_alpha(self):
+        """实色档 255（一点都不透），原来的融景档 2（几乎全透，只剩桌面颜色在压着）。"""
+        return 255 if self.solid_bg else 2
+
+    def set_solid_bg(self, enable):
+        enable = bool(enable)
+        if enable == self.solid_bg:
+            return
+        self.solid_bg = enable
+        self.auto_bg_fill.setAlpha(self._bg_alpha())
+        if self.is_auto_mode:
+            self.update()
+
     def set_auto_bg_color(self, color):
         self.auto_bg_fill = QColor(color)
-        self.auto_bg_fill.setAlpha(2)
+        self.auto_bg_fill.setAlpha(self._bg_alpha())
         if self.is_auto_mode:
             self.update()
 
@@ -2527,6 +2579,14 @@ class SettingsDialog(QDialog):
                       "背景取窗口后方的颜色，字体颜色自动反转，窗口几乎隐形。\n"
                       "只在需要贴着别的窗口读的时候打开；关掉就是正常的深色底。")
 
+        self.check_solid_bg = QCheckBox("背景用实色")
+        self.check_solid_bg.setChecked(self.config.get("auto_bg_solid", False))
+        self.check_solid_bg.setEnabled(self.check_auto_mode.isChecked())
+        self.check_solid_bg.toggled.connect(self.on_solid_bg_toggled)
+        self.add_wide(lay, self.check_solid_bg,
+                      "自动挡的老档位几乎全透：桌面颜色压在上面，背后的窗口还看得见。\n"
+                      "勾上这个，背景直接用采到的那个颜色、不透明，背后什么都看不见。")
+
         self.check_ghost_mode = QCheckBox("幽灵模式")
         self.check_ghost_mode.setChecked(self.config.get("ghost_mode", False))
         self.add_wide(lay, self.check_ghost_mode,
@@ -2908,6 +2968,14 @@ class SettingsDialog(QDialog):
         self.btn_bg_color.setEnabled(not checked)
         self.btn_text_color.setEnabled(not checked)
         self.opacity_slider.setEnabled(True)
+        self.check_solid_bg.setEnabled(bool(checked))
+
+    def on_solid_bg_toggled(self, checked):
+        """实色档是拖动即预览：勾上当场就不透明，不用等「保存并应用」。"""
+        self.config["auto_bg_solid"] = bool(checked)
+        if self.main_window:
+            self.main_window.apply_style()
+            self.main_window.save_config()
 
     def on_antishot_toggled(self, checked):
         if self.main_window:
@@ -3086,6 +3154,7 @@ class SettingsDialog(QDialog):
         self.config["bg_color"] = self.temp_bg_color
         self.config["ghost_mode"] = self.check_ghost_mode.isChecked()
         self.config["auto_mode"] = self.check_auto_mode.isChecked()
+        self.config["auto_bg_solid"] = self.check_solid_bg.isChecked()
         self.config["antishot_mode"] = self.check_antishot.isChecked()
         self.config["show_corners"] = self.check_corners.isChecked()
         self.config["show_bar"] = self.check_bar.isChecked()
@@ -3338,6 +3407,14 @@ class StealthReader(QWidget):
         self.chameleon_timer = QTimer(self)
         self.chameleon_timer.setInterval(500)
         self.chameleon_timer.timeout.connect(self.adjust_color_to_background)
+
+        # 偷瞄期间盯着前台进程：换人了就把书页收回去（见 _watch_peek_focus）
+        self.peek_owner_pid = 0
+        self.peek_foreign_pid = 0
+        self.peek_foreign_ticks = 0
+        self.peek_watch_timer = QTimer(self)
+        self.peek_watch_timer.setInterval(400)
+        self.peek_watch_timer.timeout.connect(self._watch_peek_focus)
 
         # 启动器叫醒：桌面快捷方式再点一次，第二个进程撞上单实例互斥体，就用这个事件
         # 让已经在跑的这个把窗口亮出来（400ms 一次，读一下自动复位的事件，代价可以忽略）。
@@ -5364,6 +5441,10 @@ class StealthReader(QWidget):
         self.dismiss_action_panel(cancelled=True)   # 进偷瞄时收掉已经在的面板
         self.peek_was_visible = self.isVisible()
         self.peek_mode = True
+        self.peek_owner_pid = foreground_pid()      # 进来的这一刻，前台是谁
+        self.peek_foreign_pid = 0
+        self.peek_foreign_ticks = 0
+        self.peek_watch_timer.start()
         self.text_edit.set_pinned_cursor(Qt.ArrowCursor)   # 模式切换后光标形状回到默认
         if not self.isVisible():
             self.show()  # WA_ShowWithoutActivating：不夺走工作窗口的焦点
@@ -5387,6 +5468,13 @@ class StealthReader(QWidget):
             return
         self.peek_mode = False
         self.peek_last_exit = time.time()
+        self.peek_owner_pid = 0
+        self.peek_foreign_pid = 0
+        self.peek_foreign_ticks = 0
+        try:
+            self.peek_watch_timer.stop()
+        except Exception:
+            pass
         try:
             self.peek_input_hook.uninstall()
         except Exception:
@@ -5408,6 +5496,34 @@ class StealthReader(QWidget):
         self.apply_style()                # 先恢复正常样式，免得偷瞄那套样式留到下次露脸
         self.hide()
         log_event(f"偷瞄退出（{reason or '未说明'}）→ 窗口已隐藏")
+
+    def _watch_peek_focus(self):
+        """偷瞄时前台换了进程就退出：书页不该留在别人的窗口上。
+
+        不动的情况：拿不到前台（0）、进来时没记上（0，比不了）、还是进来时那个进程、
+        前台是我们自己（钩子/托盘把窗口叫到前面时，焦点确实会落回我们身上）。
+        剩下那种要**连着两拍（约 0.8 秒）**都是同一个陌生进程才退：Windows 上焦点会闪
+        （提示框、输入法、程序自己抢一下又还回来），只晃一拍不算换人。
+        """
+        if not self.peek_mode:
+            self.peek_watch_timer.stop()
+            return
+        pid = foreground_pid()
+        if not pid or not self.peek_owner_pid or pid == self.peek_owner_pid \
+                or pid == os.getpid():
+            self.peek_foreign_pid = 0
+            self.peek_foreign_ticks = 0
+            return
+        if pid == self.peek_foreign_pid:
+            self.peek_foreign_ticks += 1
+        else:
+            self.peek_foreign_pid = pid
+            self.peek_foreign_ticks = 1
+        if self.peek_foreign_ticks >= 2:
+            owner = self.peek_owner_pid
+            self.peek_foreign_pid = 0
+            self.peek_foreign_ticks = 0
+            self.exit_peek("前台换了进程（%d → %d）" % (owner, pid))
 
     def on_peek_wheel(self, delta):
         """偷瞄模式的滚轮 = 窗口内的手感：一格还是设置里那几行，到边沿才衔接前后页。
@@ -8785,6 +8901,7 @@ class StealthReader(QWidget):
         if self.config.get("auto_mode", False):
             self.setWindowOpacity(1.0)
             self.content_frame.set_mode(True)
+            self.content_frame.set_solid_bg(bool(self.config.get("auto_bg_solid", False)))
             self.content_frame.setStyleSheet("background: transparent; border: none;")
             self.content_frame.set_draw_corners(bool(self.config.get("show_corners", True)))
             self.chameleon_timer.start()
