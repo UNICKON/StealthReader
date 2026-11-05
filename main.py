@@ -1178,6 +1178,46 @@ def foreground_pid():
         return 0
 
 
+_tb_user32 = None
+
+
+def _tb_api():
+    global _tb_user32
+    if _tb_user32 is None:
+        lib = ctypes.windll.user32
+        lib.WindowFromPoint.argtypes = [_POINT]
+        lib.WindowFromPoint.restype = ctypes.c_void_p
+        lib.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        lib.GetClassNameW.restype = ctypes.c_int
+        lib.GetParent.argtypes = [ctypes.c_void_p]
+        lib.GetParent.restype = ctypes.c_void_p
+        _tb_user32 = lib
+    return _tb_user32
+
+
+def point_on_taskbar(x, y):
+    """屏幕坐标 (x, y) 是不是压在任务栏上（副屏的任务栏、自动隐藏的都算）。
+
+    偷瞄时点一下任务栏，意思就是"我要去用别的程序了"：这一下要当场把书页收走，
+    比盯着"前台进程变了"快一截。判定靠窗口类名往上找 Shell_TrayWnd /
+    Shell_SecondaryTrayWnd——点开始菜单、时钟、托盘图标都落在它们里面。
+    """
+    try:
+        u = _tb_api()
+        hwnd = u.WindowFromPoint(_POINT(int(x), int(y)))
+        for _ in range(8):
+            if not hwnd:
+                return False
+            buf = ctypes.create_unicode_buffer(64)
+            if u.GetClassNameW(ctypes.c_void_p(hwnd), buf, 64):
+                if buf.value in TASKBAR_CLASSES:
+                    return True
+            hwnd = u.GetParent(ctypes.c_void_p(hwnd))
+        return False
+    except Exception:
+        return False
+
+
 def force_window_to_primary(hwnd, margin=60):
     """Win32 物理挪回主屏工作区左上角（绕过 Qt 可能过期的坐标映射，挪完 Qt 会自己同步回来）。"""
     try:
@@ -1660,6 +1700,10 @@ WM_NCMBUTTONDOWN = 0x00A8
 MOUSE_EXIT_MESSAGES = {WM_RBUTTONDOWN, WM_RBUTTONDBLCLK, WM_MBUTTONDOWN,
                        WM_MBUTTONDBLCLK, WM_XBUTTONDOWN,
                        WM_NCRBUTTONDOWN, WM_NCMBUTTONDOWN}
+# 左键平时一律放行（偷瞄着还要能点工作窗口）。唯一例外：点在任务栏上——
+# 那是在换程序，书页得当场上收（真人 2026-11-05：「检测到鼠标在任务栏区域点击时就退出 ce」）。
+TASKBAR_CLICK_MESSAGES = {WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_NCLBUTTONDOWN}
+TASKBAR_CLASSES = ("Shell_TrayWnd", "Shell_SecondaryTrayWnd")
 
 VK_MODIFIER_TOKENS = {"ctrl", "control", "alt", "shift", "win", "windows", "cmd", "menu"}
 VK_CODES = {
@@ -1892,7 +1936,12 @@ class GlobalInputHook:
                 if message in MOUSE_EXIT_MESSAGES:
                     self.owner.peek_exit_signal.emit("click")
                     return 0  # 右键/中键：退出，并把这次点击放行给下面的应用
-                # 左键（含双击、含点标题栏/边框）：既不退出也不吞，直接放行
+                if message in TASKBAR_CLICK_MESSAGES:
+                    info = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                    if point_on_taskbar(info.pt.x, info.pt.y):
+                        self.owner.peek_exit_signal.emit("点到了任务栏")
+                        return 0  # 点击照常给任务栏，书页上收
+                # 其它左键（含双击、含点标题栏/边框）：既不退出也不吞，直接放行
         except Exception:
             pass
         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
@@ -3413,7 +3462,7 @@ class StealthReader(QWidget):
         self.peek_foreign_pid = 0
         self.peek_foreign_ticks = 0
         self.peek_watch_timer = QTimer(self)
-        self.peek_watch_timer.setInterval(400)
+        self.peek_watch_timer.setInterval(150)
         self.peek_watch_timer.timeout.connect(self._watch_peek_focus)
 
         # 启动器叫醒：桌面快捷方式再点一次，第二个进程撞上单实例互斥体，就用这个事件
@@ -5502,7 +5551,7 @@ class StealthReader(QWidget):
 
         不动的情况：拿不到前台（0）、进来时没记上（0，比不了）、还是进来时那个进程、
         前台是我们自己（钩子/托盘把窗口叫到前面时，焦点确实会落回我们身上）。
-        剩下那种要**连着两拍（约 0.8 秒）**都是同一个陌生进程才退：Windows 上焦点会闪
+        剩下那种要**连着两拍（约 0.3 秒）**都是同一个陌生进程才退：Windows 上焦点会闪
         （提示框、输入法、程序自己抢一下又还回来），只晃一拍不算换人。
         """
         if not self.peek_mode:

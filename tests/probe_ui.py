@@ -3872,6 +3872,66 @@ finally:
         pass
     w.show()
 
+print("\n=== 31. 偷瞄：点到任务栏当场退出（不用等前台进程那 0.3 秒）===")
+
+import ctypes                                                          # noqa: E402
+_tb_u = ctypes.windll.user32
+_tb_u.FindWindowW.restype = ctypes.c_void_p
+_tb_u.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+_tb_hwnd = _tb_u.FindWindowW("Shell_TrayWnd", None)
+if _tb_hwnd:
+    _tb_rect = app_mod.window_rect(_tb_hwnd)
+    _tb_x = (_tb_rect[0] + _tb_rect[2]) // 2
+    _tb_y = (_tb_rect[1] + _tb_rect[3]) // 2
+    print("任务栏矩形 =", _tb_rect)
+else:
+    _tb_x = _tb_y = 0
+    print("这台机器上没找到 Shell_TrayWnd，后面的判定只能跳过")
+
+check("任务栏正中判成任务栏", bool(_tb_hwnd) and app_mod.point_on_taskbar(_tb_x, _tb_y), _tb_hwnd)
+
+_wr = app_mod._RECT()
+_tb_u.SystemParametersInfoW(0x0030, 0, ctypes.byref(_wr), 0)     # SPI_GETWORKAREA
+_wx, _wy = (_wr.left + _wr.right) // 2, (_wr.top + _wr.bottom) // 2
+check("工作区正中不算任务栏", not app_mod.point_on_taskbar(_wx, _wy), (_wx, _wy))
+check("屏幕外的点不算任务栏", not app_mod.point_on_taskbar(-5000, -5000), None)
+
+_reasons = []
+_conn = w.peek_exit_signal.connect(lambda r: _reasons.append(str(r)))
+
+
+def _mouse(msg, x, y):
+    info = app_mod._MSLLHOOKSTRUCT()
+    info.pt.x, info.pt.y = int(x), int(y)
+    return w.peek_input_hook._on_mouse(0, msg, ctypes.addressof(info))
+
+
+try:
+    w.peek_mode = True
+    _ret = _mouse(app_mod.WM_LBUTTONDOWN, _tb_x, _tb_y)
+    _said = _reasons[-1] if _reasons else ""
+    check("左键点在任务栏：钩子报「点到了任务栏」、并且点击照常放行（返回 0）",
+          _said == "点到了任务栏" and _ret == 0, (_said, _ret))
+
+    qapp.processEvents()
+    check("这一下走完真退出：偷瞄状态清掉、窗口收起",
+          (not w.peek_mode) and (not w.isVisible()), (w.peek_mode, w.isVisible()))
+
+    _reasons.clear()
+    w.peek_mode = True
+    _before = len(_reasons)
+    _ret2 = _mouse(app_mod.WM_LBUTTONDOWN, _wx, _wy)
+    qapp.processEvents()
+    check("左键点在窗口/别处：既不退出也不报「任务栏」",
+          len(_reasons) == _before and w.peek_mode, (_reasons, w.peek_mode))
+finally:
+    w.peek_exit_signal.disconnect(_conn)
+    w.peek_mode = False
+    w.show()
+
+check("盯前台那张表的节奏调快了（150ms 一拍，两拍约 0.3 秒）",
+      w.peek_watch_timer.interval() == 150, w.peek_watch_timer.interval())
+
 w.config.clear()
 w.config.update(_cfg_bak)
 w.save_config = _save_bak

@@ -3201,6 +3201,16 @@ check("设置页有「背景用实色」，保存时也带上",
       and 'self.config["auto_bg_solid"] = self.check_solid_bg.isChecked()' in _main_src,
       None)
 
+check("点到任务栏当场退出：左键那三种消息 + 命中判定",
+      "TASKBAR_CLICK_MESSAGES = {WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_NCLBUTTONDOWN}"
+      in _main_src
+      and "def point_on_taskbar(" in _main_src
+      and '"Shell_TrayWnd"' in _main_src
+      and "if point_on_taskbar(info.pt.x, info.pt.y):" in _main_src
+      and 'self.owner.peek_exit_signal.emit("点到了任务栏")' in _main_src, None)
+check("盯前台的节奏是 150ms 一拍（两拍约 0.3 秒）",
+      "self.peek_watch_timer.setInterval(150)" in _main_src, None)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23
