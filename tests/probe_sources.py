@@ -3217,6 +3217,13 @@ check("幽灵态抽成 _ghost_out，实色档下整窗淡出（0.005）、老档
       and 'if self.config.get("auto_bg_solid", False):' in _main_src
       and "self.setWindowOpacity(0.005)" in _main_src, None)
 
+check("取色拆成 _sample_desktop_color；字色带迟滞（116/140 死区）；颜色没变不重刷样式",
+      "def _sample_desktop_color(" in _main_src
+      and "def _auto_text_color(" in _main_src
+      and "return (0, 0, 0) if lum > 116 else (255, 255, 255)" in _main_src
+      and "return (255, 255, 255) if lum < 140 else (0, 0, 0)" in _main_src
+      and "if sig == getattr(self, \"_auto_text_sig\", None):" in _main_src, None)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23

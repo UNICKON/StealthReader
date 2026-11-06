@@ -3977,6 +3977,66 @@ finally:
      w.config["ghost_mode"]) = _g_cache
     w.apply_style()
 
+print("\n=== 33. 融景实色档：字色别在临界线上来回翻、颜色没变别重刷样式 ===")
+
+_c33_bg = (w.config.get("auto_mode"), w.config.get("opacity"))
+_smpl_bak = w._sample_desktop_color
+_style_bak = w.text_edit.setStyleSheet
+_calls = [0]
+
+
+def _count_style(css):
+    _calls[0] += 1
+    return _style_bak(css)
+
+
+try:
+    w.config["auto_mode"] = True
+    w.config["opacity"] = 1.0
+    w.show()
+    qapp.processEvents()
+
+    w._auto_text_dark = None
+    _c1 = w._auto_text_color(QColor(130, 130, 130))
+    w._auto_text_dark = True
+    _c2 = w._auto_text_color(QColor(120, 120, 120))
+    _c3 = w._auto_text_color(QColor(110, 110, 110))
+    _d = w._auto_text_color(QColor(130, 130, 130))
+    _e = w._auto_text_color(QColor(150, 150, 150))
+    check("字色迟滞：黑字要暗到 116 以下才改白，白字要亮到 140 以上才改黑",
+          _c1 == (0, 0, 0) and _c2 == (0, 0, 0) and _c3 == (255, 255, 255)
+          and _d == (255, 255, 255) and _e == (0, 0, 0),
+          (_c1, _c2, _c3, _d, _e))
+
+    w._auto_text_dark = None
+    w._auto_bg_key = None
+    w._auto_text_sig = None
+    w._sample_desktop_color = lambda: QColor(200, 200, 200)
+    w.text_edit.setStyleSheet = _count_style
+    w.adjust_color_to_background()
+    _first = _calls[0]
+    w.adjust_color_to_background()
+    w.adjust_color_to_background()
+    _same = _calls[0]
+    check("底色一直没变：第一拍刷一次样式（%d 次），之后两拍一次都不刷（%d 次）"
+          % (_first, _same), _first == 1 and _same == 1, (_first, _same))
+
+    w._sample_desktop_color = lambda: QColor(40, 40, 40)
+    w.adjust_color_to_background()
+    check("底色翻到深色：字色换成白、样式重刷一次", _calls[0] == 2, _calls[0])
+
+    _before_apply = _calls[0]
+    w.apply_style()
+    check("整页换样式之后又刷了一次（缓存作废，不会漏掉新底色）",
+          _calls[0] == _before_apply + 1, (_before_apply, _calls[0]))
+finally:
+    w.text_edit.setStyleSheet = _style_bak
+    w._sample_desktop_color = _smpl_bak
+    w.config["auto_mode"], w.config["opacity"] = _c33_bg
+    w._auto_bg_key = None
+    w._auto_text_sig = None
+    w.apply_style()
+
 w.config.clear()
 w.config.update(_cfg_bak)
 w.save_config = _save_bak

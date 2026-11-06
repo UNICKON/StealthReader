@@ -8890,13 +8890,11 @@ class StealthReader(QWidget):
             return
         self.review_poll()
 
-    def adjust_color_to_background(self):
-        if not self.isVisible() or not self.config.get("auto_mode"):
-            self.chameleon_timer.stop()
-            return
-
+    def _sample_desktop_color(self):
+        """取窗口旁边那 1 个像素的颜色（窗口贴左边时改取右边）；取不到给 None。"""
         screen = QApplication.primaryScreen()
-        if not screen: return
+        if not screen:
+            return None
 
         pick_x = self.x() - 5
         pick_y = self.y() + 10
@@ -8906,26 +8904,65 @@ class StealthReader(QWidget):
 
         pixmap = screen.grabWindow(0, pick_x, pick_y, 1, 1)
         img = pixmap.toImage()
+        if img.width() <= 0:
+            return None
+        return img.pixelColor(0, 0)
 
-        if img.width() > 0:
-            color = img.pixelColor(0, 0)
-            brightness = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+    def _auto_text_color(self, color):
+        """挑黑字还是白字，**带迟滞**。
 
+        原来按 0.299R+0.587G+0.114B > 128 一刀切：壁纸颜色在临界线附近飘一点点，
+        整页字就黑→白→黑地翻。透底档看不太出来，实色档下那就是一片字在那儿闪
+        （真人 2026-11-06 问「实色的时候文字显示效果能优化吗」）。现在两头留 12 的死区：
+        当前是黑字，要暗到 116 以下才改白；当前是白字，要亮到 140 以上才改黑。
+        """
+        lum = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+        cur_dark = getattr(self, "_auto_text_dark", None)
+        if cur_dark is None:
+            rgb = (0, 0, 0) if lum > 128 else (255, 255, 255)
+        elif cur_dark:
+            rgb = (0, 0, 0) if lum > 116 else (255, 255, 255)
+        else:
+            rgb = (255, 255, 255) if lum < 140 else (0, 0, 0)
+        self._auto_text_dark = rgb == (0, 0, 0)   # 状态在函数里自己记，谁调用都一致
+        return rgb
+
+    def adjust_color_to_background(self):
+        if not self.isVisible() or not self.config.get("auto_mode"):
+            self.chameleon_timer.stop()
+            return
+
+        color = self._sample_desktop_color()
+        if color is None:
+            return
+
+        bg_key = (color.red(), color.green(), color.blue())
+        if bg_key != getattr(self, "_auto_bg_key", None):
+            self._auto_bg_key = bg_key
             self.content_frame.set_auto_bg_color(color)
-            base_text_color = (0, 0, 0) if brightness > 128 else (255, 255, 255)
-            user_alpha = int(self.config.get("opacity", 0.9) * 255)
-            rgba_color = f"rgba({base_text_color[0]}, {base_text_color[1]}, {base_text_color[2]}, {user_alpha})"
 
-            self.text_edit.setStyleSheet(f"""
-                QTextEdit {{
-                    color: {rgba_color};
-                    background-color: transparent;
-                    padding: 0px; margin: 0px; border: none;
-                }}
-            """)
+        base_text_color = self._auto_text_color(color)
+        user_alpha = int(self.config.get("opacity", 0.9) * 255)
+        sig = (base_text_color, user_alpha)
+        if sig == getattr(self, "_auto_text_sig", None):
+            # 底色和字色都没变：不要每 500ms 重刷一遍样式表——那会让整页正文
+            # 重新 polish + 重排 + 重画，实色档下看着就是一片字在微微动。
+            return
+        self._auto_text_sig = sig
+        rgba_color = f"rgba({base_text_color[0]}, {base_text_color[1]}, {base_text_color[2]}, {user_alpha})"
+
+        self.text_edit.setStyleSheet(f"""
+            QTextEdit {{
+                color: {rgba_color};
+                background-color: transparent;
+                padding: 0px; margin: 0px; border: none;
+            }}
+        """)
 
     def apply_style(self):
         self.set_ghost_veil(False)      # 正常样式回来了：幽灵那层罩子先摘掉
+        self._auto_bg_key = None        # 样式整页换过了，取色缓存作废，下一拍重刷一次
+        self._auto_text_sig = None
         # 刷样式会重排（字号/行距/页边距都在里面），重排前先认住"现在正看的那一行"，
         # 重绘时拿它当页首——否则每次刷样式都从本页最上面重铺，看着就是"阅读进度老是跳回"。
         anchor = self.current_top_offset()
