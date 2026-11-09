@@ -317,6 +317,7 @@ DEFAULT_CONFIG = {
     "text_color": "rgba(200, 200, 200, 255)",
     "bg_color": "rgba(30, 30, 30, 200)",
     "boss_key": "Esc",
+    "solid_key": "ctrl+alt+b",           # 融景「背景用实色」开关（按一下实色、再按一下几乎全透）
     "safe_key": "ctrl+alt+d",            # 安全文档模式（有人看屏幕时应急换文档）
                                          # 不用 ctrl+shift+d：那键在 VSCode/PyCharm 是"运行与调试"、
                                          # 在 Chrome 是"收藏所有标签页"，而全局热键不拦截按键
@@ -2689,6 +2690,11 @@ class SettingsDialog(QDialog):
                      "排版（字体/行距/页边距/窗口大小）和书页完全一致；\n"
                      "再按一次换回书，回到原来那一页。划线会一起隐藏。")
 
+        self.solid_key_input = QLineEdit(self.config.get("solid_key", "ctrl+alt+b"))
+        self.add_row(lay, "实色", self.solid_key_input,
+                     "融景（自动配色）的「背景用实色」开关：按一下实色、再按一下回到几乎全透。\n"
+                     "不在融景模式下按，只是把这项设置翻过来，切到融景时按新值走。")
+
         self.lowkey_key_input = QLineEdit(self.config.get("lowkey_key", "e"))
         self.add_row(lay, "无图", self.lowkey_key_input,
                      "社区页在有图/无图（低调显示）之间切换，当场生效，不用进设置再保存；\n"
@@ -3183,6 +3189,7 @@ class SettingsDialog(QDialog):
         self.config["anki_key"] = self.anki_key_input.text().strip() or "ctrl+alt+a"
         self.config["feed_key"] = self.feed_key_input.text().strip() or "ctrl+alt+f"
         self.config["lowkey_key"] = self.lowkey_key_input.text().strip() or "e"
+        self.config["solid_key"] = self.solid_key_input.text().strip() or "ctrl+alt+b"
         lowkey_now = self.feed_lowkey_check.isChecked()
         _win = self.main_window
         if _win is not None:
@@ -3280,6 +3287,7 @@ class StealthReader(QWidget):
     review_hotkey_signal = pyqtSignal()
     feed_hotkey_signal = pyqtSignal()
     lowkey_hotkey_signal = pyqtSignal()          # 无图开关（钩子线程 → 主线程）
+    solid_hotkey_signal = pyqtSignal()           # 融景「背景用实色」开关（同上）
     # 社区页取数一律在后台线程里跑，取回来用这个信号回主线程（payload 一律是普通 Python 对象）
     feed_data_signal = pyqtSignal(str, object)
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
@@ -3353,6 +3361,7 @@ class StealthReader(QWidget):
         self.feed_snapshot = None       # 进社区页前的书状态（和安全文档/背诵共用同一套快照函数）
         self.feed_shortcut = None
         self.lowkey_shortcut = None
+        self.solid_shortcut = None
         self.feed_nav = None            # feed.FeedNav：选中/翻页/进详情/折叠全在它里面
         self.feed_sources = []          # 已登记的来源适配器（批次 B 起每加一个站就在这里多一个）
         self.feed_source_i = 0
@@ -3499,6 +3508,7 @@ class StealthReader(QWidget):
         self.review_hotkey_signal.connect(self.toggle_review_mode)
         self.feed_hotkey_signal.connect(self.toggle_feed_mode)
         self.lowkey_hotkey_signal.connect(self.toggle_lowkey)
+        self.solid_hotkey_signal.connect(self.toggle_solid_bg)
         self.feed_data_signal.connect(self.on_feed_data, Qt.QueuedConnection)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
@@ -4389,6 +4399,7 @@ class StealthReader(QWidget):
         review_key_str = (self.config.get("anki_key", "ctrl+alt+a") or "").strip()
         feed_key_str = (self.config.get("feed_key", "ctrl+alt+f") or "").strip()
         lowkey_key_str = (self.config.get("lowkey_key", "e") or "").strip()
+        solid_key_str = (self.config.get("solid_key", "ctrl+alt+b") or "").strip()
         taken = set()
         try:
             keyboard.unhook_all()   # 只拆 keyboard 库自己的钩子；偷瞄/背诵的 ctypes 钩子是独立管理的
@@ -4430,6 +4441,7 @@ class StealthReader(QWidget):
                           % lowkey_key_str)
         else:
             g_lowkey = _reg_global(lowkey_key_str, self.on_lowkey_hotkey_triggered, "无图")
+        g_solid = _reg_global(solid_key_str, self.on_solid_hotkey_triggered, "实色")
         # 松键回调也重挂一遍（unhook_all 会把它一起拆掉）：热键"同一下只认第一次"靠它复位。
         try:
             keyboard.on_release(self.on_hotkey_release)
@@ -4447,7 +4459,8 @@ class StealthReader(QWidget):
                        ("偷瞄", peek_key_str, self.on_peek_hotkey_triggered),
                        ("安全文档", safe_key_str, self.on_safe_hotkey_triggered),
                        ("背诵", review_key_str, self.on_review_hotkey_triggered),
-                       ("社区", feed_key_str, self.on_feed_hotkey_triggered)]
+                       ("社区", feed_key_str, self.on_feed_hotkey_triggered),
+                       ("实色", solid_key_str, self.on_solid_hotkey_triggered)]
         if not _lowkey_bare:
             _poll_pairs.append(("无图", lowkey_key_str, self.on_lowkey_hotkey_triggered))
         _poll = []
@@ -4523,6 +4536,17 @@ class StealthReader(QWidget):
                 self.lowkey_shortcut = QShortcut(QKeySequence(lowkey_key_str), self)
                 self.lowkey_shortcut.setAutoRepeat(False)
                 self.lowkey_shortcut.activated.connect(self.toggle_lowkey)
+        except:
+            pass
+
+        try:
+            if self.solid_shortcut:
+                self.solid_shortcut.setKey(QKeySequence())
+                self.solid_shortcut = None
+            if not g_solid and solid_key_str:
+                self.solid_shortcut = QShortcut(QKeySequence(solid_key_str), self)
+                self.solid_shortcut.setAutoRepeat(False)
+                self.solid_shortcut.activated.connect(self.toggle_solid_bg)
         except:
             pass
 
@@ -4644,6 +4668,18 @@ class StealthReader(QWidget):
         except Exception as e:
             try:
                 log_event(f"社区键回调异常: {e}")
+            except Exception:
+                pass
+
+    def on_solid_hotkey_triggered(self):
+        try:
+            if self.hotkey_is_repeat("solid", self.config.get("solid_key", "")):
+                return
+            log_event("实色开关热键触发")
+            self.solid_hotkey_signal.emit()
+        except Exception as e:
+            try:
+                log_event(f"实色键回调异常: {e}")
             except Exception:
                 pass
 
@@ -6637,6 +6673,32 @@ class StealthReader(QWidget):
         if self.feed_busy:
             return                    # 上一次还没回来：这一拍跳过，下一拍再说
         self.feed_load("scores" if mode == "list" else "detail", fresh=True)
+
+    def toggle_solid_bg(self):
+        """融景「背景用实色」开关：按一下不透明、再按一下几乎全透。
+
+        只在融景（自动配色）下看得见效果；不在融景时也照样翻配置，切过去就按新值走，
+        不会出现"按了没反应、进设置发现勾也变了"这种两套状态。设置里那个勾读的就是
+        同一个 `auto_bg_solid`，两边永远一致。
+        """
+        on = not bool(self.config.get("auto_bg_solid", False))
+        self.config["auto_bg_solid"] = on
+        try:
+            self.save_config()
+        except Exception:
+            pass
+        dlg = getattr(self, "settings_dialog", None)
+        try:
+            if dlg is not None:
+                dlg.config["auto_bg_solid"] = on
+                dlg.check_solid_bg.blockSignals(True)
+                dlg.check_solid_bg.setChecked(on)
+                dlg.check_solid_bg.blockSignals(False)
+        except Exception:
+            pass
+        if self.config.get("auto_mode"):
+            self.apply_style()          # 立刻换底色（实色档连幽灵淡出那条也一起换）
+        log_event("融景实色：%s" % ("开（不透明）" if on else "关（几乎全透）"))
 
     def toggle_lowkey(self):
         """有图 ↔ 无图（低调显示）：当场生效，不用进设置再保存。
@@ -9976,6 +10038,7 @@ class StealthReader(QWidget):
             self.content_frame.setStyleSheet(f"background-color: {self.config['bg_color']};")
 
         dialog = SettingsDialog(self.config, self)
+        self.settings_dialog = dialog          # 设置窗开着时按实色键，勾选要跟着走
 
         if dialog.exec_() == QDialog.Accepted:
             self.config = dialog.config
@@ -9986,6 +10049,7 @@ class StealthReader(QWidget):
         else:
             self.apply_style()
 
+        self.settings_dialog = None
         self.is_settings_open = False
         self.showNormal()
         self.activateWindow()

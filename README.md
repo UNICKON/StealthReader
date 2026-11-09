@@ -198,6 +198,7 @@ StealthReader 是一个 Windows 桌面阅读器。窗口呈无边框、置顶、
 | `Ctrl+Alt+F` | 社区 |
 | `E`（社区页里按） | 无图 / 有图（低调显示） |
 | `Ctrl+Alt+A` | Anki 卡片 |
+| `Ctrl+Alt+B` | 融景「背景用实色」开关：按一下不透明、再按一下几乎全透（不在融景下按只翻设置） |
 
 阅读页：
 
@@ -313,13 +314,13 @@ python main.py
 | `line_spacing` `paragraph_spacing` `page_margin_chars` `first_line_indent` | 排版参数 |
 | `page_overlap_lines` | 翻页时保留的上一页行数，默认 2；设为 0 则新一页从上一页的下一行开始 |
 | `arrow_scroll_lines` | 每次滚动的行数，上下箭头与鼠标滚轮共用，默认 3 |
-| `boss_key` `peek_key` `safe_key` `anki_key` `feed_key` | 五个全局热键 |
+| `boss_key` `peek_key` `safe_key` `anki_key` `feed_key` `solid_key` | 六个全局热键；`solid_key` 是实色开关，默认 `ctrl+alt+b` |
 | `safe_doc_path` | 安全文档使用的文件，留空则使用内置文档 |
 | `anki_deck` `anki_conceal` `anki_api_key` | 默认牌组、是否隐藏 Anki 窗口、AnkiConnect 密钥 |
 | `feed_sources` `feed_rss` | 启用哪些社区来源，以及订阅地址 |
 | `ghost_mode` `auto_mode` `antishot_mode` | 幽灵模式、自动配色、防截屏 |
 | `show_corners` | 自动配色（融景）模式下左上/右下那两道角标；开着也只有鼠标凑近那个角时才露出来 |
-| `auto_bg_solid` | 自动配色的实色档：背景用采到的颜色、alpha 255；默认关（老档 alpha 2，几乎全透） |
+| `auto_bg_solid` | 自动配色的实色档：背景用采到的颜色、alpha 255；默认关（老档 alpha 2，几乎全透）。热键 `ctrl+alt+b` 可随时开关，设置里也能改这个键 |
 
 站点凭据保存在程序目录的 `feed_auth.json`：
 

@@ -4037,6 +4037,42 @@ finally:
     w._auto_text_sig = None
     w.apply_style()
 
+print("\n=== 34. 实色开关热键（默认 ctrl+alt+b）===")
+
+_s34 = (w.config.get("auto_mode"), w.config.get("auto_bg_solid"))
+check("默认配置里有实色键 ctrl+alt+b",
+      app_mod.DEFAULT_CONFIG.get("solid_key") == "ctrl+alt+b",
+      app_mod.DEFAULT_CONFIG.get("solid_key"))
+
+try:
+    w.config["auto_mode"] = True
+    w.config["auto_bg_solid"] = False
+    w.apply_style()
+    _a0 = w.content_frame._bg_alpha()
+    w.toggle_solid_bg()
+    _on = (bool(w.config.get("auto_bg_solid")), w.content_frame._bg_alpha(),
+           bool(w.content_frame.solid_bg))
+    w.toggle_solid_bg()
+    _off = (bool(w.config.get("auto_bg_solid")), w.content_frame._bg_alpha(),
+            bool(w.content_frame.solid_bg))
+    check("按一下开（alpha 255）、再按一下关（alpha 2），当场生效",
+          _a0 == 2 and _on == (True, 255, True) and _off == (False, 2, False),
+          (_a0, _on, _off))
+
+    w.config["auto_mode"] = False
+    w.toggle_solid_bg()
+    check("不在融景下按也翻配置（切过去按新值走，不会两套状态）",
+          bool(w.config.get("auto_bg_solid")) is True, w.config.get("auto_bg_solid"))
+
+    _dlg = app_mod.SettingsDialog(w.config, w)
+    _has = (hasattr(_dlg, "solid_key_input")
+            and _dlg.solid_key_input.text() == (w.config.get("solid_key") or "ctrl+alt+b"))
+    _dlg.deleteLater()
+    check("设置 → 快捷键里有「实色」这一行，值就是配置里那个", _has, None)
+finally:
+    w.config["auto_mode"], w.config["auto_bg_solid"] = _s34
+    w.apply_style()
+
 w.config.clear()
 w.config.update(_cfg_bak)
 w.save_config = _save_bak
