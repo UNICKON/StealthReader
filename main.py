@@ -5748,23 +5748,37 @@ class StealthReader(QWidget):
         sb.setValue(int(round(before + px)))
 
     def _local_wheel_step(self, delta, pixel_dy=0):
-        """滚轮一格（120）= 设置里的行数，和方向键同一套手感。
+        """滚轮一格（120）= 设置里的行数，和方向键、偷瞄同一套手感。
 
         以前本地书页的滚轮交给 Qt 默认（固定约 3 行），方向键却整页翻；
         现在两边都走 `scroll_px`、都按 `_lines_to_px` 算，行数在设置里一起调。
-        触摸板那条路（只有 `pixelDelta`、没有 `angleDelta`）按真实像素滚。"""
+
+        只有像素的那种滚轮（触摸板/高精度滚轮，`pixelDelta` 有值、`angleDelta` 是 0）
+        以前**按像素滚**，于是"窗口里一格 = 系统给的 3 行、偷瞄里一格 = 设置里那几行"，
+        同一个手势两处走得不一样（真人 2026-11-09："ce 和 cs 的鼠标滚动行数不一样"）。
+        现在这条路也折成**行**：攒够一行才走一行，一次最多走 `lines` 行，
+        余数留到下一次——和偷瞄那条路同一个单位。"""
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
         # 一格（±120）= 设置里那几行。有的鼠标/驱动一次发来 240、480（"快滚轮"），
         # 以前按比例算，于是"设 2 行却滚了 5 行"；现在一格永远一格，快滚靠事件密度赚回来。
-        # 触摸板另算：Qt 直接给 pixelDelta（真实滑动的像素），按像素滚手感才对。
         px = self._lines_to_px(lines)
         try:
             pixel_dy = int(pixel_dy or 0)
         except Exception:
             pixel_dy = 0
         if pixel_dy and not delta:
-            self.scroll_px(-pixel_dy, flip=False)
+            if not getattr(self, "_wheel_pixel_path_noted", False):
+                self._wheel_pixel_path_noted = True
+                log_event("滚轮走的是像素路（pixel=%s）：已按行折算，和偷瞄一致"
+                          % pixel_dy)
+            unit = max(1, int(round(self._line_unit_px())))
+            acc = int(getattr(self, "_wheel_px_acc", 0) or 0) + pixel_dy
+            whole = int(acc / unit) if unit else 0
+            whole = max(-lines, min(lines, whole))      # 一次最多一个格子的行数
+            self._wheel_px_acc = max(-unit * lines, min(unit * lines, acc - whole * unit))
+            if whole:
+                self.scroll_px(-whole * px, flip=False)
             return
         notches = min(1.0, abs(float(delta)) / 120.0)
         if notches <= 0:

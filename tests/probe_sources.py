@@ -3233,6 +3233,12 @@ check("实色开关热键接全了：默认 ctrl+alt+b、信号→toggle_solid_b
       and 'self.config["auto_bg_solid"] = on' in _main_src
       and 'self.config["solid_key"] = self.solid_key_input.text().strip() or "ctrl+alt+b"' in _main_src, None)
 
+check("滚轮像素路折成行：攒够一行才走一行、一次最多一个格子、余数封顶，并点明走的是哪条路",
+      "滚轮走的是像素路（pixel=%s）：已按行折算，和偷瞄一致" in _main_src
+      and "whole = max(-lines, min(lines, whole))" in _main_src
+      and "self._wheel_px_acc = max(-unit * lines, min(unit * lines, acc - whole * unit))" in _main_src
+      and "self.scroll_px(-whole * px, flip=False)" in _main_src, None)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23

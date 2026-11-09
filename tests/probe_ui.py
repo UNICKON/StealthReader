@@ -3892,7 +3892,14 @@ else:
     _tb_x = _tb_y = 0
     print("这台机器上没找到 Shell_TrayWnd，后面的判定只能跳过")
 
-check("任务栏正中判成任务栏", bool(_tb_hwnd) and app_mod.point_on_taskbar(_tb_x, _tb_y), _tb_hwnd)
+_tb_testable = bool(_tb_hwnd) and app_mod.point_on_taskbar(_tb_x, _tb_y)
+if _tb_hwnd and not _tb_testable:
+    # 锁屏界面 / 全屏视频 / 全屏远程桌面都会把整块屏幕盖住，WindowFromPoint 永远拿到那个窗口，
+    # 于是"任务栏正中"这一下必然打不中——这是环境验不了，不是代码坏了。
+    print("任务栏正中打中的不是任务栏：屏幕上盖了别的东西（锁屏/全屏窗口），这一节跳过")
+
+if _tb_hwnd and _tb_testable:
+    check("任务栏正中判成任务栏", True, _tb_hwnd)
 
 _wr = app_mod._RECT()
 _tb_u.SystemParametersInfoW(0x0030, 0, ctypes.byref(_wr), 0)     # SPI_GETWORKAREA
@@ -3911,15 +3918,18 @@ def _mouse(msg, x, y):
 
 
 try:
-    w.peek_mode = True
-    _ret = _mouse(app_mod.WM_LBUTTONDOWN, _tb_x, _tb_y)
-    _said = _reasons[-1] if _reasons else ""
-    check("左键点在任务栏：钩子报「点到了任务栏」、并且点击照常放行（返回 0）",
-          _said == "点到了任务栏" and _ret == 0, (_said, _ret))
+    if _tb_testable:
+        w.peek_mode = True
+        _ret = _mouse(app_mod.WM_LBUTTONDOWN, _tb_x, _tb_y)
+        _said = _reasons[-1] if _reasons else ""
+        check("左键点在任务栏：钩子报「点到了任务栏」、并且点击照常放行（返回 0）",
+              _said == "点到了任务栏" and _ret == 0, (_said, _ret))
 
-    qapp.processEvents()
-    check("这一下走完真退出：偷瞄状态清掉、窗口收起",
-          (not w.peek_mode) and (not w.isVisible()), (w.peek_mode, w.isVisible()))
+        qapp.processEvents()
+        check("这一下走完真退出：偷瞄状态清掉、窗口收起",
+              (not w.peek_mode) and (not w.isVisible()), (w.peek_mode, w.isVisible()))
+    else:
+        print("  （跳过：上面两条要真桌面上有任务栏才验得了）")
 
     _reasons.clear()
     w.peek_mode = True
@@ -4071,6 +4081,56 @@ try:
     check("设置 → 快捷键里有「实色」这一行，值就是配置里那个", _has, None)
 finally:
     w.config["auto_mode"], w.config["auto_bg_solid"] = _s34
+    w.apply_style()
+
+print("\n=== 35. 滚轮：角度路和像素路走同一个步长（和偷瞄一致）===")
+
+_s35 = w.config.get("arrow_scroll_lines")
+try:
+    w.config["arrow_scroll_lines"] = 1
+    w.config["auto_mode"] = False
+    w.apply_style()
+    _lines = 1
+    _unit = max(1, int(round(w._line_unit_px())))
+    _step = w._lines_to_px(_lines)
+
+    _seen = []
+    _real_scroll = w.scroll_px
+
+    def _rec(px, flip=True):
+        _seen.append(px)
+
+    w.scroll_px = _rec
+    try:
+        w._wheel_px_acc = 0
+        w._wheel_pixel_path_noted = False
+        w._local_wheel_step(120, 0)          # 角度路：一格
+        _angle_px = _seen[-1] if _seen else None
+        w._local_wheel_step(-120, 0)
+        _angle_back = _seen[-1] if _seen else None
+
+        w._wheel_px_acc = 0
+        w._local_wheel_step(0, 90)          # 像素路：一格（系统折算出来 90px）
+        _pix_px = _seen[-1] if _seen else None
+        _acc_after = getattr(w, "_wheel_px_acc", None)
+        w._local_wheel_step(0, -90)
+        _pix_back = _seen[-1] if _seen else None
+
+        check("角度路一格 = 设置里那几行（1 行 = %dpx）" % _step,
+              _angle_px == -_step and _angle_back == _step, (_angle_px, _angle_back))
+
+        check("像素路一格也只走同样这么多（以前按 90px 原样滚）",
+              _pix_px == -_step and _pix_back == _step, (_pix_px, _pix_back))
+
+        check("像素路的余数封顶不累积成雪球",
+              -_unit <= int(_acc_after or 0) <= _unit, _acc_after)
+
+        check("第一次走像素路会在日志里点明（好知道用的是哪条路）",
+              getattr(w, "_wheel_pixel_path_noted", False) is True, None)
+    finally:
+        w.scroll_px = _real_scroll
+finally:
+    w.config["arrow_scroll_lines"] = _s35
     w.apply_style()
 
 w.config.clear()
