@@ -909,7 +909,12 @@ qapp.processEvents()
 
 
 def _book_delta(fn):
-    """从同一处往下滚一下，量实际走了多少像素。"""
+    """从同一处往下滚一下，量实际走了多少像素。
+
+    合成事件是紧挨着发的（毫秒内），而真人两格之间不可能这么近——所以这里把"同一格去重"
+    的记时清零，保证每次调用都被当成新的一格。"""
+    w._wheel_last_t = 0.0
+    w._wheel_last_d = 0
     sb = w.text_edit.verticalScrollBar()
     sb.setValue(2000)
     before = sb.value()
@@ -4083,16 +4088,15 @@ finally:
     w.config["auto_mode"], w.config["auto_bg_solid"] = _s34
     w.apply_style()
 
-print("\n=== 35. 滚轮：角度路和像素路走同一个步长（和偷瞄一致）===")
+print("\n=== 35. 滚轮：窗口内和偷瞄同一个步长，且同一格只算一次 ===")
 
 _s35 = w.config.get("arrow_scroll_lines")
 try:
     w.config["arrow_scroll_lines"] = 1
     w.config["auto_mode"] = False
     w.apply_style()
-    _lines = 1
+    _step = w._lines_to_px(1)
     _unit = max(1, int(round(w._line_unit_px())))
-    _step = w._lines_to_px(_lines)
 
     _seen = []
     _real_scroll = w.scroll_px
@@ -4102,18 +4106,24 @@ try:
 
     w.scroll_px = _rec
     try:
-        w._wheel_px_acc = 0
-        w._wheel_pixel_path_noted = False
-        w._local_wheel_step(120, 0)          # 角度路：一格
+        def _one(delta=0, pixel=0, reset=True):
+            if reset:
+                w._wheel_last_t = 0.0
+            w._local_wheel_step(delta, pixel)
+
+        _seen.clear()
+        _one(120, 0)
         _angle_px = _seen[-1] if _seen else None
-        w._local_wheel_step(-120, 0)
+        _one(-120, 0)
         _angle_back = _seen[-1] if _seen else None
 
+        _seen.clear()
         w._wheel_px_acc = 0
-        w._local_wheel_step(0, 90)          # 像素路：一格（系统折算出来 90px）
+        w._wheel_pixel_path_noted = False
+        _one(0, 90)
         _pix_px = _seen[-1] if _seen else None
         _acc_after = getattr(w, "_wheel_px_acc", None)
-        w._local_wheel_step(0, -90)
+        _one(0, -90)
         _pix_back = _seen[-1] if _seen else None
 
         check("角度路一格 = 设置里那几行（1 行 = %dpx）" % _step,
@@ -4127,6 +4137,23 @@ try:
 
         check("第一次走像素路会在日志里点明（好知道用的是哪条路）",
               getattr(w, "_wheel_pixel_path_noted", False) is True, None)
+
+        # 同一格被拆成两拍（Qt 把 240 拆成两个 120 时就是这样）：只许滚一次
+        _seen.clear()
+        w._wheel_last_t = 0.0
+        w._local_wheel_step(120, 0)
+        w._local_wheel_step(120, 0)
+        check("同一格被拆成两拍只滚一次（真人「cq 一格两行」的那条）",
+              len(_seen) == 1, _seen)
+
+        # 真的两格（间隔够）还是要走两次
+        _seen.clear()
+        w._wheel_last_t = 0.0
+        w._local_wheel_step(120, 0)
+        w._wheel_last_t = 0.0
+        w._local_wheel_step(120, 0)
+        check("两格各滚一次（去重不能把正常连滚吞掉）",
+              len(_seen) == 2, _seen)
     finally:
         w.scroll_px = _real_scroll
 finally:

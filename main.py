@@ -5760,8 +5760,6 @@ class StealthReader(QWidget):
         余数留到下一次——和偷瞄那条路同一个单位。"""
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
-        # 一格（±120）= 设置里那几行。有的鼠标/驱动一次发来 240、480（"快滚轮"），
-        # 以前按比例算，于是"设 2 行却滚了 5 行"；现在一格永远一格，快滚靠事件密度赚回来。
         px = self._lines_to_px(lines)
         try:
             pixel_dy = int(pixel_dy or 0)
@@ -5780,6 +5778,25 @@ class StealthReader(QWidget):
             if whole:
                 self.scroll_px(-whole * px, flip=False)
             return
+        # **一格只认一次**：同一个物理格子有可能被拆成两拍送进角度路（Qt 把 240 拆成两个 120、
+        # 或者同一个事件被两处过滤器各接一次），两拍之间只隔零点几毫秒——"一格两行"就是这么来的，
+        # 而偷瞄那边一次钩子消息就是一格，于是差一倍（真人 2026-11-09："cq 还是两行，ce 还是一行"）。
+        # 25ms 内的第二拍直接丢掉；人手再快也到不了 40 格/秒，快滚仍然是事件密度说了算。
+        # 像素路（触摸板）不吃这一条：它本来就该按收到的像素一点点折成行。
+        _now = time.monotonic()
+        _gap_ms = (_now - float(getattr(self, "_wheel_last_t", 0.0))) * 1000.0
+        _same = (abs(int(delta or 0)) == int(getattr(self, "_wheel_last_d", 0) or 0))
+        _dup = _gap_ms < 15.0 and _same          # 同一个 delta 紧跟着又来一发 = 同一格
+        _dbg = int(getattr(self, "_wheel_dbg_n", 0) or 0)
+        if _dbg < 60:
+            self._wheel_dbg_n = _dbg + 1
+            log_event("WHEELDIAG peek=%s delta=%s pixel=%s gap=%.1fms %s"
+                      % (self.peek_mode, delta, pixel_dy, _gap_ms,
+                         "丢掉（同一格）" if _dup else "走"))
+        if _dup:
+            return
+        self._wheel_last_t = _now
+        self._wheel_last_d = abs(int(delta or 0))
         notches = min(1.0, abs(float(delta)) / 120.0)
         if notches <= 0:
             return

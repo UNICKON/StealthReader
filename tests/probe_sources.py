@@ -3233,6 +3233,11 @@ check("实色开关热键接全了：默认 ctrl+alt+b、信号→toggle_solid_b
       and 'self.config["auto_bg_solid"] = on' in _main_src
       and 'self.config["solid_key"] = self.solid_key_input.text().strip() or "ctrl+alt+b"' in _main_src, None)
 
+check("滚轮：同一格被拆成两拍时只认第一拍（25ms 内丢掉第二拍），像素路不受影响", 
+      '_now - float(getattr(self, "_wheel_last_t", 0.0))' in _main_src
+      and "if _gap_ms < 25.0:" in _main_src
+      and "self._wheel_last_t = _now" in _main_src, None)
+
 check("滚轮像素路折成行：攒够一行才走一行、一次最多一个格子、余数封顶，并点明走的是哪条路",
       "滚轮走的是像素路（pixel=%s）：已按行折算，和偷瞄一致" in _main_src
       and "whole = max(-lines, min(lines, whole))" in _main_src
