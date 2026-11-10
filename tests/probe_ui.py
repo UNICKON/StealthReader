@@ -572,9 +572,14 @@ try:
     check("书架窗口：一行一本，共 3 本",
           dlg.list_widget.count() == 3 and "3 本" in dlg.windowTitle(),
           (dlg.list_widget.count(), dlg.windowTitle()))
-    check("书架窗口：有进度的那本标着 50%",
-          any("50%" in dlg.list_widget.item(i).text() for i in range(dlg.list_widget.count())),
-          [dlg.list_widget.item(i).text() for i in range(dlg.list_widget.count())])
+    _dg50 = dlg.list_widget.itemDelegate()
+    _tails50 = [_dg50.tail_texts(dlg.list_widget.item(i).data(app_mod.Qt.UserRole))[0]
+                for i in range(dlg.list_widget.count())]
+    check("书架窗口：有进度的那本标着 50%（进度/时间归 delegate 右对齐画，不在 item 文本里）",
+          "50%" in _tails50, _tails50)
+    check("书架窗口：item 文本仍是完整书名（显示与数据分开）",
+          dlg.list_widget.item(0).text() in ("万历十五年", "沉默的大多数"),
+          dlg.list_widget.item(0).text())
     dlg.search.setText("沉默")
     check("搜索框按书名过滤", dlg.list_widget.count() == 1, dlg.list_widget.count())
     dlg.search.setText("")
@@ -4168,7 +4173,7 @@ finally:
     w.config["font_size"], w.config["auto_mode"] = _s36[0], _s36[1]
     w.apply_style()
 
-print("\n=== 37. 本地书架：书名再长也不出横向滚动条 ===")
+print("\n=== 37. 本地书架：书名缩略 + 进度/时间右对齐 ===")
 
 _shelf_bak = w.shelf_books
 _long = "万历十五年（增订本）" + "·副标题很长很长" * 10
@@ -4181,22 +4186,40 @@ try:
     _dlg37.show()
     qapp.processEvents()
     _lw = _dlg37.list_widget
-    _txt = _lw.item(0).text()
-    _fm = _lw.fontMetrics()
-    check("书架列表关掉横向滚动条，长书名被省略到放得下",
+    _dg = _lw.itemDelegate()
+    _fm37 = app_mod.QFontMetrics(_lw.font())
+    _row37 = app_mod.QRect(0, 0, _lw.viewport().width(), 26)
+    _pct37, _when37 = _dg.tail_texts(_lw.item(0).data(app_mod.Qt.UserRole))
+    _tr, _pr, _wr = _dg.row_rects(_row37, _fm37, _pct37, _when37)
+
+    check("书架的进度与时间右对齐：时间贴着行右边缘、百分比紧挨在它左边",
+          _wr.right() == _row37.right() - _dg.PAD
+          and _pr.right() == _wr.left() - _dg.GAP - 1
+          and _pr.left() >= _tr.right(), (_tr, _pr, _wr))
+    check("两列宽度够放：「100%」和「2026-03-02」都不用截",
+          _fm37.horizontalAdvance("100%") <= _dg.PCT_W
+          and _fm37.horizontalAdvance("2026-03-02") <= _dg.WHEN_W,
+          (_fm37.horizontalAdvance("100%"), _fm37.horizontalAdvance("2026-03-02")))
+
+    _elided37 = _dg.elide_title(_fm37, _long, _tr.width())
+    check("长书名只缩书名：省略号在，宽度落在书名那一列里",
+          "…" in _elided37 and _fm37.horizontalAdvance(_elided37) <= _tr.width(),
+          (_elided37, _tr.width()))
+
+    check("列表存的是完整书名（省略只发生在画的时候，不改数据）",
+          _lw.item(0).text() == _long, _lw.item(0).text()[:18])
+    check("完整书名在 tooltip 里", _long in _lw.item(0).toolTip(), _lw.item(0).toolTip()[:18])
+
+    check("列表不出横向滚动条（关掉横向条，且它的最大值就是 0）",
           _lw.horizontalScrollBarPolicy() == app_mod.Qt.ScrollBarAlwaysOff
-          and "…" in _txt
-          and _fm.horizontalAdvance(_txt) <= _lw.viewport().width(),
-          (_txt[:26], _fm.horizontalAdvance(_txt), _lw.viewport().width()))
-    check("省的是书名，进度和日期一个都没丢（全文在 tooltip 里）",
-          "38%" in _txt and "3 小时前" in _txt and _long in _lw.item(0).toolTip(),
-          (_txt[-24:], _lw.item(0).toolTip()[:20]))
+          and _lw.horizontalScrollBar().maximum() == 0,
+          (_lw.horizontalScrollBarPolicy(), _lw.horizontalScrollBar().maximum()))
     _dlg37.resize(320, 460)
     qapp.processEvents()
-    _txt2 = _lw.item(0).text()
-    check("窗口拉窄之后还是不出横向滚动条（书名再缩一段，进度日期留着）",
-          _fm.horizontalAdvance(_txt2) <= _lw.viewport().width()
-          and "38%" in _txt2 and len(_txt2) <= len(_txt), (_txt2, _lw.viewport().width()))
+    check("窗口拉窄之后还是没有横向滚动条（书名再缩一段）",
+          _lw.horizontalScrollBar().maximum() == 0,
+          (_lw.horizontalScrollBar().maximum(), _lw.viewport().width()))
+
     _dlg37.reject()
     _dlg37.deleteLater()
 finally:

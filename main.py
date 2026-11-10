@@ -29,7 +29,8 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QFrame, QTextEdit, QShortcut, QListWidget,
                              QListWidgetItem, QLabel, QFontComboBox, QComboBox, QSizePolicy, QFileDialog,
                              QInputDialog, QMessageBox, QToolTip, QTabWidget, QScrollArea,
-                             QStackedWidget, QGridLayout, QGraphicsOpacityEffect)
+                             QStackedWidget, QGridLayout, QGraphicsOpacityEffect,
+                             QStyledItemDelegate, QStyleOptionViewItem)
 from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject,
                           QThread, QTimer, QEvent, QUrl)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
@@ -2145,6 +2146,75 @@ class ReaderTextEdit(QTextEdit):
 
 
 # ================= 独立窗口：本地书架 =================
+class ShelfRowDelegate(QStyledItemDelegate):
+    """书架的一行：书名左对齐，**百分比和「上次读」右对齐**各占一列。
+
+    为什么自己画：Qt 的单列 item 没有"列对齐"这回事，用空格或 `\t` 凑右对齐，在非等宽
+    字体下永远差几像素（中文一个字符宽、数字半个宽）。所以自己量三段宽度、贴右边缘画。
+    顺便把 `sizeHint` 的宽度压到 10——宽度提示不上去，横向滚动条就没有撑开它的理由。
+    """
+
+    PAD = 10        # 行首行尾留白
+    PCT_W = 52      # 百分比列最宽（放得下 "100%"）
+    WHEN_W = 84     # 时间列最宽（放得下 "2026-03-02"）
+    GAP = 8         # 百分比与时间之间的空隙
+
+    def row_rects(self, rect, fm, pct_txt, when_txt):
+        """三段矩形：书名 | 百分比 | 时间。后两段贴右边缘，右边缘对齐。"""
+        inner = QRect(rect).adjusted(self.PAD, 0, -self.PAD, 0)
+        when_w = min(self.WHEN_W, max(30, fm.horizontalAdvance(when_txt) + 6))
+        pct_w = min(self.PCT_W, max(34, fm.horizontalAdvance(pct_txt) + 6))
+        when_rect = QRect(inner.right() - when_w + 1, inner.top(), when_w, inner.height())
+        pct_rect = QRect(when_rect.left() - self.GAP - pct_w, inner.top(),
+                         pct_w, inner.height())
+        title_w = max(24, pct_rect.left() - inner.left() - self.GAP)
+        title_rect = QRect(inner.left(), inner.top(), title_w, inner.height())
+        return title_rect, pct_rect, when_rect
+
+    def elide_title(self, fm, title, width):
+        return fm.elidedText(str(title or ""), Qt.ElideMiddle, max(12, int(width)))
+
+    @staticmethod
+    def tail_texts(book):
+        pct = book.get("pct")
+        return ("--" if pct is None else "%d%%" % int(round(pct))), str(book.get("when") or "")
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        block = QStyleOptionViewItem(opt)
+        block.text = ""                     # 背景/选中态交给样式，文字全部自己画
+        style.drawControl(QStyle.CE_ItemViewItem, block, painter, widget)
+
+        book = index.data(Qt.UserRole)
+        if not isinstance(book, dict):
+            return
+        fm = opt.fontMetrics
+        pct_txt, when_txt = self.tail_texts(book)
+        title_rect, pct_rect, when_rect = self.row_rects(opt.rect, fm, pct_txt, when_txt)
+        title = self.elide_title(fm, book.get("title"), title_rect.width())
+
+        selected = bool(opt.state & QStyle.State_Selected)
+        base = opt.palette.color(QPalette.HighlightedText if selected else QPalette.Text)
+        dim = QColor(base)
+        dim.setAlpha(180)                   # 进度/时间比书名淡一档，但仍然是正文颜色系的
+        painter.save()
+        painter.setFont(opt.font)
+        painter.setPen(base)
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, title)
+        painter.setPen(dim)
+        painter.drawText(pct_rect, Qt.AlignRight | Qt.AlignVCenter, pct_txt)
+        painter.drawText(when_rect, Qt.AlignRight | Qt.AlignVCenter, when_txt)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        size.setWidth(10)                  # 宽度提示压到最小：内容再长也撑不出横向滚动条
+        return size
+
+
 class LocalShelfDialog(QDialog):
     """📚 本地书架：一列书 + 各自读到百分之几。
 
@@ -2184,6 +2254,7 @@ class LocalShelfDialog(QDialog):
         # 书名再长也不许出横向滚动条：一行放不下就把书名中间省略（进度、日期必须留着）
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setTextElideMode(Qt.ElideRight)
+        self.list_widget.setItemDelegate(ShelfRowDelegate(self.list_widget))
         self.list_widget.itemDoubleClicked.connect(self.on_activate)
         layout.addWidget(self.list_widget)
 
@@ -2219,7 +2290,7 @@ class LocalShelfDialog(QDialog):
         rows = [b for b in self.books if not needle or needle in b["title"].lower()]
         self.list_widget.clear()
         for b in rows:
-            item = QListWidgetItem(self._row_label(b))
+            item = QListWidgetItem(str(b.get("title") or ""))
             item.setData(Qt.UserRole, b)
             item.setToolTip("\n".join(x for x in (b["title"], b["path"], b.get("tip", "")) if x))
             self.list_widget.addItem(item)
@@ -2233,49 +2304,6 @@ class LocalShelfDialog(QDialog):
             if pending:
                 tip += "（%d 本还在算字数）" % pending
             self.hint.setText(tip)
-
-    @staticmethod
-    def row_text(b):
-        pct = b.get("pct")
-        prog = "  --" if pct is None else "%3d%%" % int(round(pct))
-        return "%s  %s  %s" % (b["title"], prog, b.get("when", ""))
-
-    def _row_label(self, b):
-        """一行字按列表当前宽度缩到放得下：**只缩书名**，进度和日期一个都不许丢。
-
-        直接用 `setTextElideMode` 省事，但它是整行一起省略——进度正好在行中间，
-        书一长就先把「37%」吃掉，等于把书架最有用的那列干掉。所以自己量宽度。
-        """
-        pct = b.get("pct")
-        tail = "%s  %s" % ("  --" if pct is None else "%3d%%" % int(round(pct)),
-                           b.get("when", ""))
-        title = str(b.get("title") or "")
-        fm = self.list_widget.fontMetrics()
-        try:
-            avail = int(self.list_widget.viewport().width()) - 16
-        except Exception:
-            avail = 0
-        if avail <= 60:
-            return "%s  %s" % (title, tail)
-        title = fm.elidedText(title, Qt.ElideMiddle,
-                              max(40, avail - fm.horizontalAdvance(tail)))
-        return "%s  %s" % (title, tail)
-
-    def _relabel(self):
-        """窗口宽度变了就按新宽度重排（不重建列表，选中项原地不动）。"""
-        for i in range(self.list_widget.count()):
-            item = self.list_widget.item(i)
-            b = item.data(Qt.UserRole)
-            if isinstance(b, dict):
-                item.setText(self._row_label(b))
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._relabel()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._relabel()
 
     def current_book(self):
         item = self.list_widget.currentItem()

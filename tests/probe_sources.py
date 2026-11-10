@@ -3202,12 +3202,13 @@ check("偷瞄的退出只剩键盘 / 右键 / 点任务栏三条（任务栏那�
       and "def point_on_taskbar(" in _main_src
       and 'self.owner.peek_exit_signal.emit("click")' in _main_src, None)
 
-check("书架列表：关横向滚动条 + 只缩书名（进度/日期留着）+ 拉窗重排",
+check("书架列表：关横向滚动条 + 进度/时间右对齐 + 长书名只缩书名",
       "self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)" in _main_src
-      and "def _row_label(" in _main_src
-      and "fm.elidedText(title, Qt.ElideMiddle" in _main_src
-      and "def _relabel(" in _main_src
-      and "def resizeEvent(self, event):" in _main_src, None)
+      and "class ShelfRowDelegate(QStyledItemDelegate)" in _main_src
+      and "self.list_widget.setItemDelegate(ShelfRowDelegate(" in _main_src
+      and "def row_rects(self, rect, fm, pct_txt, when_txt)" in _main_src
+      and "Qt.AlignRight | Qt.AlignVCenter, pct_txt" in _main_src
+      and "size.setWidth(10)" in _main_src, None)
 
 check("幽灵态抽成 _ghost_out，实色档下整窗淡出（0.005）、老档保持不淡",
       "def _ghost_out(" in _main_src
