@@ -3293,11 +3293,11 @@ check("统计页：概览 / 热力图 / 会话 / 书籍四个 tab，热力图和
       and 'self.tabs.addTab(self.heat_page, "热力图")' in _main_src
       and 'self.tabs.addTab(self.session_page, "会话")' in _main_src
       and 'self.tabs.addTab(self.book_page, "书籍")' in _main_src, None)
-check("入口就在「移出书架」旁边：选中书 → 看那本，没选 → 看全部",
-      'btn_stats = QPushButton("📊 阅读统计")' in _main_src
+check("书架底部：导出笔记就在「移出书架」旁边；统计改走右键菜单那条路",
+      'QPushButton("📤 导出笔记")' in _main_src
+      and "def export_selected(self):" in _main_src
       and "def open_stats(self):" in _main_src
-      and "book = self.current_book()" in _main_src
-      and "dlg = ReadingStatsDialog(self.win, book=book, parent=self)" in _main_src, None)
+      and "use_current=False" in _main_src, None)
 check("进度与时间仍然是右对齐那套（统计入口不能把书架的行格式搞回去）",
       "class ShelfRowDelegate(QStyledItemDelegate)" in _main_src
       and "size.setWidth(10)" in _main_src, None)
@@ -3401,6 +3401,17 @@ _books28 = _rs28.books_in_range(_win28, "all")
 check("书籍榜按窗口排序且占比合计 100%",
       len(_books28) == 1 and abs(_books28[0]["share"] - 100.0) < 0.01,
       [(b["title"], round(b["share"], 1)) for b in _books28])
+check("入口搬家：统计进右键菜单、导出笔记进书架（原统计那个位置）",
+      '"📊 阅读统计"' in _main_src and "def open_reading_stats(" in _main_src
+      and '"📤 导出笔记"' in _main_src and "def export_selected(" in _main_src
+      and "def export_annotations_for(" in _main_src
+      and 'cmenu.addAction("📤 导出划线笔记' not in _main_src, None)
+check("偷瞄（ce）里窗口内右键 = 出右键菜单，不退出偷瞄",
+      "PEEK_MENU_MESSAGES = {WM_RBUTTONDOWN, WM_RBUTTONDBLCLK}" in _main_src
+      and "def peek_point_inside(" in _main_src and "def show_peek_menu(" in _main_src
+      and "peek_menu_signal.emit(" in _main_src
+      and 'if getattr(self.owner, "peek_menu_open", False):' in _main_src, None)
+
 check("statistics 页有窗口开关 + 图随窗口切换 + 会话按天分组 + 书籍榜占比条",
       "class StatsSegments(QWidget)" in _main_src and "self.chart_stack" in _main_src
       and "reading_stats.group_sessions(" in _main_src

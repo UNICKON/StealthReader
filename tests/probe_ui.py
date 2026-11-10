@@ -4532,10 +4532,14 @@ try:
         _sdlg38.list_widget.setCurrentRow(0)
         _opened38 = _sdlg38.open_stats()
         qapp.processEvents()
-        check("书架「📊 阅读统计」就在移出书架旁边，选中哪本就先看哪本",
+        check("书架「📊 阅读统计」的按钮已经让位：底部是「📤 导出笔记」",
               isinstance(_opened38, app_mod.ReadingStatsDialog)
               and _opened38.book and _opened38.book.get("key") == "probe-stats-k",
               getattr(_opened38.book, "get", lambda k: None)("key"))
+        _btn38 = [b.text() for b in _sdlg38.findChildren(app_mod.QPushButton)]
+        check("书架底部：导出笔记进来了、统计按钮出去了",
+              any("导出笔记" in x for x in _btn38)
+              and not any("阅读统计" in x for x in _btn38), _btn38)
         _opened38.close()
         _sdlg38.list_widget.setCurrentRow(-1)
         _opened38b = _sdlg38.open_stats()
@@ -4546,6 +4550,62 @@ try:
         _sdlg38.reject()
     finally:
         w.shelf_books = _shelf_bak38
+
+    # ---- 三个新入口：右键菜单开统计 / 书架导笔记 / 偷瞄里右键出菜单 ----
+    _menu38 = w.build_context_menu()
+    _acts38 = [a.text() for a in _menu38.actions() if a.text()]
+    _menu38.deleteLater()
+    check("书页右键菜单：能开「📊 阅读统计」，导出口已经不在这儿了",
+          any("阅读统计" in a for a in _acts38)
+          and not any("导出划线笔记" in a for a in _acts38), _acts38)
+
+    _ann_bak38 = w.annotations
+    _tmp38 = os.path.dirname(os.environ["STEALTHREADER_STATS"])
+    _bk38 = os.path.join(_tmp38, "统计用例.txt")
+    with open(_bk38, "w", encoding="utf-8") as _f38:
+        _f38.write("第一章 起\n" + "字" * 600 + "\n第二章 承\n" + "字" * 600 + "\n")
+    _key38 = os.path.normcase(os.path.abspath(_bk38))
+    w.annotations = {_key38: {
+        "highlights": [{"start": 10, "end": 20, "text": "第一处划线",
+                        "created": "2026-11-10 20:00"},
+                       {"start": 610, "end": 620, "text": "第二处划线",
+                        "created": "2026-11-10 20:10"}],
+        "bookmarks": [{"pos": 300, "chapter": "第一章 起", "snippet": "书签那句",
+                       "created": "2026-11-10 20:20"}],
+    }}
+    _info_bak38 = app_mod.QMessageBox.information
+    app_mod.QMessageBox.information = staticmethod(lambda *a, **k: None)
+    try:
+        _out38 = w.export_annotations_for(_bk38)
+    finally:
+        app_mod.QMessageBox.information = _info_bak38
+        w.annotations = _ann_bak38
+    _body38 = open(_out38, encoding="utf-8").read() if _out38 else ""
+    check("导出的那本没开着也能按章分组（书架上选谁导谁）",
+          bool(_out38) and os.path.basename(_out38) == "统计用例.划线笔记.md"
+          and "### 第一章 起" in _body38 and "### 第二章 承" in _body38
+          and "> 第一处划线" in _body38 and "## 书签" in _body38,
+          os.path.basename(_out38 or ""))
+
+    w.peek_window_rect = (100, 100, 900, 700)
+    check("偷瞄的命中判定：窗口里算里面，窗口外算外面",
+          w.peek_point_inside(500, 400) and w.peek_point_inside(100, 100)
+          and not w.peek_point_inside(950, 400) and not w.peek_point_inside(500, 900),
+          w.peek_window_rect)
+    _exec_bak38 = app_mod.QMenu.exec_
+    _seen38 = {}
+    app_mod.QMenu.exec_ = lambda self, *a, **k: _seen38.update(pos=a[0] if a else None) or 0
+    _still38 = None
+    try:
+        w.peek_mode = True
+        w.show_peek_menu(520, 430)
+        _still38 = w.peek_mode
+    finally:
+        app_mod.QMenu.exec_ = _exec_bak38
+        w.peek_mode = False
+    check("偷瞄里窗口内右键：弹菜单、点在哪弹在哪，而且人还在偷瞄里",
+          _seen38.get("pos") is not None and int(_seen38["pos"].x()) == 520
+          and int(_seen38["pos"].y()) == 430 and _still38 is True, _seen38.get("pos"))
 
     check("统计这套不影响 config：一条 self.config 都没写",
           all(k not in w.config for k in ("days", "books", "sessions", "stats")), None)

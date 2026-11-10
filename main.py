@@ -1709,6 +1709,9 @@ WM_NCMBUTTONDOWN = 0x00A8
 MOUSE_EXIT_MESSAGES = {WM_RBUTTONDOWN, WM_RBUTTONDBLCLK, WM_MBUTTONDOWN,
                        WM_MBUTTONDBLCLK, WM_XBUTTONDOWN,
                        WM_NCRBUTTONDOWN, WM_NCMBUTTONDOWN}
+# 偷瞄时在**自己窗口里**按右键：出右键菜单，不退出偷瞄（落在别的程序上还是老规矩：
+# 退出偷瞄，并把这一下放行给下面那个应用）。
+PEEK_MENU_MESSAGES = {WM_RBUTTONDOWN, WM_RBUTTONDBLCLK}
 # 左键平时一律放行（偷瞄着还要能点工作窗口）。唯一例外：点在任务栏上——
 # 那是在换程序，书页得当场上收（真人 2026-11-05：「检测到鼠标在任务栏区域点击时就退出 ce」）。
 TASKBAR_CLICK_MESSAGES = {WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_NCLBUTTONDOWN}
@@ -1942,9 +1945,16 @@ class GlobalInputHook:
                     delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
                     self.owner.peek_wheel_signal.emit(delta)
                     return 1  # 吞掉滚轮：底下应用不滚，这里翻页
+                if message in PEEK_MENU_MESSAGES:
+                    info = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
+                    if self.owner.peek_point_inside(info.pt.x, info.pt.y):
+                        if not getattr(self.owner, "peek_menu_open", False):
+                            self.owner.peek_menu_signal.emit(int(info.pt.x), int(info.pt.y))
+                        # 窗口里的右键归菜单：既不退出偷瞄，也别让下面的程序收到这一下
+                        return 1
                 if message in MOUSE_EXIT_MESSAGES:
                     self.owner.peek_exit_signal.emit("click")
-                    return 0  # 右键/中键：退出，并把这次点击放行给下面的应用
+                    return 0  # 窗口外的右键/中键：退出，并把这次点击放行给下面的应用
                 if message in TASKBAR_CLICK_MESSAGES:
                     info = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                     if point_on_taskbar(info.pt.x, info.pt.y):
@@ -1960,6 +1970,10 @@ class GlobalInputHook:
             if n_code >= 0 and int(w_param) in (WM_KEYDOWN, WM_SYSKEYDOWN):
                 info = ctypes.cast(l_param, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
                 if self.owner.peek_mode:
+                    if getattr(self.owner, "peek_menu_open", False):
+                        # 菜单开着：这一下按键是给菜单的（Esc 关菜单、方向键选条目），
+                        # 不能顺手把偷瞄也退了
+                        return _user32.CallNextHookEx(None, n_code, w_param, l_param)
                     if self._matches_peek_key(int(info.vkCode)):
                         self.owner.peek_exit_signal.emit("peek_key")
                         return 1  # 偷瞄期间这个键归我们，别落到当前应用上
@@ -2279,11 +2293,12 @@ class LocalShelfDialog(QDialog):
         btn_forget = QPushButton("移出书架")
         btn_forget.clicked.connect(self.forget_selected)
         bottom.addWidget(btn_forget)
-        # 入口就挨着「移出书架」：选中一本书 → 看那本的统计；没选 → 看全部
-        btn_stats = QPushButton("📊 阅读统计")
-        btn_stats.setToolTip("选中一本书看它的时长 / 速度 / 热力图；不选就是全部")
-        btn_stats.clicked.connect(self.open_stats)
-        bottom.addWidget(btn_stats)
+        # 导出口就在「移出书架」旁边：选中哪本就导哪本的划线和书签
+        # （阅读统计挪到书页右键菜单了，这里腾出来的位置给导出）
+        btn_export = QPushButton("📤 导出笔记")
+        btn_export.setToolTip("把选中那本的划线 / 书签导成 Markdown（和书放同一个目录）")
+        btn_export.clicked.connect(self.export_selected)
+        bottom.addWidget(btn_export)
         bottom.addStretch(1)
         btn_close = QPushButton("关闭")
         btn_close.clicked.connect(self.reject)
@@ -2343,13 +2358,17 @@ class LocalShelfDialog(QDialog):
             self.selected = {"path": path}
             self.accept()
 
+    def export_selected(self):
+        """导出选中那本的划线笔记（没选就提示，不去猜"当前打开的那本"）。"""
+        b = self.current_book()
+        if not b:
+            QMessageBox.information(self, "导出笔记", "先在列表里选一本书。")
+            return None
+        return self.win.export_annotations_for(b.get("path") or "", title=b.get("title"))
+
     def open_stats(self):
-        """书架进统计页：选中哪本就先看哪本，没选的看全部。"""
-        book = self.current_book()
-        dlg = ReadingStatsDialog(self.win, book=book, parent=self)
-        self.stats_dialog = dlg        # 留个引用，别让 Python 把它回收了
-        dlg.show()
-        return dlg
+        """书架进统计页：选中哪本就先看哪本，没选的看全部（和右键菜单同一条路）。"""
+        return self.win.open_reading_stats(self.current_book(), use_current=False)
 
     def forget_selected(self):
         b = self.current_book()
@@ -4322,6 +4341,8 @@ class StealthReader(QWidget):
     # 偷瞄模式的钩子回调只发信号（QueuedConnection），翻页和退出都回到主线程做
     peek_wheel_signal = pyqtSignal(int)
     peek_exit_signal = pyqtSignal(str)
+    # 偷瞄里在窗口上按右键：带上屏幕坐标回主线程弹菜单
+    peek_menu_signal = pyqtSignal(int, int)
     # 背诵模式的按键也来自钩子线程（那里不能碰界面），一律发信号回主线程处理
     review_key_signal = pyqtSignal(str)
     # 社区页的键也来自钩子线程（偷瞄时窗口不聚焦，只能在全局层收），发回主线程处理
@@ -4368,6 +4389,8 @@ class StealthReader(QWidget):
         # --- 偷瞄模式（Ctrl+E 浮现 + 全局滚轮翻页）---
         self.peek_mode = False
         self.peek_was_visible = False   # 进入偷瞄前窗口是否可见，退出时照原样恢复
+        self.peek_window_rect = None    # 窗口在屏幕上的物理像素矩形（钩子线程只读这个）
+        self.peek_menu_open = False     # 偷瞄里弹出的右键菜单开着：这时按键不退出偷瞄
         self.peek_last_toggle = 0.0     # 和老板键一样防连击
         self.peek_last_exit = 0.0       # 刚退出的一瞬，Ctrl+E 的余波不再当新指令
         self.peek_shortcut = None
@@ -4542,6 +4565,7 @@ class StealthReader(QWidget):
         self.feed_data_signal.connect(self.on_feed_data, Qt.QueuedConnection)
         self.peek_wheel_signal.connect(self.on_peek_wheel, Qt.QueuedConnection)
         self.peek_exit_signal.connect(self.on_peek_exit, Qt.QueuedConnection)
+        self.peek_menu_signal.connect(self.show_peek_menu, Qt.QueuedConnection)
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
         self.feed_key_signal.connect(self.on_feed_peek_key, Qt.QueuedConnection)
         self.book_key_signal.connect(self.on_peek_book_key, Qt.QueuedConnection)
@@ -6687,6 +6711,48 @@ class StealthReader(QWidget):
             return  # 刚退出的那一下按键余波，别当成新指令再进去
         self.enter_peek()
 
+    def refresh_peek_rect(self):
+        """记下窗口当前在屏幕上的物理像素矩形；钩子线程只拿它做一次坐标比较。"""
+        try:
+            hwnd = int(self.winId())
+        except Exception:
+            hwnd = 0
+        rect = window_rect(hwnd) if hwnd else None
+        if rect is None:
+            g = self.frameGeometry()
+            rect = (g.left(), g.top(), g.left() + g.width(), g.top() + g.height())
+        self.peek_window_rect = tuple(int(v) for v in rect)
+
+    def peek_point_inside(self, x, y):
+        """这一点是不是落在自己窗口里（钩子线程也能调：只读一个元组，不碰 Qt 对象）。"""
+        rect = getattr(self, "peek_window_rect", None)
+        if not rect:
+            return False
+        left, top, right, bottom = rect
+        return left <= int(x) < right and top <= int(y) < bottom
+
+    def show_peek_menu(self, x, y):
+        """偷瞄里在窗口上按右键：弹右键菜单，**不退出偷瞄**。"""
+        if not self.peek_mode:
+            return
+        self.peek_menu_open = True
+        try:
+            cmenu = self.build_context_menu()
+            modernize_menu(cmenu)
+            cmenu.exec_(QPoint(int(x), int(y)))
+            cmenu.deleteLater()
+        finally:
+            self.peek_menu_open = False
+            self.refresh_peek_rect()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self.refresh_peek_rect()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.refresh_peek_rect()
+
     def enter_peek(self):
         """浮现但不抢焦点，挂全局滚轮。挂不上钩子就不进——半吊子的偷瞄只会让人困惑。
 
@@ -6699,6 +6765,7 @@ class StealthReader(QWidget):
         self.dismiss_action_panel(cancelled=True)   # 进偷瞄时收掉已经在的面板
         self.peek_was_visible = self.isVisible()
         self.peek_mode = True
+        self.refresh_peek_rect()        # 窗口内右键要先知道窗口在哪
         self.text_edit.set_pinned_cursor(Qt.ArrowCursor)   # 模式切换后光标形状回到默认
         if not self.isVisible():
             self.show()  # WA_ShowWithoutActivating：不夺走工作窗口的焦点
@@ -10753,19 +10820,79 @@ class StealthReader(QWidget):
             self.is_popup_open = False
 
     def export_annotations(self):
-        """导出成 Markdown：按章节分组，划线原文用引用块，笔记跟在后面。"""
+        """当前这本（笔记本里那条路的入口）。"""
         if self._book_veiled():
             return None
         if not (self.is_local_mode and self.local_file_path):
             QMessageBox.information(self, "导出", "先打开一本本地书。")
             return None
-        highlights = self.highlights_for_book()
-        bookmarks = self.bookmarks_for_book()
+        return self.export_annotations_for(self.local_file_path)
+
+    def book_chapters_for(self, path):
+        """给一本书算 (章节, 标题行, 全文)：导出笔记要按章分组，书没开着也得能算。"""
+        try:
+            if str(path).lower().endswith(".epub"):
+                text, chapters, headings, _links = load_epub_with_headings(path)
+                return list(chapters or []), set(headings or ()), text or ""
+            with open(path, "r", encoding="utf-8-sig") as f:
+                text = f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(path, "r", encoding="gb18030") as f:
+                    text = f.read()
+            except Exception:
+                return [], set(), ""
+        except Exception:
+            return [], set(), ""
+        headings = detect_txt_headings(text)
+        return txt_chapters_from_headings(text, headings), headings, text
+
+    @staticmethod
+    def chapter_title_in(chapters, headings, text, offset):
+        """(章节名, 层级)：epub 用目录、txt 用标题行兜底——和 chapter_at 一个口径。"""
+        title, level = "", 1
+        for entry in (chapters or []):
+            if int(entry[1]) <= offset:
+                title = str(entry[0]).strip()
+                level = int(entry[2]) if len(entry) > 2 else 1
+            else:
+                break
+        if not title and headings:
+            best = -1
+            for off in headings:
+                if off <= offset and off > best:
+                    best = off
+            if best >= 0 and best < len(text):
+                title = text[best:best + 40].split("\n")[0].strip()
+        return title, max(1, int(level or 1))
+
+    def export_annotations_for(self, path, title=None):
+        """把**指定那本**的划线/书签导成 Markdown：书架上选中的那本也能导。"""
+        if self._book_veiled():
+            return None
+        if not path:
+            QMessageBox.information(self, "导出", "先选一本书。")
+            return None
+        key = os.path.normcase(os.path.abspath(path))
+        store = (self.annotations or {}).get(key) or {}
+        highlights = sorted(store.get("highlights") or [],
+                            key=lambda h: int(h.get("start", 0)))
+        bookmarks = sorted(store.get("bookmarks") or [],
+                           key=lambda b: int(b.get("pos", 0)))
         if not highlights and not bookmarks:
             QMessageBox.information(self, "导出", "这本书还没有划线和书签。")
             return None
-        book_name = os.path.splitext(os.path.basename(self.local_file_path))[0]
-        out_path = os.path.join(os.path.dirname(self.local_file_path), f"{book_name}.划线笔记.md")
+        is_open = bool(self.is_local_mode and self.local_file_path
+                       and os.path.normcase(os.path.abspath(self.local_file_path)) == key)
+        if is_open:
+            # 就是当前这本：现成的目录和标题行直接用，不必重读一遍文件
+            chapters = list(self.local_chapters or [])
+            headings = set(self.local_heading_offsets or ())
+            text = self.local_full_text or ""
+        else:
+            chapters, headings, text = self.book_chapters_for(path)
+        book_name = os.path.splitext(os.path.basename(path))[0]
+        out_path = os.path.join(os.path.dirname(path), f"{book_name}.划线笔记.md")
         noted = sum(1 for h in highlights if h.get("note"))
         lines = [f"# {book_name} · 划线笔记", "",
                  f"导出时间：{time.strftime('%Y-%m-%d %H:%M')}　"
@@ -10774,7 +10901,8 @@ class StealthReader(QWidget):
             lines += ["## 划线", ""]
             last_chapter = None
             for hl in highlights:
-                chapter, level = self.chapter_at(int(hl.get("start", 0)))
+                chapter, level = self.chapter_title_in(chapters, headings, text,
+                                                       int(hl.get("start", 0)))
                 chapter = chapter or "正文"
                 if chapter != last_chapter:
                     # 目录有几级，导出的标题就有几级（### → #### → #####，最多到 ######）
@@ -11132,9 +11260,9 @@ class StealthReader(QWidget):
         mark_here = cmenu.addAction("🔖 收藏本页 / 取消书签 (Ctrl+B)")
         mark_here.triggered.connect(self.toggle_bookmark)
         mark_here.setEnabled(bool(self.is_local_mode))
-        export_action = cmenu.addAction("📤 导出划线笔记 (Markdown)")
-        export_action.triggered.connect(self.export_annotations)
-        export_action.setEnabled(bool(self.is_local_mode))
+        stats_action = cmenu.addAction("📊 阅读统计")
+        stats_action.triggered.connect(lambda: self.open_reading_stats())
+        stats_action.setEnabled(bool(self.is_local_mode))
         copy_action = cmenu.addAction("📋 复制选中文字")
         copy_action.triggered.connect(self.copy_selection)
         copy_action.setEnabled(bool(self.text_edit.textCursor().hasSelection()))
@@ -11155,6 +11283,34 @@ class StealthReader(QWidget):
         if cursor.hasSelection():
             QApplication.clipboard().setText(cursor.selectedText().replace("\u2029", "\n"))
             QToolTip.showText(QCursor.pos(), "已复制选中文字", self)
+
+    def open_reading_stats(self, book=None, use_current=True):
+        """阅读统计的入口（右键菜单 / 书架共用）。
+
+        use_current=True（右键菜单那条路）：没指定书就看**当前打开这本**；
+        use_current=False（书架）：没选书就是**全部书籍**——两边要的不一样。
+        """
+        if self._book_veiled():
+            return None
+        if book is None and use_current and self.is_local_mode and self.local_file_path:
+            key = self.book_key() or ""
+            path_key = os.path.normcase(os.path.abspath(self.local_file_path))
+            for row in (self.shelf_books() or []):
+                try:
+                    if os.path.normcase(os.path.abspath(row.get("path") or "")) == path_key:
+                        book = row
+                        break
+                except Exception:
+                    continue
+            if book is None:
+                book = {"key": key, "path": self.local_file_path,
+                        "title": os.path.splitext(os.path.basename(self.local_file_path))[0],
+                        "pos": int(self.local_start_index or 0),
+                        "total": len(self.local_full_text or "")}
+        dlg = ReadingStatsDialog(self, book=book)
+        self.stats_dialog = dlg        # 留个引用，别让 Python 把它回收了
+        dlg.show()
+        return dlg
 
     def open_local_toc(self):
         # 老入口保留，直接开三合一的目录页
