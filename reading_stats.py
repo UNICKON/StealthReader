@@ -563,6 +563,261 @@ def book_view(data, key, total=0, pos=0, now=None):
     }
 
 
+# ---------------------------------------------------------------- 窗口（今天 / 本周 / 本月 / 全部）
+RANGES = (("today", "今天"), ("week", "本周"), ("month", "本月"), ("all", "全部"))
+WEEKDAY_CN = "一二三四五六日"
+
+
+def _today(now=None):
+    return datetime.date.fromisoformat(day_key(now))
+
+
+def _week_start(d):
+    return d - datetime.timedelta(days=d.weekday())
+
+
+def range_bounds(name, now=None):
+    """窗口 → (起 date, 止 date)。'全部' 靠数据定，返回 (None, None)。"""
+    today = _today(now)
+    if name == "week":
+        start = _week_start(today)
+        return start, start + datetime.timedelta(days=6)
+    if name == "month":
+        first = today.replace(day=1)
+        nxt = (first + datetime.timedelta(days=32)).replace(day=1)
+        return first, nxt - datetime.timedelta(days=1)
+    if name == "all":
+        return None, None
+    return today, today
+
+
+def prev_bounds(name, now=None):
+    """上一个同类窗口（今天→昨天 / 本周→上周 / 本月→上月）；'全部' 没有上一期。"""
+    today = _today(now)
+    if name == "week":
+        start = _week_start(today) - datetime.timedelta(days=7)
+        return start, start + datetime.timedelta(days=6)
+    if name == "month":
+        this_first = today.replace(day=1)
+        last_end = this_first - datetime.timedelta(days=1)
+        return last_end.replace(day=1), last_end
+    if name == "all":
+        return None, None
+    y = today - datetime.timedelta(days=1)
+    return y, y
+
+
+def range_label(name, now=None):
+    """给人看的一行：'今天 · 11-10 周一' / '本周 · 11-10 → 11-16' / '全部 · 10-01 起'。"""
+    today = _today(now)
+    start, end = range_bounds(name, now)
+    if name == "today":
+        return "今天 · %s 周%s" % (today.strftime("%m-%d"), WEEKDAY_CN[today.weekday()])
+    if name == "all":
+        return "全部"
+    return "%s · %s → %s" % (dict(RANGES)[name], start.strftime("%m-%d"), end.strftime("%m-%d"))
+
+
+def range_days(data, name, key="", now=None):
+    """窗口内有记录的日子（升序，只到数据里有的）。"""
+    start, end = range_bounds(name, now)
+    days = active_days(data, key)
+    if start is None:
+        return days
+    lo, hi = start.isoformat(), end.isoformat()
+    return [d for d in days if lo <= d <= hi]
+
+
+def _bucket_for(name, days, now=None):
+    """自动粒度：今天=5 分钟带；一周 / 一个月=按天；更长的=按月。"""
+    if name == "today":
+        return "slot"
+    if name == "all" and len(days) >= 2:
+        span = (datetime.date.fromisoformat(days[-1]) -
+                datetime.date.fromisoformat(days[0])).days + 1
+        if span > 62:
+            return "month"
+    return "day"
+
+
+def range_points(data, name="today", key="", now=None):
+    """图上的点。返回 {"kind", "slots"/"points", "caption"}。
+
+    kind='slot'  → slots 是 288 格（5 分钟一格），今天专用；
+    kind='bars'  → points 是 [(短标签, 秒, 原始键), ...]，按天或按月（原始键=那天的 ISO 或那个月）。
+    """
+    days = range_days(data, name, key, now)
+    bucket = _bucket_for(name, days, now)
+    if bucket == "slot":
+        return {"kind": "slot",
+                "slots": day_slots(data, day_key(now), key),
+                "caption": "今天 · 5 分钟一格"}
+    table = {}
+    if key:
+        table = ((data.get("books") or {}).get(str(key)) or {}).get("days") or {}
+    else:
+        table = data.get("days") or {}
+    if bucket == "day":
+        start, end = range_bounds(name, now)
+        if start is None:                     # 全部但跨度小：就按有记录的那几天连着画
+            if not days:
+                return {"kind": "bars", "points": [], "caption": "全部 · 还没有记录"}
+            start = datetime.date.fromisoformat(days[0])
+            end = datetime.date.fromisoformat(days[-1])
+        today = _today(now)
+        labels, points = [], []
+        d = start
+        while d <= end:
+            sec = _num((table.get(d.isoformat()) or {}).get("sec"))
+            if name == "week":
+                label = "周" + WEEKDAY_CN[d.weekday()]
+            elif end == start:
+                label = d.strftime("%m-%d")
+            else:
+                label = "%d" % d.day
+            labels.append(label)
+            points.append((label, sec, d))
+            d += datetime.timedelta(days=1)
+            if end > today and d > today and name != "week":
+                break
+        return {"kind": "bars", "points": points,
+                "caption": "%s · 按天" % dict(RANGES).get(name, name)}
+    # 按月
+    months = []
+    for dk, row in sorted(table.items()):
+        if len(dk) != 10:
+            continue
+        if days and not (days[0] <= dk <= days[-1]):
+            continue
+        months.append((dk[:7], _num(row.get("sec"))))
+    agg = {}
+    order = []
+    for mk, sec in months:
+        if mk not in agg:
+            agg[mk] = 0.0
+            order.append(mk)
+        agg[mk] += sec
+    points = []
+    for mk in order:
+        y, m = mk.split("-")
+        label = "%d月" % int(m) if len(set(k[:4] for k in order)) == 1 else "%s-%s" % (y[2:], m)
+        points.append((label, agg[mk], mk))
+    return {"kind": "bars", "points": points, "caption": "全部 · 按月"}
+
+
+def range_stats(data, name="today", key="", now=None):
+    """窗口里的一把数：时长 / 字数 / 速度 / 场次 / 平均每场 / 最好的一天 / 对比上一期。"""
+    start, end = range_bounds(name, now)
+    lo = start.isoformat() if start else ""
+    hi = end.isoformat() if end else "9999-12-31"
+    if key:
+        table = ((data.get("books") or {}).get(str(key)) or {}).get("days") or {}
+    else:
+        table = data.get("days") or {}
+    sec = chars = 0.0
+    best_day, best_sec = "", 0.0
+    n_days = 0
+    for dk, row in table.items():
+        if not (lo <= dk <= hi):
+            continue
+        s = _num(row.get("sec"))
+        if s <= 0:
+            continue
+        sec += s
+        chars += _num(row.get("chars"))
+        n_days += 1
+        if s > best_sec:
+            best_day, best_sec = dk, s
+    sessions = [s for s in (data.get("sessions") or [])
+                if (not key or str(s.get("k") or "") == str(key))
+                and lo <= day_key(s.get("start")) <= hi]
+    p_start, p_end = prev_bounds(name, now)
+    prev_sec = 0.0
+    if p_start is not None:
+        plo, phi = p_start.isoformat(), p_end.isoformat()
+        prev_sec = sum(_num(r.get("sec")) for dk, r in table.items() if plo <= dk <= phi)
+    delta = None
+    if p_start is not None and prev_sec > 0:
+        delta = (sec - prev_sec) / prev_sec * 100.0
+    return {
+        "name": name, "label": range_label(name, now),
+        "sec": sec, "chars": chars,
+        "speed": (chars / (sec / 60.0)) if sec >= 10 else 0.0,
+        "sessions": len(sessions),
+        "avg_session": (sec / len(sessions)) if sessions else 0.0,
+        "days": n_days, "best_day": best_day, "best_sec": best_sec,
+        "prev_sec": prev_sec, "delta": delta,
+        "first_day": (range_days(data, name, key, now) or [""])[0],
+        "last_day": (range_days(data, name, key, now) or [""])[-1],
+    }
+
+
+def group_sessions(data, name="all", key="", now=None):
+    """窗口里的会话，按"天"分组，最新的天在前：[(日期, 周几, [会话...]), ...]。"""
+    start, end = range_bounds(name, now)
+    lo = start.isoformat() if start else ""
+    hi = end.isoformat() if end else "9999-12-31"
+    buckets = {}
+    for s in (data.get("sessions") or []):
+        if key and str(s.get("k") or "") != str(key):
+            continue
+        dk = day_key(s.get("start"))
+        if not (lo <= dk <= hi):
+            continue
+        buckets.setdefault(dk, []).append(s)
+    out = []
+    for dk in sorted(buckets, reverse=True):
+        items = sorted(buckets[dk], key=lambda s: _num(s.get("start")), reverse=True)
+        try:
+            wd = "周" + WEEKDAY_CN[datetime.date.fromisoformat(dk).weekday()]
+        except ValueError:
+            wd = ""
+        out.append((dk, wd, items))
+    return out
+
+
+def books_in_range(data, name="all", now=None):
+    """窗口里每本书的账，按窗口时长排序；share 是占窗口总量的比例。"""
+    start, end = range_bounds(name, now)
+    lo = start.isoformat() if start else ""
+    hi = end.isoformat() if end else "9999-12-31"
+    rows = []
+    for key, book in (data.get("books") or {}).items():
+        sec = chars = 0.0
+        days = 0
+        for dk, row in (book.get("days") or {}).items():
+            if not (lo <= dk <= hi):
+                continue
+            s = _num(row.get("sec"))
+            if s <= 0:
+                continue
+            sec += s
+            chars += _num(row.get("chars"))
+            days += 1
+        if sec <= 0 and chars <= 0:
+            continue
+        rows.append({"key": key, "title": book.get("title") or key,
+                     "sec": sec, "chars": chars, "days": days,
+                     "speed": (chars / (sec / 60.0)) if sec >= 10 else 0.0,
+                     "total_sec": _num(book.get("sec")),
+                     "last": _num(book.get("last"))})
+    total = sum(r["sec"] for r in rows)
+    for r in rows:
+        r["share"] = (r["sec"] / total * 100.0) if total > 0 else 0.0
+    rows.sort(key=lambda r: -r["sec"])
+    return rows
+
+
+def fmt_delta(pct):
+    """对比上一期：'↑ 23%' / '↓ 12%' / '持平' / '--'。"""
+    if pct is None:
+        return "--"
+    v = _num(pct)
+    if abs(v) < 0.5:
+        return "持平"
+    return "%s %.0f%%" % ("↑" if v > 0 else "↓", abs(v))
+
+
 def overview(data, now=None):
     """全局概览。"""
     days = data.get("days") or {}

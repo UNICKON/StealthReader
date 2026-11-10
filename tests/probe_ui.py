@@ -4360,48 +4360,120 @@ try:
     check("书的统计页：三个 tab（概览 / 热力图 / 会话）",
           _dlg38.tabs.count() == 3
           and [_dlg38.tabs.tabText(i) for i in range(3)] == ["概览", "热力图", "会话"], None)
-    _cards38 = [(c.title_label.text(), c.value_label.text()) for c in _dlg38.cards]
-    check("六块指标卡：时长 / 速度 / 进度 / 连续 / 跨度 / 平均每次",
-          [t for t, _v in _cards38] == ["累计阅读", "阅读速度", "进度", "连续阅读", "日期跨度", "平均每次"],
-          _cards38)
+    _cards38 = [(c.title_label.text(), c.value_label.text(), c.sub_label.text())
+                for c in _dlg38.cards]
+    check("六块卡按窗口算：时长 / 字数 / 速度 / 场次 / 最好的一天 / 连续阅读",
+          [t for t, _v, _s in _cards38]
+          == ["今天时长", "今天字数", "速度", "场次", "最好的一天", "连续阅读"], _cards38)
+    check("窗口开关四个按钮，默认停在「今天」",
+          [b.text() for b in _dlg38.segments.buttons.values()] == ["今天", "本周", "本月", "全部"]
+          and _dlg38.segments.current == "today"
+          and _dlg38.segments.buttons["today"].isChecked()
+          and not _dlg38.segments.buttons["week"].isChecked(),
+          _dlg38.segments.current)
+    check("时长卡带「对比上期」", "对比上期" in _cards38[0][2], _cards38[0][2])
     check("进度按 40% 画（已读 4.0 万字 / 共 10.0 万字）",
           _dlg38.progress_bar.value() == 400 and "4.0 万字" in _dlg38.progress_label.text(),
           (_dlg38.progress_bar.value(), _dlg38.progress_label.text()))
     check("速度不是 --（有真数据就要算出来）",
-          _cards38[1][1].endswith("字/分"), _cards38[1][1])
+          _cards38[2][1].endswith("字/分"), _cards38[2][1])
     check("热力图满 53 周，今天那格有数据",
           len(_dlg38.heat.cols) == 53
           and any(c and c[0] == _rs38.day_key() for c in _dlg38.heat.cols[-1]),
           len(_dlg38.heat.cols))
-    check("会话表只列这本书的场次",
-          _dlg38.session_table.rowCount() == len(
-              [s for s in w.stats_data["sessions"] if s["k"] == "probe-stats-k"]),
-          _dlg38.session_table.rowCount())
     check("会话表六列：活跃 / 开始 / 时长 / 字数 / 速度 / 书名",
           [_dlg38.session_table.horizontalHeaderItem(i).text()
            for i in range(_dlg38.session_table.columnCount())]
           == ["活跃", "开始", "时长", "字数", "速度", "书名"], None)
+    _today38 = _rs38.day_key()
+    _want38 = [s for s in w.stats_data["sessions"]
+               if s["k"] == "probe-stats-k" and _rs38.day_key(s["start"]) == _today38]
+    _head38 = sum(1 for s in _dlg38.session_rows if s is None)
+    _body38 = sum(1 for s in _dlg38.session_rows if isinstance(s, dict))
+    check("会话按天分组：今天一组表头 + 今天的这几场",
+          _head38 == 1 and _body38 == len(_want38)
+          and _dlg38.session_table.rowCount() == _head38 + _body38,
+          (_head38, _body38, len(_want38)))
+    _head_txt38 = _dlg38.session_table.item(0, 0).text()
+    check("分组表头写了日期 / 几场 / 合计多久",
+          _head_txt38.startswith(_today38[5:]) and "场" in _head_txt38
+          and "合计" in _head_txt38, _head_txt38)
     check("第一列是迷你时间线，拿到和表格一样多的行",
           isinstance(_dlg38.session_table.itemDelegateForColumn(0), app_mod.SessionBarDelegate)
           and len(_dlg38.session_bar.rows) == _dlg38.session_table.rowCount(),
           len(_dlg38.session_bar.rows))
+    _row38 = 1 if _head38 else 0                     # 第一条真会话（跳过表头行）
+    _start_txt38 = _dlg38.session_table.item(_row38, 1).text()
     check("开始列显示到分钟（不是只有日期）",
-          len(_dlg38.session_table.item(0, 1).text()) >= 8
-          and ":" in _dlg38.session_table.item(0, 1).text(),
-          _dlg38.session_table.item(0, 1).text())
-    _tip38 = _dlg38.session_table.item(0, 1).toolTip()
+          len(_start_txt38) >= 8 and ":" in _start_txt38, _start_txt38)
+    _tip38 = _dlg38.session_table.item(_row38, 1).toolTip()
     check("悬停详情给到分钟级的开始 / 结束 / 跨度 / 在读 / 字数 / 书名",
           all(k in _tip38 for k in ("开始", "结束", "跨度", "在读", "字数", "书名"))
           and ":" in _tip38, _tip38.replace("\n", " | "))
+    _first38 = next(s for s in _dlg38.session_rows if isinstance(s, dict))
     check("选中一场就画出它的时间线（默认选最新那场）",
           isinstance(_dlg38.session_timeline.session_, dict)
-          and _dlg38.session_timeline.session_ is _dlg38.session_rows[0], None)
-    check("今天的时间线 288 格，且有读的格子",
-          len(_dlg38.day_timeline.slots) == 288
+          and _dlg38.session_timeline.session_ is _first38, None)
+    check("今天这一档画的是 5 分钟活跃带（288 格，有读的格子）",
+          _dlg38.chart_stack.currentWidget() is _dlg38.day_timeline
+          and len(_dlg38.day_timeline.slots) == 288
           and sum(1 for v in _dlg38.day_timeline.slots if v > 0) > 0,
-          len(_dlg38.day_timeline.slots))
-    check("热力图 / 柱状图的自绘区域都拿到了数据",
-          len(_dlg38.bars.points) == 14 and bool(_dlg38.heat.cols), len(_dlg38.bars.points))
+          (_dlg38.chart_stack.currentWidget().__class__.__name__,
+           len(_dlg38.day_timeline.slots)))
+
+    # ---- 切到本周：卡片、图、场次都跟着变 ----
+    _ws38, _we38 = _rs38.range_bounds("week")
+    _wk_sec38 = sum(float((_row or {}).get("sec") or 0)
+                    for _dk, _row in
+                    (w.stats_data["books"].get("probe-stats-k") or {}).get("days", {}).items()
+                    if _ws38.isoformat() <= _dk <= _we38.isoformat())
+    _dlg38.segments.pick("week")
+    qapp.processEvents()
+    _cards38w = [(c.title_label.text(), c.value_label.text()) for c in _dlg38.cards]
+    check("切到本周：卡片标题跟着变（本周时长 / 本周字数）",
+          [t for t, _v in _cards38w][:2] == ["本周时长", "本周字数"], _cards38w)
+    check("本周时长 = 本周这几天的合计（不是累计）",
+          _cards38w[0][1] == _rs38.fmt_duration(_wk_sec38)
+          and _cards38w[0][1] != _cards38[0][1], (_cards38w[0][1], _rs38.fmt_duration(_wk_sec38)))
+    check("本周的图换成柱子，7 根、标签周一到周日",
+          _dlg38.chart_stack.currentWidget() is _dlg38.bars
+          and [p[0] for p in _dlg38.bars.points] == ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+          and _dlg38.chart_title.text() == "本周 · 按天",
+          [p[0] for p in _dlg38.bars.points])
+    check("本周的会话也跟着筛（只剩本周那几天）",
+          all(_rs38.day_key(s["start"]) >= _ws38.isoformat()
+              for s in _dlg38.session_rows if isinstance(s, dict)),
+          [s["start"] for s in _dlg38.session_rows if isinstance(s, dict)][:3])
+
+    # ---- 本月 / 全部 ----
+    _dlg38.segments.pick("month")
+    qapp.processEvents()
+    check("本月：按天画，柱数 = 这个月已经过去的天数",
+          _dlg38.chart_title.text() == "本月 · 按天"
+          and len(_dlg38.bars.points) == time.localtime().tm_mday,
+          (len(_dlg38.bars.points), time.localtime().tm_mday))
+    _dlg38.segments.pick("all")
+    qapp.processEvents()
+    check("全部：跨度不到两个月就按天画（40 天数据 = 40 根）",
+          _dlg38.chart_title.text() == "全部 · 按天" and len(_dlg38.bars.points) == 40,
+          (len(_dlg38.bars.points), _dlg38.chart_title.text()))
+    _days38 = {_rs38.day_key(s["start"]) for s in w.stats_data["sessions"]
+               if s["k"] == "probe-stats-k"}
+    _heads38 = sum(1 for s in _dlg38.session_rows if s is None)
+    check("全部这一档的会话分组 = 这本书读过的每一天",
+          _heads38 == len(_days38), (_heads38, len(_days38)))
+    _dlg38.segments.pick("today")
+    qapp.processEvents()
+
+    # ---- 热力图页不需要窗口开关 ----
+    _dlg38.tabs.setCurrentIndex(1)
+    qapp.processEvents()
+    _hidden38 = not _dlg38.segments.isVisible()
+    _dlg38.tabs.setCurrentIndex(0)
+    qapp.processEvents()
+    check("热力图页藏掉窗口开关（它永远是近 53 周），回概览又出来",
+          _hidden38 and _dlg38.segments.isVisible(), _hidden38)
+
     _dlg38.resize(900, 660)
     qapp.processEvents()
     check("窗口拉不拉得动都不炸，热力图最窄也在窗口里",
@@ -4419,9 +4491,26 @@ try:
           _dlg38b.book_table.rowCount() == max(1, len(w.stats_data["books"])),
           (_dlg38b.book_table.rowCount(), len(w.stats_data["books"])))
     _all38 = [(c.title_label.text(), c.value_label.text()) for c in _dlg38b.cards]
-    check("全部页的六块卡：今日 / 本周 / 累计 / 速度 / 连续 / 跨度",
-          [t for t, _v in _all38] == ["今日", "本周", "累计", "平均速度", "连续阅读", "日期跨度"],
+    check("全部书籍页同一套窗口卡片（默认也是今天）",
+          [t for t, _v in _all38] == ["今天时长", "今天字数", "速度", "场次", "最好的一天", "连续阅读"],
           _all38)
+    check("书籍榜七列：书名 / 占比 / 时长 / 字数 / 速度 / 在读天数 / 累计",
+          [_dlg38b.book_table.horizontalHeaderItem(i).text()
+           for i in range(_dlg38b.book_table.columnCount())]
+          == ["书名", "占比", "今天时长", "字数", "速度", "在读天数", "累计"], None)
+    _share38 = _dlg38b.book_table.item(0, 1).data(app_mod.Qt.UserRole)
+    check("书籍榜的占比是真比例（第一行 > 0，且不超过 100）",
+          isinstance(_share38, float) and 0 < _share38 <= 100, _share38)
+    check("占比列是自绘的横条",
+          isinstance(_dlg38b.book_table.itemDelegateForColumn(1), app_mod.ShareBarDelegate), None)
+    _dlg38b.segments.pick("week")
+    qapp.processEvents()
+    check("书籍榜的列名跟着窗口改（本周时长）",
+          _dlg38b.book_table.horizontalHeaderItem(2).text() == "本周时长", 
+          _dlg38b.book_table.horizontalHeaderItem(2).text())
+    check("书籍榜跟着窗口筛：本周没读的书不再占行",
+          all(_dlg38b.book_table.item(i, 2).text() != "不足 1 分"
+              for i in range(_dlg38b.book_table.rowCount())), None)
 
     # ---- 空账也要像样 ----
     _dlg38c = app_mod.ReadingStatsDialog(w, book=None)

@@ -3316,7 +3316,7 @@ check("会话开始时间的悬停详情：开始 / 结束 / 跨度 / 在读（�
       '"跨度  " + reading_stats.fmt_duration(end - start)' in _main_src
       and '"在读  " + reading_stats.fmt_duration(sec)' in _main_src
       and "中间歇了 %s，共 %d 次，最长 %s" in _main_src
-      and "item.setToolTip(tip)" in _main_src, None)
+      and "cell.setToolTip(tip)" in _main_src, None)
 check("收场时把场内的活跃落点算成空隙（画时间线要真数据，不是猜的）",
       'session.setdefault("ticks", []).append(_now_wall)' in _main_src
       and "pause = _b - _a - reading_stats.TICK_SEC" in _main_src
@@ -3362,6 +3362,50 @@ check("活跃区间 = 整场减去空隙（两段，中间空着）",
 _slots28 = _rs28.day_slots(_gap28, _rs28.day_key(_gs))
 check("今天的时间线：288 格（5 分钟一格），有读的格子秒数和读的时长对得上",
       len(_slots28) == 288 and abs(sum(_slots28) - 1200) < 1.0, (len(_slots28), sum(_slots28)))
+
+# 窗口：今天 / 本周 / 本月 / 全部，粒度自动（今天=5 分钟带，长的按月）
+check("窗口四档 + 自动粒度（今天=5 分钟带，跨度超 62 天按月）",
+      'RANGES = (("today", "今天"), ("week", "本周"), ("month", "本月"), ("all", "全部"))' in _rs_src
+      and "def range_bounds(" in _rs_src and "def prev_bounds(" in _rs_src
+      and 'return "slot"' in _rs_src and "if span > 62:" in _rs_src, None)
+check("对比上一期：算出上一窗口的时长和涨跌",
+      "def fmt_delta(" in _rs_src and '"prev_sec"' in _rs_src and '"delta": delta' in _rs_src, None)
+
+_win28 = _rs28.blank()
+_wtoday28 = _rs28._today()
+for _back in range(0, 12):
+    _d = _wtoday28 - __import__("datetime").timedelta(days=_back)
+    _ts = __import__("datetime").datetime.combine(
+        _d, __import__("datetime").time(21, 0)).timestamp()
+    _rs28.add_span(_win28, "k", "书", _ts, 600, 3000, end_ts=_ts + 600)
+_st_today = _rs28.range_stats(_win28, "today")
+_st_week = _rs28.range_stats(_win28, "week")
+_st_all = _rs28.range_stats(_win28, "all")
+check("今天只算今天：12 天数据里今天那 10 分钟",
+      abs(_st_today["sec"] - 600) < 1 and _st_today["sessions"] == 1
+      and abs(_st_all["sec"] - 7200) < 1, (_st_today["sec"], _st_all["sec"]))
+check("本周不把上周算进来（周一~周日 7 天以内）",
+      _st_week["sec"] <= 7 * 600 + 0.01 and _st_week["sec"] < _st_all["sec"],
+      (_st_week["sec"], _st_all["sec"]))
+check("本周的图 7 根柱子、标签周一到周日",
+      [p[0] for p in _rs28.range_points(_win28, "week")["points"]]
+      == ["周一", "周二", "周三", "周四", "周五", "周六", "周日"], None)
+check("今天的图是 5 分钟带（288 格）",
+      _rs28.range_points(_win28, "today")["kind"] == "slot"
+      and len(_rs28.range_points(_win28, "today")["slots"]) == 288, None)
+_groups28 = _rs28.group_sessions(_win28, "all")
+check("会话按天分组，最新的天在前、每组带周几",
+      len(_groups28) == 12 and _groups28[0][0] == _rs28.day_key() and _groups28[0][1].startswith("周")
+      and len(_groups28[0][2]) == 1, [(g[0], g[1], len(g[2])) for g in _groups28[:3]])
+_books28 = _rs28.books_in_range(_win28, "all")
+check("书籍榜按窗口排序且占比合计 100%",
+      len(_books28) == 1 and abs(_books28[0]["share"] - 100.0) < 0.01,
+      [(b["title"], round(b["share"], 1)) for b in _books28])
+check("statistics 页有窗口开关 + 图随窗口切换 + 会话按天分组 + 书籍榜占比条",
+      "class StatsSegments(QWidget)" in _main_src and "self.chart_stack" in _main_src
+      and "reading_stats.group_sessions(" in _main_src
+      and "class ShareBarDelegate(QStyledItemDelegate)" in _main_src
+      and "reading_stats.books_in_range(" in _main_src, None)
 
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
