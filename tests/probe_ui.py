@@ -4607,6 +4607,57 @@ try:
           _seen38.get("pos") is not None and int(_seen38["pos"].x()) == 520
           and int(_seen38["pos"].y()) == 430 and _still38 is True, _seen38.get("pos"))
 
+    # 钩子那条路本身：真调 _on_mouse，owner 换桩（只收信号）
+    class _Sig38:
+        def __init__(self):
+            self.calls = []
+
+        def emit(self, *a):
+            self.calls.append(a)
+
+    class _Owner38:
+        peek_mode = True
+        peek_menu_open = False
+
+        def __init__(self):
+            self.rect = (100, 100, 900, 700)
+            self.peek_wheel_signal = _Sig38()
+            self.peek_exit_signal = _Sig38()
+            self.peek_menu_signal = _Sig38()
+
+        def peek_point_inside(self, x, y):
+            l, t, r, b = self.rect
+            return l <= int(x) < r and t <= int(y) < b
+
+    def _fire38(owner, message, x, y):
+        info = app_mod._MSLLHOOKSTRUCT()
+        info.pt.x, info.pt.y = x, y
+        return app_mod.GlobalInputHook(owner)._on_mouse(
+            0, message, ctypes.addressof(info))
+
+    _o38 = _Owner38()
+    check("偷瞄钩子：窗口里右键被吞掉 + 发菜单信号，人还在偷瞄",
+          _fire38(_o38, app_mod.WM_RBUTTONDOWN, 520, 430) == 1
+          and _o38.peek_menu_signal.calls == [(520, 430)]
+          and not _o38.peek_exit_signal.calls,
+          (_o38.peek_menu_signal.calls, _o38.peek_exit_signal.calls))
+    _o38b = _Owner38()
+    check("偷瞄钩子：窗口外右键照老规矩，退出并把这一下放行",
+          _fire38(_o38b, app_mod.WM_RBUTTONDOWN, 1000, 430) == 0
+          and _o38b.peek_exit_signal.calls == [("click",)]
+          and not _o38b.peek_menu_signal.calls, _o38b.peek_exit_signal.calls)
+    _o38c = _Owner38()
+    _o38c.peek_menu_open = True
+    check("偷瞄钩子：菜单已经开着时再右键，不再叠一个、也不退出",
+          _fire38(_o38c, app_mod.WM_RBUTTONDOWN, 520, 430) == 1
+          and not _o38c.peek_menu_signal.calls, _o38c.peek_menu_signal.calls)
+    _o38d = _Owner38()
+    check("偷瞄钩子：中键仍是「要走」，左键照常放行不退出",
+          _fire38(_o38d, app_mod.WM_MBUTTONDOWN, 520, 430) == 0
+          and _o38d.peek_exit_signal.calls == [("click",)]
+          and _fire38(_o38d, app_mod.WM_LBUTTONDOWN, 520, 430) == 0
+          and len(_o38d.peek_exit_signal.calls) == 1, _o38d.peek_exit_signal.calls)
+
     check("统计这套不影响 config：一条 self.config 都没写",
           all(k not in w.config for k in ("days", "books", "sessions", "stats")), None)
 finally:
