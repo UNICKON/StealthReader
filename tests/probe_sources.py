@@ -3233,10 +3233,23 @@ check("实色开关热键接全了：默认 ctrl+alt+b、信号→toggle_solid_b
       and 'self.config["auto_bg_solid"] = on' in _main_src
       and 'self.config["solid_key"] = self.solid_key_input.text().strip() or "ctrl+alt+b"' in _main_src, None)
 
-check("滚轮：同一格被拆成两拍时只认第一拍（25ms 内丢掉第二拍），像素路不受影响", 
-      '_now - float(getattr(self, "_wheel_last_t", 0.0))' in _main_src
-      and "if _gap_ms < 25.0:" in _main_src
-      and "self._wheel_last_t = _now" in _main_src, None)
+check("滚轮：同一格被拆成两拍时只认第一拍（同向同量、15ms 内），像素路不受影响",
+      '_gap_ms < 15.0 and _d == int(getattr(self, "_wheel_last_d", 0) or 0)' in _main_src
+      and "if _dup:" in _main_src
+      and "self._wheel_last_d = _d" in _main_src, None)
+
+check("字号单位是像素：书页走 setPixelSize，字符级格式按当前 DPI 折回磅",
+      "def book_font_px" in _main_src
+      and "font.setPixelSize(self.book_font_px())" in _main_src
+      and "fmt.setFontPointSize(self._pt_for_px(self.book_font_px()))" in _main_src, None)
+
+check("老配置（磅）一次性换成像素：×4/3 + font_unit 标记，换过的再进来不动",
+      "def migrate_font_unit" in _main_src
+      and 'merged["font_unit"] = "px"' in _main_src
+      and 'merged["font_size"] = max(BOOK_FONT_PX_MIN' in _main_src, None)
+
+check("设置里两个字号框都写明 px（书页 / 社区页同一套单位）",
+      _main_src.count('setSuffix(" px")') == 2, _main_src.count('setSuffix(" px")'))
 
 check("滚轮像素路折成行：攒够一行才走一行、一次最多一个格子、余数封顶，并点明走的是哪条路",
       "滚轮走的是像素路（pixel=%s）：已按行折算，和偷瞄一致" in _main_src

@@ -974,7 +974,9 @@ def snap_layout():
     te = w.text_edit
     blk = te.document().firstBlock()
     return {
-        "font": (te.font().family(), round(te.font().pointSizeF(), 1)),
+        "font": (te.font().family(),
+                 te.font().pixelSize() if te.font().pixelSize() > 0
+                 else round(te.font().pointSizeF(), 1)),
         "doc_font": te.document().defaultFont().family(),
         "glyph_font": _glyph_font(te),
         "line_height": round(blk.blockFormat().lineHeight(), 1),
@@ -1029,8 +1031,8 @@ w.config["feed_font_size"] = 22
 w.config["feed_font_family"] = "Courier New"
 w.enter_feed_mode()
 pump(lambda: w.feed_nav.posts and not w.feed_busy)
-check("社区页字号跟着 feed_font_size 走", w.text_edit.font().pointSizeF() == 22.0,
-      w.text_edit.font().pointSizeF())
+check("社区页字号跟着 feed_font_size 走", w.text_edit.font().pixelSize() == 22,
+      w.text_edit.font().pixelSize())
 check("社区页字体/字号真的换成了自己那套（不是跟书页同名才看着一样）",
       w.text_edit.font().family() == "Courier New"
       and w.text_edit.document().defaultFont().family() == "Courier New",
@@ -1043,14 +1045,14 @@ qapp.processEvents()
 _book_size = int(w.config.get("font_size", 14))
 _book_fam = w.config.get("font_family")
 check("社区页字号再大，书页字号一个字都没动",
-      int(w.text_edit.font().pointSizeF()) == _book_size,
-      (w.text_edit.font().pointSizeF(), w.config.get("font_size")))
+      w.text_edit.font().pixelSize() == _book_size,
+      (w.text_edit.font().pixelSize(), w.config.get("font_size")))
 check("社区页换过字体，书页的字体也得原样回来（控件字体 + 文档默认字体都要）",
       w.text_edit.font().family() == _book_fam
       and w.text_edit.document().defaultFont().family() == _book_fam
-      and int(w.text_edit.document().defaultFont().pointSizeF()) == _book_size,
+      and w.text_edit.document().defaultFont().pixelSize() == _book_size,
       (w.text_edit.font().family(), w.text_edit.document().defaultFont().family(),
-       w.text_edit.document().defaultFont().pointSizeF()))
+       w.text_edit.document().defaultFont().pixelSize()))
 check("退出之后书页排版仍然逐项一致（字体/行距/缩进/页边距/页底）",
       snap_layout() == _layout_before, (_layout_before, snap_layout()))
 w.config.pop("feed_font_size", None)
@@ -4158,6 +4160,50 @@ try:
         w.scroll_px = _real_scroll
 finally:
     w.config["arrow_scroll_lines"] = _s35
+    w.apply_style()
+
+print("\n=== 36. 字号单位统一成像素（书页 / 卡片 / 社区页同一套）===")
+
+_s36 = (w.config.get("font_size"), w.config.get("auto_mode"), w.config.get("font_unit"))
+try:
+    w.config["auto_mode"] = False
+    w.config["font_size"] = 17
+    w.apply_style()
+    _u17 = w._line_unit_px()
+
+    check("书页字号就是像素：设 17 就是 17px 的字（不再是磅）",
+          w._book_font().pixelSize() == 17 and w.text_edit.font().pixelSize() == 17,
+          (w._book_font().pixelSize(), w.text_edit.font().pixelSize()))
+
+    w.config["font_size"] = 26
+    w.apply_style()
+    _u26 = w._line_unit_px()
+    check("字号变大，一行跟着变高（17px → 26px，行高按比例涨）",
+          _u26 > _u17 * 1.2, (_u17, _u26))
+
+    check("字符级字体也按像素折成磅钉回去（不会半磅半像素）",
+          abs(w._pt_for_px(17) - 17 * 72.0 / (w.text_edit.logicalDpiY() or 96.0)) < 1e-6,
+          (w._pt_for_px(17), w.text_edit.logicalDpiY()))
+
+    _merged = {"font_size": 13}
+    _moved = app_mod.migrate_font_unit({}, _merged)
+    check("老配置（13 磅）自动换成 17 像素，只换一次",
+          _moved and _merged["font_size"] == 17 and _merged.get("font_unit") == "px",
+          (_moved, _merged))
+    _merged2 = {"font_size": 17, "font_unit": "px"}
+    check("已经换过的配置再进来一个字都不动（不会反复放大）",
+          app_mod.migrate_font_unit({"font_unit": "px"}, _merged2) is False
+          and _merged2["font_size"] == 17, _merged2)
+
+    _dlg = app_mod.SettingsDialog(w.config, None)
+    try:
+        check("设置里书页和社区页的字号都写明单位 px",
+              "px" in _dlg.font_spin.suffix() and "px" in _dlg.feed_font_spin.suffix(),
+              (_dlg.font_spin.suffix(), _dlg.feed_font_spin.suffix()))
+    finally:
+        _dlg.deleteLater()
+finally:
+    w.config["font_size"], w.config["auto_mode"] = _s36[0], _s36[1]
     w.apply_style()
 
 w.config.clear()

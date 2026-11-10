@@ -299,9 +299,38 @@ def clamp_config_number(config, key, default, low, high):
     return max(low, min(high, value))
 
 
+# 字号单位：**像素**（Qt 逻辑像素）。书页和社区页（`feed_font_size`）从此同一套单位。
+# 2026-11-10 之前书页字号是磅（QFont 的 pointSize，14 = 14pt ≈ 18.7px），老配置在
+# `load_config` 里按 ×4/3 换一次（96 DPI 下 pt→px），视觉大小不变。
+BOOK_FONT_PX_DEFAULT = 19
+BOOK_FONT_PX_MIN = 8
+BOOK_FONT_PX_MAX = 60
+
+
+def migrate_font_unit(file_config, merged):
+    """老配置（字号写的是**磅**）一次性换成**像素**：返回 True 表示这次动过。
+
+    只做一次：配置里带上 `font_unit: "px"` 之后再进来就直接返回。
+    换算用 96 DPI 的 pt→px（×4/3），所以 13pt → 17px、14pt → 19px，屏幕上大小不变。
+    """
+    if str((file_config or {}).get("font_unit") or "") == "px":
+        return False
+    try:
+        old_pt = int((merged or {}).get("font_size") or 0)
+    except (TypeError, ValueError):
+        old_pt = 0
+    if old_pt:
+        merged["font_size"] = max(BOOK_FONT_PX_MIN,
+                                  min(BOOK_FONT_PX_MAX, int(round(old_pt * 4 / 3.0))))
+    merged["font_unit"] = "px"
+    return True
+
+
+
 DEFAULT_CONFIG = {
     "opacity": 0.9,
-    "font_size": 14,
+    "font_size": BOOK_FONT_PX_DEFAULT,      # 像素
+    "font_unit": "px",                       # 迁移标记：老配置（磅）没有这一项
     "font_family": "Microsoft YaHei",
     "line_spacing": LINE_SPACING_DEFAULT,
     "paragraph_spacing": 0,
@@ -2534,7 +2563,8 @@ class SettingsDialog(QDialog):
 
         lay = self.new_card(col, "文字")
         self.font_spin = QSpinBox()
-        self.font_spin.setRange(8, 60)
+        self.font_spin.setRange(BOOK_FONT_PX_MIN, BOOK_FONT_PX_MAX)
+        self.font_spin.setSuffix(" px")
         self.font_spin.setValue(self.config.get("font_size"))
         self.font_spin.valueChanged.connect(self.on_font_change)
         self.add_row(lay, "字号", self.font_spin)
@@ -2774,9 +2804,10 @@ class SettingsDialog(QDialog):
         feed_font_layout.setContentsMargins(0, 0, 0, 0)
         feed_font_layout.setSpacing(8)
         self.feed_font_spin = QSpinBox()
-        self.feed_font_spin.setRange(8, 60)
+        self.feed_font_spin.setRange(BOOK_FONT_PX_MIN, BOOK_FONT_PX_MAX)
+        self.feed_font_spin.setSuffix(" px")
         self.feed_font_spin.setValue(int(self.config.get("feed_font_size")
-                                         or self.config.get("font_size") or 14))
+                                         or self.config.get("font_size") or BOOK_FONT_PX_DEFAULT))
         self.feed_font_spin.valueChanged.connect(self.on_feed_font_change)
         self.feed_font_combo = FontFamilyCombo()
         self.feed_font_combo.setCurrentFont(QFont(self.config.get("feed_font_family")
@@ -3669,10 +3700,34 @@ class StealthReader(QWidget):
         return clamp_config_number(self.config, "page_margin_chars", PAGE_MARGIN_DEFAULT,
                                    PAGE_MARGIN_MIN, PAGE_MARGIN_MAX)
 
+    def book_font_px(self):
+        """阅读字号，单位**像素**（1 = 1 逻辑像素，和社区页 `feed_font_size` 同一套）。"""
+        try:
+            size = int(self.config.get("font_size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if not BOOK_FONT_PX_MIN <= size <= BOOK_FONT_PX_MAX:
+            size = BOOK_FONT_PX_DEFAULT
+        return size
+
+    def _pt_for_px(self, px):
+        """`QTextCharFormat` 只认磅（`setFontPointSize`），这儿按控件当前逻辑 DPI 折一次。
+
+        折回去还是"这么多像素"：pt = px × 72 / 逻辑 DPI，所以 200% 屏上也不会大小不一。
+        """
+        try:
+            dpi = float(self.text_edit.logicalDpiY() or 0)
+        except Exception:
+            dpi = 0.0
+        if dpi <= 0:
+            dpi = 96.0
+        return max(1.0, float(px) * 72.0 / dpi)
+
     def _book_font(self):
         """阅读页该用的字体：**只看配置**，不看控件此刻是什么（那可能刚被别的页换过）。"""
-        return QFont(resolve_font_family(self.config.get("font_family", "Microsoft YaHei")),
-                     int(self.config.get("font_size", 14)))
+        font = QFont(resolve_font_family(self.config.get("font_family", "Microsoft YaHei")))
+        font.setPixelSize(self.book_font_px())
+        return font
 
     def _pin_book_font(self, tag=""):
         """把书页字体按阅读设置钉死：控件字体、文档默认字体、**每个字符的 charFormat**。
@@ -3685,20 +3740,20 @@ class StealthReader(QWidget):
         """
         font = self._book_font()
         doc = self.text_edit.document()
-        want = (font.family(), float(font.pointSizeF()))
-        had_ctrl = (self.text_edit.font().family(), float(self.text_edit.font().pointSizeF()))
-        had_doc = (doc.defaultFont().family(), float(doc.defaultFont().pointSizeF()))
+        want = (font.family(), int(font.pixelSize()))
+        had_ctrl = (self.text_edit.font().family(), int(self.text_edit.font().pixelSize()))
+        had_doc = (doc.defaultFont().family(), int(doc.defaultFont().pixelSize()))
         self.text_edit.setFont(font)
         doc.setDefaultFont(QFont(font))
         cur = QTextCursor(doc)
         cur.select(QTextCursor.Document)
         fmt = QTextCharFormat()
         fmt.setFontFamily(font.family())
-        fmt.setFontPointSize(float(font.pointSizeF()))
+        fmt.setFontPointSize(self._pt_for_px(self.book_font_px()))
         cur.mergeCharFormat(fmt)          # 合并：只改字体，别的字符属性（划线颜色之类）不动
         self.text_edit.moveCursor(QTextCursor.Start)
         if tag and (had_ctrl != want or had_doc != want):
-            log_event("书页字体被带跑过，已按阅读设置钉回来（%s：控件 %s/%.0f、文档 %s/%.0f → %s/%.0f）"
+            log_event("书页字体被带跑过，已按阅读设置钉回来（%s：控件 %s/%spx、文档 %s/%spx → %s/%spx）"
                       % (tag, had_ctrl[0], had_ctrl[1], had_doc[0], had_doc[1],
                          want[0], want[1]))
 
@@ -4113,6 +4168,9 @@ class StealthReader(QWidget):
                         # 老配置：page_margin 是像素，等拿到当前字体再换算成"字"
                         file_config["_page_margin_legacy_px"] = file_config["page_margin"]
                     self.config = {**DEFAULT_CONFIG, **file_config}
+                    # 老配置的字号是**磅**，换成像素（只换一次，标记跟着写进内存，
+                    # 下次保存落盘；中途退出文件里仍是磅值，同一系数再换一遍也不会叠加）。
+                    migrate_font_unit(file_config, self.config)
             except:
                 self.config = DEFAULT_CONFIG.copy()
         else:
@@ -5785,8 +5843,9 @@ class StealthReader(QWidget):
         # 像素路（触摸板）不吃这一条：它本来就该按收到的像素一点点折成行。
         _now = time.monotonic()
         _gap_ms = (_now - float(getattr(self, "_wheel_last_t", 0.0))) * 1000.0
-        _same = (abs(int(delta or 0)) == int(getattr(self, "_wheel_last_d", 0) or 0))
-        _dup = _gap_ms < 15.0 and _same          # 同一个 delta 紧跟着又来一发 = 同一格
+        _d = int(delta or 0)
+        # 必须**同向同量**才算同一格：反向（往上、往下各一格连着来）本来就该各滚各的
+        _dup = _gap_ms < 15.0 and _d == int(getattr(self, "_wheel_last_d", 0) or 0)          # 同一个 delta 紧跟着又来一发 = 同一格
         _dbg = int(getattr(self, "_wheel_dbg_n", 0) or 0)
         if _dbg < 60:
             self._wheel_dbg_n = _dbg + 1
@@ -5796,7 +5855,7 @@ class StealthReader(QWidget):
         if _dup:
             return
         self._wheel_last_t = _now
-        self._wheel_last_d = abs(int(delta or 0))
+        self._wheel_last_d = _d
         notches = min(1.0, abs(float(delta)) / 120.0)
         if notches <= 0:
             return
@@ -6873,7 +6932,9 @@ class StealthReader(QWidget):
         if not 11 <= size <= 22:
             # 没单独配字号：吃方案自己的正文字号（灵犀 16 / DSH 14 / 经典 15）
             size = int(scheme.get("body") or getattr(feed_mod, "FEED_SIZE_DEFAULT", 15))
-        return QFont(fam, size)
+        _feed_font = QFont(fam)
+        _feed_font.setPixelSize(max(11, int(size)))     # 和 feed.py 写进 HTML 的 px 一致
+        return _feed_font
 
     def feed_theme(self):
         # 主题自己去读 `feed_font_size` / `feed_font_family`（见 feed.theme_from_config），
@@ -8633,9 +8694,9 @@ class StealthReader(QWidget):
         书页那套（首行缩进两字 + 两端对齐 + 行距 1.6）放在卡片上会让它一眼不像文档模板，
         所以按卡片重套一遍块格式；颜色/透明度仍由 apply_style 那套统管。
         """
-        self.text_edit.setFont(QFont(
-            resolve_font_family(self.config.get("font_family", "Microsoft YaHei")),
-            self.config["font_size"]))
+        _card_font = QFont(resolve_font_family(self.config.get("font_family", "Microsoft YaHei")))
+        _card_font.setPixelSize(self.book_font_px())
+        self.text_edit.setFont(_card_font)
         block_format = QTextBlockFormat()
         block_format.setLineHeight(100, QTextBlockFormat.ProportionalHeight)
         block_format.setAlignment(Qt.AlignHCenter)
@@ -9060,8 +9121,8 @@ class StealthReader(QWidget):
         # 重绘时拿它当页首——否则每次刷样式都从本页最上面重铺，看着就是"阅读进度老是跳回"。
         anchor = self.current_top_offset()
         font_family = resolve_font_family(self.config.get('font_family', 'Microsoft YaHei'))
-        font_size = self.config['font_size']
-        font = QFont(font_family, font_size)
+        font = QFont(font_family)
+        font.setPixelSize(self.book_font_px())      # 字号是像素，和社区页同一套单位
 
         self.text_edit.setFont(font)
         # 文档默认字体跟着一起钉：社区页/卡片页会把它换掉，而书页重排时"没写内联字体的那些块"
@@ -10340,9 +10401,9 @@ if __name__ == '__main__':
     # 启动时把"配置要的字体"和"实际用上的字体"都写进日志：字体没装时 Qt 是静默替换的，
     # 不写这一行，人只能凭"看着像宋体"猜。
     try:
-        log_event("阅读字体：配置「%s」→ 实际「%s」（%spx）" % (
+        log_event("阅读字体：配置「%s」→ 实际「%s」（字号 %spx，单位像素）" % (
             ex.config.get("font_family"), ex._book_font().family(),
-            int(ex.config.get("font_size", 14))))
+            ex.book_font_px()))
     except Exception as _font_log_err:
         log_event("阅读字体：写日志失败 %s" % _font_log_err)
     _hidden = parse_hidden_flag(sys.argv)
