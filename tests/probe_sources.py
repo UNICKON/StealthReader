@@ -3302,14 +3302,30 @@ check("进度与时间仍然是右对齐那套（统计入口不能把书架的�
       "class ShelfRowDelegate(QStyledItemDelegate)" in _main_src
       and "size.setWidth(10)" in _main_src, None)
 
-check("会话别碎：同书断不到 10 分钟并成一场；接不上又不到 1 分钟的整段不记",
-      "MERGE_GAP_SEC = 600" in _rs_src and "MIN_SESSION_SEC = 60" in _rs_src
-      and "if not merged:" in _rs_src and "if sec < MIN_SESSION_SEC:" in _rs_src, None)
-check("心跳：停 3 分钟只停表，停 10 分钟才收场（收早了会话就碎）",
-      "if gap > reading_stats.MERGE_GAP_SEC:" in _main_src
+check("会话别碎：同书断不到 45 分钟并成一场（中间的歇记成 gaps）；不到 1 分钟的整段不记",
+      "SESSION_GAP_SEC = 45 * 60" in _rs_src and "MIN_SESSION_SEC = 60" in _rs_src
+      and "if not merged:" in _rs_src and "if sec < MIN_SESSION_SEC:" in _rs_src
+      and '"gaps": span_gaps' in _rs_src, None)
+check("时间线三处都在：会话行内迷你条 / 选中展开的大时间线 / 今天一条带",
+      "class SessionBarDelegate(QStyledItemDelegate)" in _main_src
+      and "class SessionTimeline(QWidget)" in _main_src
+      and "class DayTimeline(QWidget)" in _main_src
+      and "setItemDelegateForColumn(0, self.session_bar)" in _main_src
+      and "self.day_timeline.set_day(" in _main_src, None)
+check("会话开始时间的悬停详情：开始 / 结束 / 跨度 / 在读（含歇了几次）/ 字数 / 书名",
+      '"跨度  " + reading_stats.fmt_duration(end - start)' in _main_src
+      and '"在读  " + reading_stats.fmt_duration(sec)' in _main_src
+      and "中间歇了 %s，共 %d 次，最长 %s" in _main_src
+      and "item.setToolTip(tip)" in _main_src, None)
+check("收场时把场内的活跃落点算成空隙（画时间线要真数据，不是猜的）",
+      'session.setdefault("ticks", []).append(_now_wall)' in _main_src
+      and "pause = _b - _a - reading_stats.TICK_SEC" in _main_src
+      and "gaps=gaps)" in _main_src, None)
+check("心跳：停 3 分钟只停表，停 45 分钟才收场（收早了会话就碎）",
+      "if gap > reading_stats.SESSION_GAP_SEC:" in _main_src
       and 'self._stats_flush("停了挺久")' in _main_src
       and "if gap > reading_stats.IDLE_SEC:" in _main_src
-      and 'session["last"] = time.time()' in _main_src, None)
+      and 'session["last"] = _now_wall' in _main_src, None)
 
 import reading_stats as _rs28                                                 # noqa: E402
 _now28 = time.time()
@@ -3321,14 +3337,31 @@ check("会话合并（跑真逻辑）：隔 5 分钟的两段 = 一场，秒数�
       (len(_merge28["sessions"]), _merge28["sessions"][0]["sec"]))
 _apart28 = _rs28.blank()
 _rs28.add_span(_apart28, "k", "书", _now28 - 3600, 600, 1000)
-_rs28.add_span(_apart28, "k", "书", _now28 - 3600 + 600 + 660, 600, 1000)   # 断 11 分钟
-check("会话不硬并：隔 11 分钟就是两场", len(_apart28["sessions"]) == 2,
+_rs28.add_span(_apart28, "k", "书", _now28 - 3600 + 600 + 3000, 600, 1000)  # 断 50 分钟
+check("会话不硬并：隔 50 分钟（超过 45）就是两场", len(_apart28["sessions"]) == 2,
       len(_apart28["sessions"]))
 _short28 = _rs28.blank()
 _rs28.add_span(_short28, "k", "书", _now28 - 600, 30, 0)
 check("没看的短场不记（30 秒、接不上上一场）：会话、日账、书账全空",
       _short28["sessions"] == [] and _short28["days"] == {} and _short28["books"] == {},
       (_short28["sessions"], _short28["days"]))
+
+# 场内空隙：断 20 分钟并成一场，歇的那段记进 gaps，活跃区间把它挖掉
+_gap28 = _rs28.blank()
+_gs = _now28 - 9000
+_rs28.add_span(_gap28, "k", "书", _gs, 600, 1000, end_ts=_gs + 600)
+_rs28.add_span(_gap28, "k", "书", _gs + 600 + 1200, 600, 1000, end_ts=_gs + 600 + 1200 + 600)
+_s28 = _gap28["sessions"][0]
+check("断 20 分钟：还是一场，中间 20 分钟记成空隙",
+      len(_gap28["sessions"]) == 1 and _s28["gaps"] == [[600.0, 1200.0]],
+      (len(_gap28["sessions"]), _s28["gaps"]))
+_iv28 = _rs28.active_intervals(_s28)
+check("活跃区间 = 整场减去空隙（两段，中间空着）",
+      len(_iv28) == 2 and abs(_iv28[0][0] - _gs) < 0.01
+      and abs(_iv28[1][0] - (_gs + 1800)) < 0.01, _iv28)
+_slots28 = _rs28.day_slots(_gap28, _rs28.day_key(_gs))
+check("今天的时间线：288 格（5 分钟一格），有读的格子秒数和读的时长对得上",
+      len(_slots28) == 288 and abs(sum(_slots28) - 1200) < 1.0, (len(_slots28), sum(_slots28)))
 
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]

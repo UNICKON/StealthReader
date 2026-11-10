@@ -2557,6 +2557,253 @@ class StatsHeatmap(QWidget):
                          Qt.AlignLeft | Qt.AlignVCenter, "多")
 
 
+class SessionBarDelegate(QStyledItemDelegate):
+    """会话表第一列：一条极简的场内时间线（绿 = 在读，灰空 = 歇着）。
+
+    一眼能看出"这场读了两小时，中间歇过两回"，不用点开。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = []
+
+    def set_rows(self, rows):
+        self.rows = list(rows or [])
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+        row = index.row()
+        if row < 0 or row >= len(self.rows):
+            return
+        s = self.rows[row]
+        rect = option.rect.adjusted(7, 0, -7, 0)
+        if rect.width() < 10:
+            return
+        h = 9
+        y = rect.center().y() - h // 2
+        start = float(s.get("start") or 0) or 1.0
+        end = max(float(s.get("end") or 0), start + 1.0)
+        span = max(1.0, end - start)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#3d3d3d"))
+        painter.drawRoundedRect(QRect(rect.left(), y, rect.width(), h), 4, 4)
+        painter.setBrush(QColor("#6fa86f"))
+        for a, b in reading_stats.active_intervals(s):
+            left = rect.left() + int((a - start) / span * rect.width())
+            wide = max(2, int((b - a) / span * rect.width()))
+            wide = min(wide, rect.right() - left + 1)
+            if wide > 0:
+                painter.drawRoundedRect(QRect(left, y, wide, h), 2, 2)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        size.setWidth(150)
+        return size
+
+
+class SessionTimeline(QWidget):
+    """一场的细时间线：横轴是真时间，绿条 = 在读，灰段 = 歇着（并标出歇了多久）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.session_ = None
+        self.setMinimumHeight(108)
+        self.setMouseTracking(True)
+        self._hover_x = -1
+
+    def set_session(self, s):
+        self.session_ = s if isinstance(s, dict) else None
+        self._hover_x = -1
+        self.setToolTip("")
+        self.update()
+
+    def _geom(self):
+        rect = self.rect().adjusted(16, 30, -16, -22)
+        return rect
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        s = self.session_
+        if not self.session_ or not reading_stats.active_intervals(s):
+            p.setPen(QPen(QColor("#7c7c7c")))
+            p.drawText(self.rect(), Qt.AlignCenter,
+                       "选中上面的一场，这里画出它中间歇了多久。" if s is None else
+                       "这一场没有细粒度记录（旧账本），只有总时长。")
+            return
+        ivs = reading_stats.active_intervals(s)
+        start, end = ivs[0][0], ivs[-1][1]
+        span = max(1.0, end - start)
+        sec = float(s.get("sec") or 0)
+        gaps = reading_stats.session_gaps(s)
+        rect = self._geom()
+        bar_y = rect.top() + 4
+        bar_h = 14
+        # 标题：21:03 → 22:41 · 在读 1 小时 12 分 · 歇了 25 分（2 次）
+        head = "%s → %s · 在读 %s" % (
+            reading_stats.fmt_clock(start), reading_stats.fmt_clock(end),
+            reading_stats.fmt_duration(sec))
+        if gaps:
+            head += " · 歇了 %s（%d 次）" % (
+                reading_stats.fmt_gap(sum(g[1] for g in gaps)), len(gaps))
+        p.setPen(QPen(QColor("#d8d8d8")))
+        p.drawText(QRect(16, 8, self.width() - 32, 18), Qt.AlignLeft | Qt.AlignVCenter, head)
+        # 底条
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#3a3a3a"))
+        p.drawRoundedRect(QRect(rect.left(), bar_y, rect.width(), bar_h), 5, 5)
+        # 在读的段
+        p.setBrush(QColor("#6fa86f"))
+        for a, b in ivs:
+            left = rect.left() + int((a - start) / span * rect.width())
+            wide = max(2, int((b - a) / span * rect.width()))
+            wide = min(wide, rect.right() - left + 1)
+            if wide > 0:
+                p.drawRoundedRect(QRect(left, bar_y, wide, bar_h), 3, 3)
+        # 空隙：画一道浅色竖线 + 时长（够宽才写字）
+        p.setPen(QPen(QColor("#9a9a9a"), 1, Qt.DashLine))
+        fm = QFontMetrics(self.font())
+        for off, dur in gaps:
+            gx = rect.left() + int(off / span * rect.width())
+            p.drawLine(gx, bar_y - 3, gx, bar_y + bar_h + 3)
+            label = "歇 %s" % reading_stats.fmt_gap(dur)
+            if fm.width(label) + 6 < span and 0 < gx < rect.right() - 40:
+                p.setPen(QPen(QColor("#9a9a9a")))
+                p.drawText(gx + 3, bar_y + bar_h + 14, label)
+                p.setPen(QPen(QColor("#9a9a9a"), 1, Qt.DashLine))
+        # 时间刻度
+        p.setPen(QPen(QColor("#8a8a8a")))
+        step = 3600 if span > 3 * 3600 else (1800 if span > 3600 else 600)
+        tick = int(start // step) * step + step
+        while tick < end:
+            tx = rect.left() + int((tick - start) / span * rect.width())
+            p.drawLine(tx, bar_y + bar_h, tx, bar_y + bar_h + 4)
+            if tx + 30 < rect.right():
+                p.drawText(tx + 2, bar_y + bar_h + 17, reading_stats.fmt_clock(tick))
+            tick += step
+
+    def _time_at(self, x):
+        s = self.session_
+        ivs = reading_stats.active_intervals(s) if s else []
+        if not ivs:
+            return None, None, None
+        rect = self._geom()
+        if rect.width() <= 0:
+            return None, None, None
+        start, end = ivs[0][0], ivs[-1][1]
+        span = max(1.0, end - start)
+        ts = start + max(0.0, min(1.0, (x - rect.left()) / float(rect.width()))) * span
+        for off, dur in reading_stats.session_gaps(s):
+            g0 = start + off
+            if g0 <= ts < g0 + dur:
+                return ts, "gap", dur
+        return ts, "read", 0
+
+    def mouseMoveEvent(self, ev):
+        ts, kind, dur = self._time_at(ev.x())
+        if ts is None:
+            return
+        if kind == "gap":
+            text = "%s · 歇了 %s" % (reading_stats.fmt_clock(ts), reading_stats.fmt_gap(dur))
+        else:
+            text = "%s · 在读" % reading_stats.fmt_clock(ts)
+        QToolTip.showText(ev.globalPos(), text, self)
+        super().mouseMoveEvent(ev)
+
+    def leaveEvent(self, ev):
+        QToolTip.hideText()
+        super().leaveEvent(ev)
+
+
+class DayTimeline(QWidget):
+    """今天一整条：00:00–24:00，5 分钟一格，绿得越实读得越久。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.slots = []
+        self.day = ""
+        self.setMinimumHeight(78)
+        self.setMouseTracking(True)
+
+    def set_day(self, slots, day=""):
+        self.slots = list(slots or [])
+        self.day = day or ""
+        self.update()
+
+    def _cell_rect(self):
+        return self.rect().adjusted(16, 8, -16, -20)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        rect = self._cell_rect()
+        if not self.slots or rect.width() < 20:
+            p.setPen(QPen(QColor("#7c7c7c")))
+            p.drawText(self.rect(), Qt.AlignCenter, "今天还没有记录。")
+            return
+        n = len(self.slots)
+        gap = 0 if rect.width() / n >= 3.0 else 1
+        cell_w = max(1.0, rect.width() / float(n))
+        h = 20
+        y = rect.top() + 6
+        level = [QColor("#3a3a3a"), QColor("#42563f"), QColor("#4c6f4b"),
+                 QColor("#5b8b58"), QColor("#6fa86f")]
+        p.setPen(Qt.NoPen)
+        for i, sec in enumerate(self.slots):
+            frac = min(1.0, float(sec) / float(reading_stats.SLOT_SEC))
+            if frac <= 0:
+                idx = 0
+            elif frac < 0.34:
+                idx = 1
+            elif frac < 0.67:
+                idx = 2
+            elif frac < 0.99:
+                idx = 3
+            else:
+                idx = 4
+            p.setBrush(level[idx])
+            left = rect.left() + i * cell_w
+            wide = max(1.0, cell_w - gap)
+            p.drawRect(QRect(int(left), y, int(wide) or 1, h))
+        # 刻度：每 3 小时一根
+        p.setPen(QPen(QColor("#8a8a8a")))
+        for hour in range(0, 25, 3):
+            x = rect.left() + int(hour / 24.0 * rect.width())
+            p.drawLine(x, y + h, x, y + h + 4)
+            label = "%02d" % hour
+            p.drawText(x + 2, y + h + 16, label)
+
+    def mouseMoveEvent(self, ev):
+        rect = self._cell_rect()
+        if self.slots and rect.width() > 0 and ev.x() >= rect.left():
+            n = len(self.slots)
+            cell = int(max(0, min(n - 1, (ev.x() - rect.left()) / float(rect.width()) * n)))
+            sec = float(self.slots[cell])
+            slot = int(reading_stats.SLOT_SEC)
+            a = cell * slot
+            span = "%02d:%02d–%02d:%02d" % (a // 3600, (a % 3600) // 60,
+                                            (a + slot) // 3600, ((a + slot) % 3600) // 60)
+            if sec <= 0:
+                text = "%s · 没在读" % span
+            elif sec >= slot - 1:
+                text = "%s · 一直在读" % span
+            else:
+                text = "%s · 读了 %s" % (span, reading_stats.fmt_gap(sec))
+            QToolTip.showText(ev.globalPos(), text, self)
+        super().mouseMoveEvent(ev)
+
+    def leaveEvent(self, ev):
+        QToolTip.hideText()
+        super().leaveEvent(ev)
+
+
 class ReadingStatsDialog(QDialog):
     """阅读统计页：选中一本书就看那本，没选书就是全部（多一个「书籍」榜）。"""
 
@@ -2642,6 +2889,12 @@ class ReadingStatsDialog(QDialog):
             "QProgressBar::chunk { background:#5aa46d; border-radius:4px; }")
         ov.addWidget(self.progress_bar)
 
+        self.day_title = QLabel("今天的时间线")
+        self.day_title.setStyleSheet("color:#9a9a9a; font-size:12px;")
+        ov.addWidget(self.day_title)
+        self.day_timeline = DayTimeline()
+        ov.addWidget(self.day_timeline)
+
         self.bars_title = QLabel("近 14 天")
         self.bars_title.setStyleSheet("color:#9a9a9a; font-size:12px;")
         ov.addWidget(self.bars_title)
@@ -2668,8 +2921,15 @@ class ReadingStatsDialog(QDialog):
         self.session_page = QWidget()
         sp = QVBoxLayout(self.session_page)
         sp.setContentsMargins(2, 10, 2, 8)
-        self.session_table = self._make_table(["开始", "时长", "字数", "速度", "书名"])
-        sp.addWidget(self.session_table)
+        self.session_table = self._make_table(["活跃", "开始", "时长", "字数", "速度", "书名"])
+        self.session_bar = SessionBarDelegate(self.session_table)
+        self.session_table.setItemDelegateForColumn(0, self.session_bar)
+        self.session_table.setColumnWidth(0, 150)
+        sp.addWidget(self.session_table, 1)
+        self.session_timeline = SessionTimeline()
+        sp.addWidget(self.session_timeline)
+        self.session_rows = []
+        self.session_table.itemSelectionChanged.connect(self._on_session_pick)
         self.tabs.addTab(self.session_page, "会话")
 
         # --- 书籍榜（只有全局模式有）---
@@ -2723,6 +2983,8 @@ class ReadingStatsDialog(QDialog):
         else:
             self._refresh_all()
         self._fill_sessions()
+        self.day_timeline.set_day(reading_stats.day_slots(
+            self.data, key=self._book_key() if self.book else ""), reading_stats.day_key())
         if self.book_table is not None:
             self._fill_books()
 
@@ -2813,24 +3075,65 @@ class ReadingStatsDialog(QDialog):
         self.bars.set_points(reading_stats.series(self.data, 30))
         self.heat.set_cols(reading_stats.heatmap(self.data, 53))
 
+    def _session_tip(self, s):
+        """会话的悬停详情：开始 / 结束 / 跨度 / 在读（含中断）/ 字数 / 书名。"""
+        start = float(s.get("start") or 0)
+        end = max(float(s.get("end") or 0), start)
+        sec = float(s.get("sec") or 0)
+        chars = float(s.get("chars") or 0)
+        gaps = reading_stats.session_gaps(s)
+        lines = [
+            "开始  " + reading_stats.fmt_stamp(start),
+            "结束  " + reading_stats.fmt_stamp(end),
+            "跨度  " + reading_stats.fmt_duration(end - start),
+            "在读  " + reading_stats.fmt_duration(sec),
+        ]
+        if gaps:
+            lines[-1] += "（中间歇了 %s，共 %d 次，最长 %s）" % (
+                reading_stats.fmt_gap(sum(g[1] for g in gaps)), len(gaps),
+                reading_stats.fmt_gap(max(g[1] for g in gaps)))
+        speed = (chars / (sec / 60.0)) if sec >= 10 else 0.0
+        lines.append("字数  %s · %s" % (fmt_words(chars), reading_stats.fmt_speed(speed)))
+        lines.append("书名  " + (s.get("title") or self._title_of(s.get("k"))))
+        return "\n".join(lines)
+
     def _fill_sessions(self):
         key = self._book_key() if self.book else ""
         rows = [s for s in (self.data.get("sessions") or []) if not key or s.get("k") == key]
         rows = list(reversed(rows))[:200]
+        self.session_rows = rows
+        self.session_bar.set_rows(rows)
         table_rows = []
         for s in rows:
             sec = s.get("sec") or 0
             chars = s.get("chars") or 0
             speed = (chars / (sec / 60.0)) if sec >= 10 else 0.0
             table_rows.append([
-                reading_stats.fmt_day(s.get("start")),
+                "",
+                reading_stats.fmt_full(s.get("start")),
                 reading_stats.fmt_duration(sec),
                 fmt_words(chars),
                 reading_stats.fmt_speed(speed),
                 s.get("title") or self._title_of(s.get("k")),
             ])
-        self._fill_table(self.session_table,
-                         ["开始", "时长", "字数", "速度", "书名"], table_rows, right_cols=(1, 2, 3))
+        self._fill_table(self.session_table, ["活跃", "开始", "时长", "字数", "速度", "书名"],
+                         table_rows, right_cols=(2, 3, 4))
+        if rows:
+            for i, s in enumerate(rows):
+                tip = self._session_tip(s)
+                for c in range(6):
+                    item = self.session_table.item(i, c)
+                    if item is not None:
+                        item.setToolTip(tip)
+            self.session_table.selectRow(0)
+            self.session_timeline.set_session(rows[0])
+        else:
+            self.session_timeline.set_session(None)
+
+    def _on_session_pick(self):
+        row = self.session_table.currentRow()
+        rows = getattr(self, "session_rows", []) or []
+        self.session_timeline.set_session(rows[row] if 0 <= row < len(rows) else None)
 
     def _fill_books(self):
         books = list((self.data.get("books") or {}).items())
@@ -3912,7 +4215,6 @@ class StealthReader(QWidget):
         self.stats_data = reading_stats.load(stats_path())
         self.stats_session = None      # 正在记的这一场：{key,title,start,sec,chars,pos}
         self.stats_active_ts = 0.0     # 最近一次"人在读"的信号（monotonic）
-        self.stats_saved_ts = 0.0      # 上次落盘（wall clock）
         self.stats_timer = QTimer(self)
         self.stats_timer.setInterval(reading_stats.TICK_SEC * 1000)
         self.stats_timer.timeout.connect(self._stats_tick)
@@ -4982,8 +5284,8 @@ class StealthReader(QWidget):
         now = time.monotonic()
         gap = now - (self.stats_active_ts or now)
         # 停了先**停止计时**，但别急着收场：收早了会话就碎成一片（真人 2026-11-10 提的）。
-        # 真收场要等断得够久（MERGE_GAP_SEC），那时候它本来就该算另一场了。
-        if gap > reading_stats.MERGE_GAP_SEC:
+        # 真收场要等断得够久（SESSION_GAP_SEC=45 分钟），那时候它本来就该算另一场了。
+        if gap > reading_stats.SESSION_GAP_SEC:
             self._stats_flush("停了挺久")
             return
         if gap > reading_stats.IDLE_SEC:
@@ -4997,18 +5299,28 @@ class StealthReader(QWidget):
             if session:
                 self._stats_flush("换书")
             session = {"key": key, "title": self._stats_book_title(), "start": time.time(),
-                       "sec": 0.0, "chars": 0.0, "pos": int(pos)}
+                       "sec": 0.0, "chars": 0.0, "pos": int(pos), "ticks": [],
+                       "saved": time.time()}
             self.stats_session = session
         delta = max(0, int(pos) - int(session.get("pos") or 0))
         session["pos"] = int(pos)
         session["sec"] += reading_stats.TICK_SEC
         session["chars"] += delta
-        session["last"] = time.time()      # 真实结束时间：合并会话来算间隔用
+        _now_wall = time.time()
+        session["last"] = _now_wall        # 真实结束时间：合并会话 / 画时间线都要它
+        # 场内每一个"在读数"的落点，收场时能算出中间歇了多久（画时间线要这个）
+        session.setdefault("ticks", []).append(_now_wall)
         if not session.get("title"):
             session["title"] = self._stats_book_title()
-        # 一分钟落一次盘：被强杀也不至于丢掉整场
-        if time.time() - (self.stats_saved_ts or 0.0) >= 60:
-            self._stats_commit()
+        # 一分钟落一次盘：被强杀也不至于丢掉整场。
+        # 一场现在可能有一两小时，光攒着太危险，所以定期把这一场写进账本再接着开：
+        # 下一个 span 会在 45 分钟内并回同一场（间隔 ≈ 0，不记空隙），会话表里仍是一场。
+        # 按"这一场"计时（session["saved"]）：不能用进程级的全局时间戳——开场时它可能还是 0，
+        # 拿它当基准会让第一拍就触发落盘，一场被切成 5 秒一段（这坑踩过）。
+        if (time.time() - float(session.get("saved") or session.get("start") or 0.0) >= 60
+                and float(session.get("sec") or 0) >= reading_stats.MIN_SESSION_SEC):
+            session["saved"] = time.time()
+            self._stats_flush("定期落盘")
 
     def _stats_flush(self, reason=""):
         """收一场：写进日账 / 书账 / 会话表，再落盘。返回是否真写了一笔。"""
@@ -5019,20 +5331,29 @@ class StealthReader(QWidget):
         # 闲着那一拍之所以能停住，是因为 active_ts 本来就老了，不需要谁去清。
         if not session or float(session.get("sec") or 0) <= 0:
             return False
+        start = session.get("start") or time.time()
+        ticks = [float(x) for x in (session.get("ticks") or [])]
+        gaps = []
+        for _a, _b in zip(ticks, ticks[1:]):
+            pause = _b - _a - reading_stats.TICK_SEC
+            if pause > reading_stats.IDLE_SEC:
+                gaps.append([_a - start + reading_stats.TICK_SEC, pause])
         reading_stats.add_span(self.stats_data, session.get("key") or "",
                                session.get("title") or "",
-                               session.get("start") or time.time(),
+                               start,
                                session.get("sec") or 0,
                                session.get("chars") or 0,
-                               end_ts=session.get("last") or time.time())
+                               end_ts=session.get("last") or time.time(),
+                               gaps=gaps)
         self._stats_commit()
+        if reason == "定期落盘":
+            return True
         log_event("阅读统计：记一场 %s（%s，%s）" % (
             reading_stats.fmt_duration(session.get("sec")),
             reason or "结束", fmt_words(session.get("chars"))))
         return True
 
     def _stats_commit(self):
-        self.stats_saved_ts = time.time()
         return reading_stats.save(stats_path(), self.stats_data)
 
     def forget_book(self, path):

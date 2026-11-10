@@ -1,31 +1,34 @@
 # -*- coding: utf-8 -*-
-"""阅读统计：会话心跳 → 日账 / 书账 / 会话表 → 聚合出时长、速度、连续天数、热力图。
+"""阅读统计的数据层：只记数、不算界面。纯标准库，不 import Qt。
 
-**纯标准库，不碰 Qt**：这一层要能在探针里直接跑、也要能离线改数据，
-界面（`ReadingStatsDialog`）只负责把它算好的数字画漂亮。
+这一层只做三件事：
+1. **记账**：把"这一段在读"记进日账 / 书账 / 会话表（`add_span`）。
+2. **聚合**：连续天数、速度、近 N 天序列、53 周热力图、今天的时间线、单本汇总。
+3. **读写**：单独的 `reading_stats.json`，原子写；文件坏了当空的读。
 
-数据落在 `reading_stats.json`（和 `config.json` 同目录，但**不放进 config**：
-config 每次保存都整体重写，日账塞进去早晚被冲掉）：
+口径（改这里一处，界面和探针都跟着变）：
 
-    {
-      "version": 1,
-      "days":     {"2026-11-10": {"sec": 1830, "chars": 12000, "n": 4}},
-      "books":    {"<书的键>": {"title": "…", "sec": 7200, "chars": 48000, "n": 14,
-                               "first": 1762000000, "last": 1762700000,
-                               "days": {"2026-11-09": {"sec": 900, "chars": 6000}}}},
-      "sessions": [{"k": "<书的键>", "title": "…", "start": 1762700000, "sec": 900, "chars": 6000}]
-    }
+* 心跳 5 秒一拍（`TICK_SEC`），一次"在读"的时长就是拍数 × 5。
+* 3 分钟没有任何输入（翻页 / 滚轮 / 开书）就**先停止计时**（`IDLE_SEC`），但这一场先不收：
+  盯着一页想事情不算离开。
+* 同一本书**断到 45 分钟以上**才算这一场结束（`SESSION_GAP_SEC`）；断不到就并回同一场，
+  中间那段不读的时间记成 `gaps`（场内空隙）。所以一场可以很长、中间带几段灰。
+* 接不上上一场、本身又不到 1 分钟（`MIN_SESSION_SEC`）的整段不记：
+  打开又关掉、随手瞟一眼那种不该占一条"会话"。
+* 只累加**正增量**的字数，往回翻不扣；跨零点的通宵算在**开始那一刻**所在的日期里，
+  但日账只按真实日期切分（跨零点的秒数全算开始那天，这是刻意的简化，写在这儿免得被当 bug）。
+* 单日时长封顶 18 小时（`DAY_SEC_CAP`）：时钟跳变或休眠恢复时不会记出荒唐的数。
 
-几条口径先写死（免得以后各处各算一套）：
-  * 会话是**攒出来的**，不是每停一下切一段：同一本书和上一场断不到 `MERGE_GAP_SEC`
-    （10 分钟）就并回上一场——切窗口、出去接个电话回来接着读，会话表里仍是一场。
-  * 接不上上一场、本身又不到 `MIN_SESSION_SEC`（1 分钟）的，整段不记：
-    打开又关掉、随手瞟一眼那种不该占一条"会话"。
-  * 一次会话算在**开始那一刻**所在的日期里。跨零点读通宵会全算前一天，
-    这是刻意的：宁可少一天，也不要同一次阅读被劈成两段、两天的均值都失真。
-  * 字数只累加**正增量**：往回翻、跳章会算出负数，那不是"读掉了"。
-  * 速度一律按 `字数 / 分钟`，秒数不足 10 秒的会话不参与速度统计（除零/离谱值）。
+会话结构（`sessions` 里的一条）：
+
+    {"k": 书键, "title": 书名, "start": 开始时间戳, "sec": 实际在读秒数,
+     "chars": 字数, "end": 结束时间戳,
+     "gaps": [[相对开始的偏移, 空隙秒数], ...]}   # 场内空隙，用来画时间线
+
+时间线（`active_intervals`）＝ [开始, 结束] 减去所有 gaps，只用这两样就能画出
+"哪几分钟在读、哪几分钟在歇"。
 """
+import datetime
 import json
 import os
 import time
@@ -35,138 +38,253 @@ STATS_NAME = "reading_stats.json"
 
 TICK_SEC = 5              # 心跳粒度：5 秒一次（界面那边就这么打）
 IDLE_SEC = 180            # 3 分钟没有任何输入 = 先停止计时（这一场先不收，人可能只是在看）
-MERGE_GAP_SEC = 600       # 同一本书断不到 10 分钟 = 还是同一场（会话别碎成一片）
+SESSION_GAP_SEC = 45 * 60  # 同一本书断 45 分钟以上才算这一场结束；不到就并回去
 MIN_SESSION_SEC = 60      # 接不上上一场、本身又读了不到 1 分钟的：当成"没看"，整段不记
-KEEP_SESSIONS = 400       # 会话表只留最近这么多条
-KEEP_DAYS = 420           # 日账留一年多一点（热力图 53 周够用）
-DAY_SEC_CAP = 18 * 3600   # 单日上限：机器挂了、时钟跳了都不至于记出 20 小时
+KEEP_SESSIONS = 400       # 会话表只留最近这么多场
+KEEP_DAYS = 420           # 日账留这么久（约 14 个月，热力图一年多够看）
+DAY_SEC_CAP = 18 * 3600   # 单日封顶：时钟跳变 / 休眠恢复时别记出荒唐的数
+SLOT_SEC = 300            # 一天的时间线：5 分钟一格，288 格
+
+WEEKDAYS = "一二三四五六日"
 
 
-# ---------------------------------------------------------------- 基础
+# ---------------------------------------------------------------- 小工具
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    if f != f or f in (float("inf"), float("-inf")):     # NaN / inf
+        return 0.0
+    return f
+
+
 def day_key(ts=None):
-    """时间戳 → '2026-11-10'（本地时区）。"""
-    return time.strftime("%Y-%m-%d", time.localtime(float(ts if ts is not None else time.time())))
+    """时间戳 → 'YYYY-MM-DD'（本机时区）。"""
+    if ts is None:
+        return datetime.date.today().isoformat()
+    try:
+        return datetime.datetime.fromtimestamp(float(ts)).date().isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return datetime.date.today().isoformat()
 
 
+def _day_start_epoch(day):
+    """'YYYY-MM-DD' → 那天零点的时间戳（本机时区）。"""
+    try:
+        d = datetime.date.fromisoformat(str(day))
+    except (TypeError, ValueError):
+        d = datetime.date.today()
+    return datetime.datetime.combine(d, datetime.time.min).timestamp()
+
+
+def fmt_day(ts):
+    """时间戳 → '2026-11-10'；没数就给 '--'。"""
+    if not _num(ts):
+        return "--"
+    return day_key(ts)
+
+
+def fmt_clock(ts):
+    """时间戳 → '21:03'。"""
+    if not _num(ts):
+        return "--"
+    try:
+        return datetime.datetime.fromtimestamp(float(ts)).strftime("%H:%M")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "--"
+
+
+def fmt_full(ts):
+    """时间戳 → '11-10 21:03'（表里用，省地方）。"""
+    if not _num(ts):
+        return "--"
+    try:
+        return datetime.datetime.fromtimestamp(float(ts)).strftime("%m-%d %H:%M")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "--"
+
+
+def fmt_stamp(ts):
+    """时间戳 → '2026-11-10 21:03:47'（悬停详情用）。"""
+    if not _num(ts):
+        return "--"
+    try:
+        return datetime.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return "--"
+
+
+def fmt_duration(sec):
+    """秒 → '3 小时 12 分' / '10 分' / '不足 1 分'。"""
+    sec = max(0.0, _num(sec))
+    if sec < 60:
+        return "不足 1 分"
+    total_min = int(round(sec / 60.0))
+    if total_min < 60:
+        return "%d 分" % total_min
+    return "%d 小时 %d 分" % (total_min // 60, total_min % 60)
+
+
+def fmt_gap(sec):
+    """空隙时长：和 fmt_duration 一个调子，但短的直接给秒。"""
+    sec = max(0.0, _num(sec))
+    if sec < 60:
+        return "%d 秒" % int(round(sec))
+    return fmt_duration(sec)
+
+
+def fmt_speed(chars_per_min):
+    """字/分 → '480 字/分' / '1.2 千字/分' / '--'。"""
+    v = _num(chars_per_min)
+    if v <= 0:
+        return "--"
+    if v >= 1000:
+        return "%.1f 千字/分" % (v / 1000.0)
+    return "%d 字/分" % int(round(v))
+
+
+# ---------------------------------------------------------------- 结构
 def blank():
+    """空账本。"""
     return {"version": VERSION, "days": {}, "books": {}, "sessions": []}
 
 
+def _num_row(row):
+    if not isinstance(row, dict):
+        return {"sec": 0.0, "chars": 0.0, "n": 0}
+    return {"sec": max(0.0, _num(row.get("sec"))),
+            "chars": max(0.0, _num(row.get("chars"))),
+            "n": int(_num(row.get("n")))}
+
+
+def _gaps(raw):
+    """把任意脏数据收成 [[偏移, 时长], ...]，丢掉负数与非数。"""
+    out = []
+    if isinstance(raw, (list, tuple)):
+        for pair in raw:
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                continue
+            off, dur = max(0.0, _num(pair[0])), max(0.0, _num(pair[1]))
+            if dur >= 60:
+                out.append([off, dur])
+    out.sort(key=lambda p: p[0])
+    return out[:200]
+
+
 def normalize(data):
-    """把读回来的东西修成能用的样子：字段缺、类型错、旧版本都在这儿兜住。"""
-    if not isinstance(data, dict):
-        return blank()
+    """把账本收拾成"结构一定对"的样子：缺的补、脏的扔、超量的截。"""
     out = blank()
+    if not isinstance(data, dict):
+        return out
     days = data.get("days")
     if isinstance(days, dict):
-        for k, v in days.items():
-            row = _num_row(v)
-            if row:
-                out["days"][str(k)] = row
+        for k, row in days.items():
+            key = str(k)
+            if len(key) != 10:
+                continue
+            clean = _num_row(row)
+            if clean["sec"] <= 0 and clean["chars"] <= 0:
+                continue
+            clean["sec"] = min(DAY_SEC_CAP, clean["sec"])
+            out["days"][key] = clean
     books = data.get("books")
     if isinstance(books, dict):
-        for k, v in books.items():
-            if not isinstance(v, dict):
+        for k, book in books.items():
+            if not isinstance(book, dict):
                 continue
-            book = _num_row(v)
-            book["title"] = str(v.get("title") or "")
-            book["first"] = _num(v.get("first"))
-            book["last"] = _num(v.get("last"))
-            book["days"] = {}
-            sub = v.get("days")
-            if isinstance(sub, dict):
-                for dk, dv in sub.items():
-                    row = _num_row(dv)
-                    if row:
-                        book["days"][str(dk)] = row
-            out["books"][str(k)] = book
+            row = _num_row(book)
+            days_in = book.get("days") if isinstance(book.get("days"), dict) else {}
+            per_day = {}
+            for dk, dv in days_in.items():
+                if len(str(dk)) != 10:
+                    continue
+                clean = _num_row(dv)
+                if clean["sec"] > 0 or clean["chars"] > 0:
+                    per_day[str(dk)] = clean
+            out["books"][str(k)] = {
+                "title": str(book.get("title") or ""),
+                "sec": row["sec"], "chars": row["chars"], "n": row["n"],
+                "first": max(0.0, _num(book.get("first"))),
+                "last": max(0.0, _num(book.get("last"))),
+                "days": per_day,
+            }
     sessions = data.get("sessions")
-    if isinstance(sessions, list):
+    if isinstance(sessions, (list, tuple)):
+        keep = []
         for s in sessions:
             if not isinstance(s, dict):
                 continue
-            sec = _num(s.get("sec"))
-            if sec <= 0:
+            sec = max(0.0, _num(s.get("sec")))
+            start = _num(s.get("start"))
+            if sec <= 0 or start <= 0:
                 continue
-            out["sessions"].append({
-                "k": str(s.get("k") or ""),
-                "title": str(s.get("title") or ""),
-                "start": _num(s.get("start")),
-                "sec": sec,
-                "chars": _num(s.get("chars")),
-                "end": _num(s.get("end")),
-            })
+            keep.append({"k": str(s.get("k") or ""), "title": str(s.get("title") or ""),
+                         "start": start, "sec": sec,
+                         "chars": max(0.0, _num(s.get("chars"))),
+                         "end": max(_num(s.get("end")), start),
+                         "gaps": _gaps(s.get("gaps"))})
+        keep.sort(key=lambda s: s["start"])
+        out["sessions"] = keep[-KEEP_SESSIONS:]
     return out
 
 
-def _num(v):
-    try:
-        n = float(v)
-    except (TypeError, ValueError):
-        return 0.0
-    if n != n or n in (float("inf"), float("-inf")):     # NaN / inf
-        return 0.0
-    return n
+def _reuse(data, fresh):
+    """原地把 fresh 灌进调用方给的那个 dict（调用方拿着引用，不能换成新对象）。"""
+    if isinstance(data, dict):
+        data.clear()
+        data.update(fresh)
+        return data
+    return fresh
 
 
-def _num_row(v):
-    if not isinstance(v, dict):
-        return None
-    sec = _num(v.get("sec"))
-    chars = _num(v.get("chars"))
-    n = _num(v.get("n"))
-    if sec <= 0 and chars <= 0:
-        return None
-    return {"sec": sec, "chars": chars, "n": n}
-
-
-# ---------------------------------------------------------------- 落盘
 def load(path):
-    """读统计文件；坏了就当空的，绝不让阅读器起不来。"""
+    """读账本；读不动、不是 JSON、结构离谱 → 当空的（绝不因为统计文件起不来）。"""
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return normalize(json.load(f))
-    except Exception:
+            raw = json.load(f)
+    except (OSError, ValueError):
         return blank()
+    return normalize(raw)
 
 
 def save(path, data):
-    """原子写：先写 .tmp 再 replace，半路被杀也不会留下半个 JSON。"""
+    """先写 .tmp 再 os.replace，写一半断电也不会留下半个文件。"""
+    clean = normalize(data)
+    payload = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+    tmp = path + ".tmp"
     try:
         folder = os.path.dirname(os.path.abspath(path))
         if folder and not os.path.isdir(folder):
             os.makedirs(folder, exist_ok=True)
-        tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(normalize(data), f, ensure_ascii=False, indent=1)
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
         return True
-    except Exception:
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
         return False
 
 
 # ---------------------------------------------------------------- 记账
-def _reuse(data, fresh):
-    """把修好的数据**写回调用方那个 dict**：调用方拿的是同一个对象，改完立刻可见。"""
-    if not isinstance(data, dict):
-        return fresh
-    data.clear()
-    data.update(fresh)
-    return data
-
-
-def add_span(data, key, title, start_ts, sec, chars, end_ts=None):
+def add_span(data, key, title, start_ts, sec, chars, end_ts=None, gaps=None):
     """把一段阅读记进日账 / 书账 / 会话表。原地改 `data`，返回它。
 
+    `gaps` 是这段内部的空隙 `[[偏移(相对 start_ts), 秒], ...]`，只用来画时间线。
     会话这里有两道闸，都是为了让"一场阅读"看起来像一场，而不是一串碎渣：
 
-    * **合并**：同一本书、和上一场之间断不到 `MERGE_GAP_SEC`，就并回上一场
-      （秒数与字数相加、结束时间往后延）。看一眼别的窗口、出去接个电话回来接着读，
-      在会话表里仍然是一整场。
+    * **并回同一场**：同一本书、和它上一场之间断不到 `SESSION_GAP_SEC`，就并回去
+      （秒数、字数相加、结束时间往后延，两场之间那段记成一个 gap）。
+      换个窗口看一眼、出去接个电话回来接着读，会话表里仍然是一整场。
     * **过短不记**：接不上上一场、本身又不到 `MIN_SESSION_SEC` 的，直接不算
       （打开又关掉、随手瞟一眼那种），日账和书账也不记——"没看的会话不用记录"。
 
-    注意顺序：先试着并进上一场，并得进去就不算短（一场正常阅读的尾巴可以是很短的一截）。
+    顺序很重要：先试着并回去，并得进去就不算短（一场正常阅读的尾巴可以是很短的一截）。
     """
     data = _reuse(data, normalize(data))
     sec = max(0.0, _num(sec))
@@ -175,28 +293,41 @@ def add_span(data, key, title, start_ts, sec, chars, end_ts=None):
         return data
     start = _num(start_ts) or time.time()
     end = _num(end_ts) or (start + sec)
+    end = max(end, start)
     key = str(key or "")
+    span_gaps = _gaps(gaps)
     sessions = data["sessions"]
 
     merged = False
-    if sessions:
-        last = sessions[-1]
-        last_end = _num(last.get("end")) or _num(last.get("start"))
-        last_start = _num(last.get("start"))
-        if (str(last.get("k") or "") == key and start >= last_start - 1
-                and (start - last_end) <= MERGE_GAP_SEC):
-            last["sec"] = _num(last.get("sec")) + sec
-            last["chars"] = _num(last.get("chars")) + chars
-            last["end"] = max(last_end, end)
-            if title:
-                last["title"] = str(title)
-            merged = True
+    for s in reversed(sessions):                 # 只并"这本书的上一场"，中间夹别的书不影响
+        if str(s.get("k") or "") != key:
+            continue
+        last_start = _num(s.get("start"))
+        last_end = _num(s.get("end")) or last_start
+        if start < last_start - 1 or (start - last_end) > SESSION_GAP_SEC:
+            break                                # 断得太久 / 时间倒流：不是同一场
+        shift = start - last_start
+        pause = start - last_end
+        if pause > IDLE_SEC:
+            s.setdefault("gaps", [])
+            s["gaps"] = _gaps(list(s["gaps"]) + [[max(0.0, shift - pause), pause]])
+        s["sec"] = _num(s.get("sec")) + sec
+        s["chars"] = _num(s.get("chars")) + chars
+        s["end"] = max(last_end, end)
+        if span_gaps:
+            s["gaps"] = _gaps(list(s.get("gaps") or []) +
+                              [[shift + off, dur] for off, dur in span_gaps])
+        if title:
+            s["title"] = str(title)
+        merged = True
+        break
 
     if not merged:
         if sec < MIN_SESSION_SEC:
             return data                     # 太短、又接不上：这就是"没看"，一个字都不记
         sessions.append({"k": key, "title": str(title or ""), "start": start,
-                         "sec": sec, "chars": chars, "end": end})
+                         "sec": sec, "chars": chars, "end": end,
+                         "gaps": span_gaps})
         data["sessions"] = sessions[-KEEP_SESSIONS:]
 
     day = day_key(start)
@@ -227,229 +358,232 @@ def add_span(data, key, title, start_ts, sec, chars, end_ts=None):
 
 
 def _trim(table, keep):
+    """只留最近的 `keep` 个日期。"""
     if len(table) <= keep:
         return table
-    keys = sorted(table.keys())[-keep:]
-    return {k: table[k] for k in keys}
+    for k in sorted(table)[:-keep]:
+        table.pop(k, None)
+    return table
+
+
+# ---------------------------------------------------------------- 时间线
+def session_gaps(s):
+    """一场的内部空隙 `[[偏移, 秒], ...]`（老账本没有这一项时给空表）。"""
+    if not isinstance(s, dict):
+        return []
+    return _gaps(s.get("gaps"))
+
+
+def active_intervals(s):
+    """这一场里"真在读"的时间段 [(起, 止), ...]：整场减去空隙。"""
+    if not isinstance(s, dict):
+        return []
+    start = _num(s.get("start"))
+    if start <= 0:
+        return []
+    end = max(_num(s.get("end")), start + _num(s.get("sec")))
+    out = []
+    cur = start
+    for off, dur in session_gaps(s):
+        g0 = start + off
+        g1 = min(end, g0 + dur)
+        if g1 <= cur or g0 >= end:
+            continue
+        if g0 > cur:
+            out.append((cur, g0))
+        cur = max(cur, g1)
+        if cur >= end:
+            break
+    if cur < end:
+        out.append((cur, end))
+    return [(a, b) for a, b in out if b > a]
+
+
+def day_slots(data, day=None, key="", slot_sec=SLOT_SEC):
+    """某一天的时间线：每格在读的秒数（默认 5 分钟一格，288 格）。
+
+    `key` 非空就只算那本书。格子的秒数是被会话的活跃段裁出来的，
+    所以"读了 3 分钟就停"那种会显示成半格，不是整格。
+    """
+    day = str(day or day_key())
+    base = _day_start_epoch(day)
+    n = max(1, int(86400 // max(60, int(slot_sec))))
+    slots = [0.0] * n
+    for s in data.get("sessions") or []:
+        if key and str(s.get("k") or "") != key:
+            continue
+        for a, b in active_intervals(s):
+            if b <= base or a >= base + n * slot_sec:
+                continue
+            c0 = max(0, int((a - base) // slot_sec))
+            c1 = min(n - 1, int((b - base - 0.001) // slot_sec))
+            for c in range(c0, c1 + 1):
+                seg_a = max(a, base + c * slot_sec)
+                seg_b = min(b, base + (c + 1) * slot_sec)
+                if seg_b > seg_a:
+                    slots[c] += (seg_b - seg_a)
+    return slots
+
+
+def today_sessions(data, day=None, key=""):
+    """这一天的会话（给时间线下面列"哪几段"用），最新的在前。"""
+    day = str(day or day_key())
+    out = [s for s in (data.get("sessions") or [])
+           if day_key(s.get("start")) == day and (not key or str(s.get("k") or "") == key)]
+    return list(reversed(out))
 
 
 # ---------------------------------------------------------------- 聚合
-def speed(data, key=None):
-    """字/分钟。只算够长的那几次（≥10 秒），一次 3 秒的误触不该把速度拉到天上。"""
-    sec = chars = 0.0
-    if key is None:
-        for row in data.get("days", {}).values():
-            sec += _num(row.get("sec"))
-            chars += _num(row.get("chars"))
-    else:
+def speed(data, key=""):
+    """字/分：总字数 ÷ 总分钟。`key` 为空就是全局。"""
+    if key:
         book = (data.get("books") or {}).get(str(key)) or {}
-        sec = sum(_num(r.get("sec")) for r in (book.get("days") or {}).values())
-        chars = sum(_num(r.get("chars")) for r in (book.get("days") or {}).values())
+        sec, chars = _num(book.get("sec")), _num(book.get("chars"))
+    else:
+        sec = sum(_num(r.get("sec")) for r in (data.get("days") or {}).values())
+        chars = sum(_num(r.get("chars")) for r in (data.get("days") or {}).values())
     if sec < 10:
         return 0.0
     return chars / (sec / 60.0)
 
 
-def active_days(data, key=None):
-    """读过书的天数（不是日历跨度：中间停三个月不算）。"""
-    if key is None:
-        return sorted(data.get("days", {}).keys())
-    book = (data.get("books") or {}).get(str(key)) or {}
-    return sorted((book.get("days") or {}).keys())
+def active_days(data, key=""):
+    """有记录的日子（升序）。"""
+    if key:
+        book = (data.get("books") or {}).get(str(key)) or {}
+        return sorted(k for k, v in (book.get("days") or {}).items() if _num(v.get("sec")) > 0)
+    return sorted(k for k, v in (data.get("days") or {}).items() if _num(v.get("sec")) > 0)
 
 
-def streak(data, key=None, now=None):
-    """连续阅读天数：从今天往回数，今天没读就看昨天（昨天读了今天还没开始不算断）。"""
-    have = set(active_days(data, key))
-    if not have:
+def streak(data, key="", now=None):
+    """从今天往回连着读了多少天。今天还没读就看昨天（今天没读不算断）。"""
+    days = set(active_days(data, key))
+    if not days:
         return 0
-    today = day_key(now)
-    day = time.mktime(time.strptime(today, "%Y-%m-%d"))
-    if day_key(day) not in have:
-        day -= 86400                      # 今天还没读：从昨天开始数（今天还有机会）
-        if day_key(day) not in have:
-            return 0
+    today = datetime.date.fromisoformat(day_key(now))
+    if today.isoformat() not in days:
+        today = today - datetime.timedelta(days=1)
     n = 0
-    while day_key(day) in have:
+    while today.isoformat() in days:
         n += 1
-        day -= 86400
+        today = today - datetime.timedelta(days=1)
     return n
 
 
-def series(data, days=14, key=None, now=None):
-    """最近 N 天，每天多少秒（从老到新，最后一个是今天）。"""
-    have = {}
-    if key is None:
-        have = {k: _num(v.get("sec")) for k, v in data.get("days", {}).items()}
-    else:
-        book = (data.get("books") or {}).get(str(key)) or {}
-        have = {k: _num(v.get("sec")) for k, v in (book.get("days") or {}).items()}
-    base = time.mktime(time.strptime(day_key(now), "%Y-%m-%d"))
+def series(data, days=14, key="", now=None):
+    """近 N 天：[(日期, 秒), ...]，从早到晚。"""
+    days = max(1, int(days))
+    base = datetime.date.fromisoformat(day_key(now))
     out = []
-    for i in range(max(1, int(days)) - 1, -1, -1):
-        d = day_key(base - i * 86400)
-        out.append((d, have.get(d, 0.0)))
+    if key:
+        book = (data.get("books") or {}).get(str(key)) or {}
+        table = book.get("days") or {}
+    else:
+        table = data.get("days") or {}
+    for i in range(days - 1, -1, -1):
+        d = (base - datetime.timedelta(days=i)).isoformat()
+        out.append((d, _num((table.get(d) or {}).get("sec"))))
     return out
 
 
-def heatmap(data, weeks=53, key=None, now=None):
-    """日历热力图的数据：`weeks` 列 × 7 行，每格 (日期, 秒数) 或 None（未来/越界）。"""
-    have = {}
-    if key is None:
-        have = {k: _num(v.get("sec")) for k, v in data.get("days", {}).items()}
-    else:
+def heatmap(data, weeks=53, key="", now=None):
+    """53 周 × 7 行：[[(日期, 秒) 或 None, ...7], ...weeks]，最后一列含今天。"""
+    weeks = max(1, int(weeks))
+    today = datetime.date.fromisoformat(day_key(now))
+    # 行 = 周一..周日；最后一列的周日就是今天所在那周的周日
+    end = today + datetime.timedelta(days=(6 - today.weekday()))
+    start = end - datetime.timedelta(days=weeks * 7 - 1)
+    if key:
         book = (data.get("books") or {}).get(str(key)) or {}
-        have = {k: _num(v.get("sec")) for k, v in (book.get("days") or {}).items()}
-    today = time.mktime(time.strptime(day_key(now), "%Y-%m-%d"))
-    # 右端对齐到今天，并且今天所在那一列的周日打头（Python: 周一=0）
-    t = time.localtime(today)
-    offset = (t.tm_wday + 1) % 7           # 周日=0 … 周六=6
-    last_sunday = today - offset * 86400
-    start = last_sunday - (weeks - 1) * 7 * 86400
+        table = book.get("days") or {}
+    else:
+        table = data.get("days") or {}
     cols = []
     for w in range(weeks):
         col = []
         for d in range(7):
-            ts = start + (w * 7 + d) * 86400
-            if ts > today:
+            day = start + datetime.timedelta(days=w * 7 + d)
+            if day > today:
                 col.append(None)
-            else:
-                k = day_key(ts)
-                col.append((k, have.get(k, 0.0)))
+                continue
+            k = day.isoformat()
+            col.append((k, _num((table.get(k) or {}).get("sec"))))
         cols.append(col)
     return cols
 
 
 def month_marks(cols):
-    """热力图顶上的月份标签：[(列号, '11月')]，只在该月第一列出现时打一个。"""
+    """热力图上要标的月份：[(列号, '11月'), ...]（跨月才标，第一列标第一个月）。"""
     marks = []
-    seen = ""
-    for i, col in enumerate(cols):
-        for cell in col:
-            if not cell:
-                continue
-            day = cell[0]
-            tag = day[:7]
-            if tag != seen:
-                seen = tag
-                marks.append((i, "%d月" % int(day[5:7])))
-            break
+    last = None
+    for i, col in enumerate(cols or []):
+        first = next((cell for cell in col if cell), None)
+        if not first:
+            continue
+        month = first[0][5:7]
+        if month != last:
+            marks.append((i, "%d月" % int(month)))
+            last = month
     return marks
 
 
 def book_view(data, key, total=0, pos=0, now=None):
-    """一本书的全套数字（界面直接用这坨）。"""
-    data = normalize(data)
-    book = (data.get("books") or {}).get(str(key)) or {}
-    sec = sum(_num(r.get("sec")) for r in (book.get("days") or {}).values())
-    chars = sum(_num(r.get("chars")) for r in (book.get("days") or {}).values())
-    spd = speed(data, key)
-    total = int(total or 0)
-    pos = max(0, min(int(pos or 0), total or 10 ** 12))
-    remain = max(0, total - pos)
-    first = _num(book.get("first"))
-    last = _num(book.get("last"))
+    """一本书的汇总（统计页用的那一份）。"""
+    key = str(key or "")
+    book = (data.get("books") or {}).get(key) or {}
+    days = book.get("days") or {}
+    sec = _num(book.get("sec"))
+    chars = _num(book.get("chars"))
+    n = int(_num(book.get("n")))
+    day_keys = sorted(k for k, v in days.items() if _num(v.get("sec")) > 0)
+    span_days = 0
+    if len(day_keys) >= 2:
+        span_days = (datetime.date.fromisoformat(day_keys[-1]) -
+                     datetime.date.fromisoformat(day_keys[0])).days + 1
+    elif day_keys:
+        span_days = 1
+    total = max(0, int(_num(total)))
+    pos = max(0, int(_num(pos)))
+    remain = max(0, total - pos) if total else 0
+    sp = speed(data, key)
+    remaining_sec = 0.0
+    if remain and sp > 0:
+        remaining_sec = remain / sp * 60.0
     return {
-        "key": str(key),
-        "title": str(book.get("title") or ""),
-        "sec": sec,
-        "chars": chars,
-        "sessions": int(_num(book.get("n"))),
-        "speed": spd,
-        "today_sec": _num((book.get("days") or {}).get(day_key(now), {}).get("sec")),
-        "streak": streak(data, key, now),
-        "active_days": len(active_days(data, key)),
-        "first": first,
-        "last": last,
-        "span_days": int((last - first) // 86400) + 1 if first and last else 0,
-        "total": total,
-        "pos": pos,
-        "remain": remain,
+        "key": key, "title": book.get("title") or "",
+        "sec": sec, "chars": chars, "sessions": n, "speed": sp,
+        "total": total, "pos": pos,
+        "today_sec": _num(((book.get("days") or {}).get(day_key(now)) or {}).get("sec")),
         "pct": (100.0 * pos / total) if total else 0.0,
-        "remaining_sec": (remain / (spd / 60.0)) if spd > 0 and remain > 0 else 0.0,
+        "remain": remain, "remaining_sec": remaining_sec,
+        "first": _num(book.get("first")), "last": _num(book.get("last")),
+        "active_days": len(day_keys), "span_days": span_days,
+        "avg_session": (sec / n) if n else 0.0,
+        "streak": streak(data, key, now),
     }
 
 
 def overview(data, now=None):
-    """全局数字：今日 / 本周 / 本月 / 总计 / 连续 / 速度 / 活跃天数。"""
-    data = normalize(data)
+    """全局概览。"""
+    days = data.get("days") or {}
     today = day_key(now)
-    base = time.mktime(time.strptime(today, "%Y-%m-%d"))
-
-    def _sum(since_ts):
-        sec = chars = 0.0
-        for k, row in data.get("days", {}).items():
-            ts = time.mktime(time.strptime(k, "%Y-%m-%d"))
-            if ts >= since_ts:
-                sec += _num(row.get("sec"))
-                chars += _num(row.get("chars"))
-        return sec, chars
-
-    total_sec = sum(_num(r.get("sec")) for r in data.get("days", {}).values())
-    total_chars = sum(_num(r.get("chars")) for r in data.get("days", {}).values())
-    day_sec, day_chars = _sum(base)
-    week_sec, week_chars = _sum(base - 6 * 86400)
-    month_sec, month_chars = _sum(base - 29 * 86400)
-    days = active_days(data)
+    base = datetime.date.fromisoformat(today)
+    week = [(base - datetime.timedelta(days=i)).isoformat() for i in range(7)]
+    sec = sum(_num(r.get("sec")) for r in days.values())
+    chars = sum(_num(r.get("chars")) for r in days.values())
+    sessions = data.get("sessions") or []
     return {
-        "today_sec": day_sec, "today_chars": day_chars,
-        "week_sec": week_sec, "week_chars": week_chars,
-        "month_sec": month_sec, "month_chars": month_chars,
-        "sec": total_sec, "chars": total_chars,
-        "speed": speed(data),
-        "streak": streak(data, None, now),
-        "active_days": len(days),
-        "first_day": days[0] if days else "",
-        "last_day": days[-1] if days else "",
+        "today_sec": _num((days.get(today) or {}).get("sec")),
+        "today_chars": _num((days.get(today) or {}).get("chars")),
+        "week_sec": sum(_num((days.get(d) or {}).get("sec")) for d in week),
+        "week_chars": sum(_num((days.get(d) or {}).get("chars")) for d in week),
+        "sec": sec, "chars": chars,
+        "speed": (chars / (sec / 60.0)) if sec >= 10 else 0.0,
+        "sessions": len(sessions),
+        "avg_session": (sum(_num(s.get("sec")) for s in sessions) / len(sessions)) if sessions else 0.0,
+        "streak": streak(data, "", now),
+        "active_days": len(active_days(data)),
         "days": days,
+        "first_day": min(days) if days else "",
+        "last_day": max(days) if days else "",
     }
-
-
-# ---------------------------------------------------------------- 排版小工具
-def fmt_duration(sec, short=False):
-    """3600*3+720 → '3 小时 12 分'；不到 1 分钟 → '不足 1 分'。"""
-    sec = max(0, int(round(_num(sec))))
-    if sec < 60:
-        return "0 分" if short else "不足 1 分"
-    minutes = sec // 60
-    hours, minutes = divmod(minutes, 60)
-    if hours and minutes:
-        return "%d 小时 %d 分" % (hours, minutes)
-    if hours:
-        return "%d 小时" % hours
-    return "%d 分" % minutes
-
-
-def fmt_speed(chars_per_min):
-    """'480 字/分'；太少就说'--'。"""
-    value = _num(chars_per_min)
-    if value <= 0:
-        return "--"
-    if value >= 1000:
-        return "%.1f 千字/分" % (value / 1000.0)
-    return "%d 字/分" % int(round(value))
-
-
-def fmt_day(ts):
-    return day_key(ts) if _num(ts) else "--"
-
-
-def fmt_clock(ts):
-    try:
-        return time.strftime("%H:%M", time.localtime(float(ts)))
-    except Exception:
-        return "--"
-
-
-def fmt_gap(sec):
-    """'3 天前' / '2 小时前'（书架和统计页共用一套说法）。"""
-    sec = _num(sec)
-    if sec < 60:
-        return "刚刚"
-    if sec < 3600:
-        return "%d 分钟前" % int(sec // 60)
-    if sec < 86400:
-        return "%d 小时前" % int(sec // 3600)
-    if sec < 86400 * 60:
-        return "%d 天前" % int(sec // 86400)
-    return time.strftime("%Y-%m-%d", time.localtime(time.time() - sec))

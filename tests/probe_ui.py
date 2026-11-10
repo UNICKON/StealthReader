@@ -4297,10 +4297,10 @@ try:
           abs((w.stats_session or {}).get("sec", 0) - _sec38 - 5) < 0.01,
           (w.stats_session or {}).get("sec"))
 
-    w.stats_active_ts = time.monotonic() - 700          # 停 11 分钟 = 这一场真结束了
+    w.stats_active_ts = time.monotonic() - 3000         # 停 50 分钟 = 这一场真结束了
     w._stats_tick()
     _day = w.stats_data["days"].get(_rs38.day_key(), {})
-    check("停 10 分钟以上才收场：这一场写进日账（30 秒 / 3000 字）",
+    check("停 50 分钟（超过 45 分钟分界）才收场：这一场写进日账（30 秒 / 3000 字）",
           w.stats_session is None and int(_day.get("sec", 0)) == 30
           and int(_day.get("chars", 0)) == 3000, (w.stats_session, _day))
     _disk = _rs38.load(os.environ["STEALTHREADER_STATS"])
@@ -4312,11 +4312,22 @@ try:
           w._stats_tick() is None and w.stats_session is None, w.stats_session)
 
     _last38 = (w.stats_data["sessions"] or [])[-1]
+    # 探针里几拍是瞬间打完的，end 和 start 只差几毫秒；真机是每拍走 5 秒。
+    # 这里把 end 补成和 sec 一致，否则"空隙"会盖住整场，验不出两段。
+    _last38["end"] = _last38["start"] + _last38["sec"]
     _rs38.add_span(w.stats_data, "probe-stats-k", "统计用例",
-                   _last38["end"] + 300, 120, 1000)     # 隔 5 分钟又来一场
+                   _last38["end"] + 300, 120, 1000,
+                   end_ts=_last38["end"] + 420)         # 隔 5 分钟又来一场
+    _merged38 = (w.stats_data["sessions"] or [])[-1]
     check("隔 5 分钟再读：并回上一场，会话表不会多一行",
           len(w.stats_data["sessions"]) == 1,
           len(w.stats_data["sessions"]))
+    check("并进去的那 5 分钟记成场内空隙（画时间线要用）",
+          _merged38["gaps"] and abs(_merged38["gaps"][0][1] - 300) < 0.01,
+          _merged38["gaps"])
+    check("活跃区间把空隙挖掉了（两段）",
+          len(_rs38.active_intervals(_merged38)) == 2,
+          len(_rs38.active_intervals(_merged38)))
     _rs38.MIN_SESSION_SEC = 60                          # 真口径：不到 1 分钟不记
     _solo38 = _rs38.blank()
     _rs38.add_span(_solo38, "probe-solo", "随手翻的书", time.time() - 300, 20, 0)
@@ -4366,6 +4377,29 @@ try:
           _dlg38.session_table.rowCount() == len(
               [s for s in w.stats_data["sessions"] if s["k"] == "probe-stats-k"]),
           _dlg38.session_table.rowCount())
+    check("会话表六列：活跃 / 开始 / 时长 / 字数 / 速度 / 书名",
+          [_dlg38.session_table.horizontalHeaderItem(i).text()
+           for i in range(_dlg38.session_table.columnCount())]
+          == ["活跃", "开始", "时长", "字数", "速度", "书名"], None)
+    check("第一列是迷你时间线，拿到和表格一样多的行",
+          isinstance(_dlg38.session_table.itemDelegateForColumn(0), app_mod.SessionBarDelegate)
+          and len(_dlg38.session_bar.rows) == _dlg38.session_table.rowCount(),
+          len(_dlg38.session_bar.rows))
+    check("开始列显示到分钟（不是只有日期）",
+          len(_dlg38.session_table.item(0, 1).text()) >= 8
+          and ":" in _dlg38.session_table.item(0, 1).text(),
+          _dlg38.session_table.item(0, 1).text())
+    _tip38 = _dlg38.session_table.item(0, 1).toolTip()
+    check("悬停详情给到分钟级的开始 / 结束 / 跨度 / 在读 / 字数 / 书名",
+          all(k in _tip38 for k in ("开始", "结束", "跨度", "在读", "字数", "书名"))
+          and ":" in _tip38, _tip38.replace("\n", " | "))
+    check("选中一场就画出它的时间线（默认选最新那场）",
+          isinstance(_dlg38.session_timeline.session_, dict)
+          and _dlg38.session_timeline.session_ is _dlg38.session_rows[0], None)
+    check("今天的时间线 288 格，且有读的格子",
+          len(_dlg38.day_timeline.slots) == 288
+          and sum(1 for v in _dlg38.day_timeline.slots if v > 0) > 0,
+          len(_dlg38.day_timeline.slots))
     check("热力图 / 柱状图的自绘区域都拿到了数据",
           len(_dlg38.bars.points) == 14 and bool(_dlg38.heat.cols), len(_dlg38.bars.points))
     _dlg38.resize(900, 660)
