@@ -17,6 +17,10 @@ config 每次保存都整体重写，日账塞进去早晚被冲掉）：
     }
 
 几条口径先写死（免得以后各处各算一套）：
+  * 会话是**攒出来的**，不是每停一下切一段：同一本书和上一场断不到 `MERGE_GAP_SEC`
+    （10 分钟）就并回上一场——切窗口、出去接个电话回来接着读，会话表里仍是一场。
+  * 接不上上一场、本身又不到 `MIN_SESSION_SEC`（1 分钟）的，整段不记：
+    打开又关掉、随手瞟一眼那种不该占一条"会话"。
   * 一次会话算在**开始那一刻**所在的日期里。跨零点读通宵会全算前一天，
     这是刻意的：宁可少一天，也不要同一次阅读被劈成两段、两天的均值都失真。
   * 字数只累加**正增量**：往回翻、跳章会算出负数，那不是"读掉了"。
@@ -30,7 +34,9 @@ VERSION = 1
 STATS_NAME = "reading_stats.json"
 
 TICK_SEC = 5              # 心跳粒度：5 秒一次（界面那边就这么打）
-IDLE_SEC = 180            # 3 分钟没有任何输入 = 人不在，停止计时
+IDLE_SEC = 180            # 3 分钟没有任何输入 = 先停止计时（这一场先不收，人可能只是在看）
+MERGE_GAP_SEC = 600       # 同一本书断不到 10 分钟 = 还是同一场（会话别碎成一片）
+MIN_SESSION_SEC = 60      # 接不上上一场、本身又读了不到 1 分钟的：当成"没看"，整段不记
 KEEP_SESSIONS = 400       # 会话表只留最近这么多条
 KEEP_DAYS = 420           # 日账留一年多一点（热力图 53 周够用）
 DAY_SEC_CAP = 18 * 3600   # 单日上限：机器挂了、时钟跳了都不至于记出 20 小时
@@ -150,7 +156,18 @@ def _reuse(data, fresh):
 
 
 def add_span(data, key, title, start_ts, sec, chars, end_ts=None):
-    """把一段阅读（一次会话）记进日账 / 书账 / 会话表。返回 data 本身（原地改）。"""
+    """把一段阅读记进日账 / 书账 / 会话表。原地改 `data`，返回它。
+
+    会话这里有两道闸，都是为了让"一场阅读"看起来像一场，而不是一串碎渣：
+
+    * **合并**：同一本书、和上一场之间断不到 `MERGE_GAP_SEC`，就并回上一场
+      （秒数与字数相加、结束时间往后延）。看一眼别的窗口、出去接个电话回来接着读，
+      在会话表里仍然是一整场。
+    * **过短不记**：接不上上一场、本身又不到 `MIN_SESSION_SEC` 的，直接不算
+      （打开又关掉、随手瞟一眼那种），日账和书账也不记——"没看的会话不用记录"。
+
+    注意顺序：先试着并进上一场，并得进去就不算短（一场正常阅读的尾巴可以是很短的一截）。
+    """
     data = _reuse(data, normalize(data))
     sec = max(0.0, _num(sec))
     chars = max(0.0, _num(chars))
@@ -158,31 +175,53 @@ def add_span(data, key, title, start_ts, sec, chars, end_ts=None):
         return data
     start = _num(start_ts) or time.time()
     end = _num(end_ts) or (start + sec)
-    day = day_key(start)
+    key = str(key or "")
+    sessions = data["sessions"]
 
+    merged = False
+    if sessions:
+        last = sessions[-1]
+        last_end = _num(last.get("end")) or _num(last.get("start"))
+        last_start = _num(last.get("start"))
+        if (str(last.get("k") or "") == key and start >= last_start - 1
+                and (start - last_end) <= MERGE_GAP_SEC):
+            last["sec"] = _num(last.get("sec")) + sec
+            last["chars"] = _num(last.get("chars")) + chars
+            last["end"] = max(last_end, end)
+            if title:
+                last["title"] = str(title)
+            merged = True
+
+    if not merged:
+        if sec < MIN_SESSION_SEC:
+            return data                     # 太短、又接不上：这就是"没看"，一个字都不记
+        sessions.append({"k": key, "title": str(title or ""), "start": start,
+                         "sec": sec, "chars": chars, "end": end})
+        data["sessions"] = sessions[-KEEP_SESSIONS:]
+
+    day = day_key(start)
     row = data["days"].setdefault(day, {"sec": 0.0, "chars": 0.0, "n": 0})
     row["sec"] = min(DAY_SEC_CAP, row["sec"] + sec)
     row["chars"] += chars
-    row["n"] += 1
+    if not merged:
+        row["n"] += 1
 
-    key = str(key or "")
     book = data["books"].setdefault(key, {"title": "", "sec": 0.0, "chars": 0.0, "n": 0,
                                           "first": 0.0, "last": 0.0, "days": {}})
     if title:
         book["title"] = str(title)
     book["sec"] += sec
     book["chars"] += chars
-    book["n"] += 1
+    if not merged:
+        book["n"] += 1
     book["first"] = min(book["first"] or start, start)
     book["last"] = max(book["last"] or 0.0, end)
-    sub = book["days"].setdefault(day, {"sec": 0.0, "chars": 0.0, "n": 0})
-    sub["sec"] += sec
-    sub["chars"] += chars
-    sub["n"] += 1
+    sub_row = book["days"].setdefault(day, {"sec": 0.0, "chars": 0.0, "n": 0})
+    sub_row["sec"] += sec
+    sub_row["chars"] += chars
+    if not merged:
+        sub_row["n"] += 1
 
-    data["sessions"].append({"k": key, "title": str(title or ""), "start": start,
-                             "sec": sec, "chars": chars, "end": end})
-    data["sessions"] = data["sessions"][-KEEP_SESSIONS:]
     data["days"] = _trim(data["days"], KEEP_DAYS)
     return data
 

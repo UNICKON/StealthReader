@@ -3302,6 +3302,34 @@ check("进度与时间仍然是右对齐那套（统计入口不能把书架的�
       "class ShelfRowDelegate(QStyledItemDelegate)" in _main_src
       and "size.setWidth(10)" in _main_src, None)
 
+check("会话别碎：同书断不到 10 分钟并成一场；接不上又不到 1 分钟的整段不记",
+      "MERGE_GAP_SEC = 600" in _rs_src and "MIN_SESSION_SEC = 60" in _rs_src
+      and "if not merged:" in _rs_src and "if sec < MIN_SESSION_SEC:" in _rs_src, None)
+check("心跳：停 3 分钟只停表，停 10 分钟才收场（收早了会话就碎）",
+      "if gap > reading_stats.MERGE_GAP_SEC:" in _main_src
+      and 'self._stats_flush("停了挺久")' in _main_src
+      and "if gap > reading_stats.IDLE_SEC:" in _main_src
+      and 'session["last"] = time.time()' in _main_src, None)
+
+import reading_stats as _rs28                                                 # noqa: E402
+_now28 = time.time()
+_merge28 = _rs28.blank()
+_rs28.add_span(_merge28, "k", "书", _now28 - 3600, 600, 1000)
+_rs28.add_span(_merge28, "k", "书", _now28 - 2700, 600, 1000)      # 断 5 分钟
+check("会话合并（跑真逻辑）：隔 5 分钟的两段 = 一场，秒数相加",
+      len(_merge28["sessions"]) == 1 and abs(_merge28["sessions"][0]["sec"] - 1200) < 0.01,
+      (len(_merge28["sessions"]), _merge28["sessions"][0]["sec"]))
+_apart28 = _rs28.blank()
+_rs28.add_span(_apart28, "k", "书", _now28 - 3600, 600, 1000)
+_rs28.add_span(_apart28, "k", "书", _now28 - 3600 + 600 + 660, 600, 1000)   # 断 11 分钟
+check("会话不硬并：隔 11 分钟就是两场", len(_apart28["sessions"]) == 2,
+      len(_apart28["sessions"]))
+_short28 = _rs28.blank()
+_rs28.add_span(_short28, "k", "书", _now28 - 600, 30, 0)
+check("没看的短场不记（30 秒、接不上上一场）：会话、日账、书账全空",
+      _short28["sessions"] == [] and _short28["days"] == {} and _short28["books"] == {},
+      (_short28["sessions"], _short28["days"]))
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23

@@ -4980,8 +4980,13 @@ class StealthReader(QWidget):
             self._stats_flush("离开了书页")
             return
         now = time.monotonic()
-        if not self.stats_active_ts or (now - self.stats_active_ts) > reading_stats.IDLE_SEC:
-            self._stats_flush("闲着")
+        gap = now - (self.stats_active_ts or now)
+        # 停了先**停止计时**，但别急着收场：收早了会话就碎成一片（真人 2026-11-10 提的）。
+        # 真收场要等断得够久（MERGE_GAP_SEC），那时候它本来就该算另一场了。
+        if gap > reading_stats.MERGE_GAP_SEC:
+            self._stats_flush("停了挺久")
+            return
+        if gap > reading_stats.IDLE_SEC:
             return
         key = self.book_pos_key(self.local_file_path)
         if not key:
@@ -4998,6 +5003,7 @@ class StealthReader(QWidget):
         session["pos"] = int(pos)
         session["sec"] += reading_stats.TICK_SEC
         session["chars"] += delta
+        session["last"] = time.time()      # 真实结束时间：合并会话来算间隔用
         if not session.get("title"):
             session["title"] = self._stats_book_title()
         # 一分钟落一次盘：被强杀也不至于丢掉整场
@@ -5017,7 +5023,8 @@ class StealthReader(QWidget):
                                session.get("title") or "",
                                session.get("start") or time.time(),
                                session.get("sec") or 0,
-                               session.get("chars") or 0)
+                               session.get("chars") or 0,
+                               end_ts=session.get("last") or time.time())
         self._stats_commit()
         log_event("阅读统计：记一场 %s（%s，%s）" % (
             reading_stats.fmt_duration(session.get("sec")),

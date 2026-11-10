@@ -4260,6 +4260,9 @@ try:
     w.local_start_index = 0
     w.current_top_offset = lambda: _pos38["v"]
     w.book_pos_key = lambda path: "probe-stats-k"
+    # 门槛压到 10 秒：只是为了让"23 秒这一场"能在探针里几拍走完（真值是 60，最后单独验一条）
+    _min38_bak = _rs38.MIN_SESSION_SEC
+    _rs38.MIN_SESSION_SEC = 10
 
     check("守卫：窗口收起就不算在读", (w.hide() or True) and not w._stats_can_count(), None)
     w.show()
@@ -4281,19 +4284,45 @@ try:
     _s = w.stats_session or {}
     check("往回翻不记负数（字数原地不动）", abs(_s.get("chars", 0) - 3000) < 0.01, _s.get("chars"))
 
-    w.stats_active_ts = time.monotonic() - 240          # 4 分钟没动 = 人走了
+    _sec38 = (w.stats_session or {}).get("sec", 0)
+    w.stats_active_ts = time.monotonic() - 240          # 停 4 分钟：人可能在盯着这一页看
+    w._stats_tick()
+    check("停 3 分钟只是停止计时，这场先不收（会话不碎成一片）",
+          w.stats_session is not None
+          and abs((w.stats_session or {}).get("sec", 0) - _sec38) < 0.01,
+          (w.stats_session or {}).get("sec"))
+    w.note_reading_activity()                           # 人回来了
+    w._stats_tick()
+    check("人回来接着读：还是同一场，秒数继续长",
+          abs((w.stats_session or {}).get("sec", 0) - _sec38 - 5) < 0.01,
+          (w.stats_session or {}).get("sec"))
+
+    w.stats_active_ts = time.monotonic() - 700          # 停 11 分钟 = 这一场真结束了
     w._stats_tick()
     _day = w.stats_data["days"].get(_rs38.day_key(), {})
-    check("闲置一拍就收场：这场写进日账（25 秒 / 3000 字）",
-          w.stats_session is None and int(_day.get("sec", 0)) == 25
+    check("停 10 分钟以上才收场：这一场写进日账（30 秒 / 3000 字）",
+          w.stats_session is None and int(_day.get("sec", 0)) == 30
           and int(_day.get("chars", 0)) == 3000, (w.stats_session, _day))
     _disk = _rs38.load(os.environ["STEALTHREADER_STATS"])
     check("落盘了，而且能原样读回来（reading_stats.json 不是 config）",
-          bool(_disk["sessions"]) and _disk["sessions"][-1]["sec"] == 25
+          bool(_disk["sessions"]) and _disk["sessions"][-1]["sec"] == 30
           and os.path.basename(os.environ["STEALTHREADER_STATS"]) == "reading_stats.json",
           _disk["sessions"][-1:])
     check("收场之后不点不动，不会凭空再长一场",
           w._stats_tick() is None and w.stats_session is None, w.stats_session)
+
+    _last38 = (w.stats_data["sessions"] or [])[-1]
+    _rs38.add_span(w.stats_data, "probe-stats-k", "统计用例",
+                   _last38["end"] + 300, 120, 1000)     # 隔 5 分钟又来一场
+    check("隔 5 分钟再读：并回上一场，会话表不会多一行",
+          len(w.stats_data["sessions"]) == 1,
+          len(w.stats_data["sessions"]))
+    _rs38.MIN_SESSION_SEC = 60                          # 真口径：不到 1 分钟不记
+    _solo38 = _rs38.blank()
+    _rs38.add_span(_solo38, "probe-solo", "随手翻的书", time.time() - 300, 20, 0)
+    check("没真读的短场（20 秒、接不上别的）一条都不记",
+          _solo38["sessions"] == [] and _solo38["days"] == {} and _solo38["books"] == {},
+          (_solo38["sessions"], _solo38["days"]))
 
     w.book_pos_key = lambda path: "probe-stats-k2"
     w.local_file_path = os.path.join(SR, "books", "统计用例二.txt")
@@ -4398,6 +4427,10 @@ try:
     check("统计这套不影响 config：一条 self.config 都没写",
           all(k not in w.config for k in ("days", "books", "sessions", "stats")), None)
 finally:
+    try:
+        _rs38.MIN_SESSION_SEC = _min38_bak
+    except Exception:
+        _rs38.MIN_SESSION_SEC = 60
     w.stats_data = _BACK38["stats_data"]
     w.displayed_is_local_page = _BACK38["displayed"]
     w._book_veiled = _BACK38["veiled"]
