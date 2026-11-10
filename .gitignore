@@ -4,6 +4,10 @@ config.json
 # 个人的划线 / 笔记 / 书签
 annotations.json
 
+# 个人阅读统计（时长 / 日账 / 会话）
+reading_stats.json
+reading_stats.json.tmp
+
 # 事件日志
 stealthreader.log
 

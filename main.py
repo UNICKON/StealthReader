@@ -30,7 +30,8 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QMenu,
                              QListWidgetItem, QLabel, QFontComboBox, QComboBox, QSizePolicy, QFileDialog,
                              QInputDialog, QMessageBox, QToolTip, QTabWidget, QScrollArea,
                              QStackedWidget, QGridLayout, QGraphicsOpacityEffect,
-                             QStyledItemDelegate, QStyleOptionViewItem)
+                             QStyledItemDelegate, QStyleOptionViewItem,
+                             QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar)
 from PyQt5.QtCore import (Qt, QPoint, QRect, QPointF, QSize, pyqtSignal, QObject,
                           QThread, QTimer, QEvent, QUrl)
 from PyQt5.QtGui import (QFont, QColor, QCursor, QKeySequence, QPainter, QPen,
@@ -53,6 +54,10 @@ except Exception as _anki_import_err:      # pragma: no cover
     class AnkiNeedsKey(AnkiError): pass
     class AnkiCommandError(AnkiError): pass
     AnkiClient = None
+
+# 阅读统计：日账 / 书账 / 会话表 → 时长、速度、连续天数、热力图（纯标准库，不碰 Qt）。
+# 这是本仓库自己的文件，缺了就是装错了——直接 import，出问题在启动日志里一眼看得见。
+import reading_stats
 
 # 社区统一流：数据模型 / 来源适配器 / HTML 渲染（纯标准库）。缺文件也不该让阅读器起不来。
 try:
@@ -258,6 +263,14 @@ def load_bundled_fonts(font_dir=None):
     return got
 
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
+
+
+def stats_path():
+    """阅读统计落在哪。`STEALTHREADER_STATS` 可以指到别处——探针要跑真逻辑，又不能弄脏真账。"""
+    override = os.environ.get("STEALTHREADER_STATS")
+    if override:
+        return override
+    return os.path.join(APP_DIR, reading_stats.STATS_NAME)
 
 # 行距（字号行高的百分比）、段间距（同样以行高为基准）、页边距（逻辑像素）
 LINE_SPACING_MIN = 80
@@ -2266,6 +2279,11 @@ class LocalShelfDialog(QDialog):
         btn_forget = QPushButton("移出书架")
         btn_forget.clicked.connect(self.forget_selected)
         bottom.addWidget(btn_forget)
+        # 入口就挨着「移出书架」：选中一本书 → 看那本的统计；没选 → 看全部
+        btn_stats = QPushButton("📊 阅读统计")
+        btn_stats.setToolTip("选中一本书看它的时长 / 速度 / 热力图；不选就是全部")
+        btn_stats.clicked.connect(self.open_stats)
+        bottom.addWidget(btn_stats)
         bottom.addStretch(1)
         btn_close = QPushButton("关闭")
         btn_close.clicked.connect(self.reject)
@@ -2325,6 +2343,14 @@ class LocalShelfDialog(QDialog):
             self.selected = {"path": path}
             self.accept()
 
+    def open_stats(self):
+        """书架进统计页：选中哪本就先看哪本，没选的看全部。"""
+        book = self.current_book()
+        dlg = ReadingStatsDialog(self.win, book=book, parent=self)
+        self.stats_dialog = dlg        # 留个引用，别让 Python 把它回收了
+        dlg.show()
+        return dlg
+
     def forget_selected(self):
         b = self.current_book()
         if not b:
@@ -2334,6 +2360,500 @@ class LocalShelfDialog(QDialog):
 
 
 # ================= 独立窗口：本地书籍目录（epub） =================
+# ================= 独立窗口：阅读统计 =================
+# 统计页自己的配色：在全局深色主题上补 tab / 表格 / 卡片这一套（不动别处的界面）
+STATS_STYLESHEET = DARK_STYLESHEET + """
+    QTabWidget::pane { border: 1px solid #3c3c3c; border-radius: 8px; top: -1px; }
+    QTabBar::tab { background: #333333; color: #b8b8b8; padding: 7px 18px; border: 1px solid #3c3c3c;
+                   border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px;
+                   margin-right: 3px; }
+    QTabBar::tab:selected { background: #3f3f3f; color: #ffffff; }
+    QTabBar::tab:hover { background: #3a3a3a; }
+    QTableWidget { background-color: #2f2f2f; color: #dddddd; border: 1px solid #3c3c3c;
+                   border-radius: 8px; }
+    QTableWidget::item { padding: 4px 8px; }
+    QTableWidget::item:selected { background-color: #505050; color: #ffffff; }
+    QHeaderView::section { background-color: #3a3a3a; color: #cfcfcf; border: none; padding: 6px; }
+"""
+def fmt_words(n):
+    """字数按中文习惯缩写：12345 → 1.2 万字。"""
+    try:
+        n = int(round(float(n or 0)))
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 10000:
+        return "%.1f 万字" % (n / 10000.0)
+    return "%d 字" % n
+
+
+class StatsKpi(QFrame):
+    """一块指标卡：小标题 + 大数字 + 一行补充说明。六块拼成概览那一页。"""
+
+    def __init__(self, title="", value="", sub="", parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("QFrame { background-color: #343434; border-radius: 10px; }")
+        box = QVBoxLayout(self)
+        box.setContentsMargins(16, 12, 16, 12)
+        box.setSpacing(3)
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("color: #9a9a9a; font-size: 12px;")
+        self.value_label = QLabel(value)
+        self.value_label.setStyleSheet("color: #f2f2f2; font-size: 22px; font-weight: 600;")
+        self.sub_label = QLabel(sub)
+        self.sub_label.setStyleSheet("color: #8d8d8d; font-size: 11px;")
+        self.sub_label.setWordWrap(True)
+        for w in (self.title_label, self.value_label, self.sub_label):
+            box.addWidget(w)
+        box.addStretch(1)
+
+    def set_values(self, title=None, value=None, sub=None):
+        if title is not None:
+            self.title_label.setText(title)
+        if value is not None:
+            self.value_label.setText(value)
+        if sub is not None:
+            self.sub_label.setText(sub)
+
+
+class StatsBars(QWidget):
+    """近 N 天的柱子：一根一天，越高读得越久；空的那天只留一条贴地的灰线。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.points = []                  # [(日期, 秒数)]
+        self.setMinimumHeight(104)
+
+    def set_points(self, points):
+        self.points = list(points or [])
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        width, height = self.width(), self.height()
+        if not self.points:
+            painter.setPen(QColor("#777777"))
+            painter.drawText(self.rect(), Qt.AlignCenter, "还没有数据：读几分钟就会长出来")
+            return
+        count = len(self.points)
+        gap = 6
+        bar_w = max(3, int((width - gap * (count - 1)) / float(count)))
+        top, base = 16, height - 22
+        peak = max([sec for _day, sec in self.points] + [60.0])
+        for i, (day, sec) in enumerate(self.points):
+            x = i * (bar_w + gap)
+            ratio = min(1.0, (sec or 0) / peak)
+            bar_h = max(2 if sec else 2, int((base - top) * ratio))
+            if not sec:
+                colour = QColor("#3a3a3a")
+            elif sec >= peak:
+                colour = QColor("#7dc98f")
+            else:
+                colour = QColor("#4a8a5c")
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(colour)
+            painter.drawRoundedRect(QRect(x, base - bar_h, bar_w, bar_h), 3, 3)
+            if count <= 14 or i % 3 == 0:
+                font = painter.font()
+                font.setPointSize(7)
+                painter.setFont(font)
+                painter.setPen(QColor("#8a8a8a"))
+                painter.drawText(QRect(x - 10, base + 3, bar_w + 20, 14),
+                                 Qt.AlignHCenter | Qt.AlignTop, day[5:])
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(QColor("#6a6a6a"))
+        painter.drawText(QRect(0, 0, width, 13), Qt.AlignLeft | Qt.AlignTop,
+                         "最高一天 %s" % reading_stats.fmt_duration(peak))
+
+
+class StatsHeatmap(QWidget):
+    """日历热力图：一列一周、一行一个周几，颜色深浅 = 那天读了几分钟（和 GitHub 一个意思）。"""
+
+    CELL = 13
+    GAP = 3
+    TOP = 18          # 上面留给月份标签
+    LEFT = 34         # 左边留给「周日 / 周三 / 周六」
+    LEVELS = ((0, "#2f2f2f"), (600, "#2e5339"), (1800, "#3f7a4f"),
+              (3600, "#5aa46d"), (7200, "#7dc98f"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.cols = []
+        self.setMouseTracking(True)
+        self.setMinimumHeight(self.TOP + 7 * (self.CELL + self.GAP) + 26)
+
+    def set_cols(self, cols):
+        self.cols = list(cols or [])
+        self.setMinimumWidth(self.LEFT + max(1, len(self.cols)) * (self.CELL + self.GAP) + 8)
+        self.update()
+
+    def colour_for(self, sec):
+        colour = QColor(self.LEVELS[0][1])
+        for limit, hexv in self.LEVELS[1:]:
+            if (sec or 0) >= limit:
+                colour = QColor(hexv)
+        return colour
+
+    def cell_rect(self, col, row):
+        return QRect(self.LEFT + col * (self.CELL + self.GAP),
+                     self.TOP + row * (self.CELL + self.GAP), self.CELL, self.CELL)
+
+    def cell_at(self, pos):
+        """鼠标落在哪一格：返回 (日期, 秒数)，没落在格子上就是 None。"""
+        col = (pos.x() - self.LEFT) // (self.CELL + self.GAP)
+        row = (pos.y() - self.TOP) // (self.CELL + self.GAP)
+        if 0 <= col < len(self.cols) and 0 <= row < 7:
+            cell = self.cols[col][row]
+            if cell:
+                return cell
+        return None
+
+    def mouseMoveEvent(self, event):
+        cell = self.cell_at(event.pos())
+        if cell:
+            self.setToolTip("%s · %s" % (cell[0], reading_stats.fmt_duration(cell[1])
+                                         if cell[1] else "没读"))
+        else:
+            self.setToolTip("")
+        super().mouseMoveEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if not self.cols:
+            painter.setPen(QColor("#777777"))
+            painter.drawText(self.rect(), Qt.AlignCenter, "还没有阅读记录")
+            return
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(QColor("#8a8a8a"))
+        for col, label in reading_stats.month_marks(self.cols):
+            painter.drawText(QRect(self.LEFT + col * (self.CELL + self.GAP), 0, 48, 15),
+                             Qt.AlignLeft | Qt.AlignVCenter, label)
+        for row, name in ((0, "周日"), (3, "周三"), (6, "周六")):
+            painter.drawText(QRect(0, self.TOP + row * (self.CELL + self.GAP) - 2,
+                                   self.LEFT - 5, 16),
+                             Qt.AlignRight | Qt.AlignVCenter, name)
+        painter.setPen(Qt.NoPen)
+        for ci, col in enumerate(self.cols):
+            for ri, cell in enumerate(col):
+                if not cell:
+                    continue
+                painter.setBrush(self.colour_for(cell[1]))
+                painter.drawRoundedRect(self.cell_rect(ci, ri), 2, 2)
+        # 图例：少 → 多
+        legend_y = self.TOP + 7 * (self.CELL + self.GAP) + 6
+        painter.setPen(QColor("#8a8a8a"))
+        painter.drawText(QRect(0, legend_y, 40, 14), Qt.AlignLeft | Qt.AlignVCenter, "少")
+        for i, (_limit, hexv) in enumerate(self.LEVELS):
+            painter.setBrush(QColor(hexv))
+            painter.drawRoundedRect(QRect(self.LEFT + i * (self.CELL + 4), legend_y + 1,
+                                          self.CELL, self.CELL), 2, 2)
+        painter.setPen(QColor("#8a8a8a"))
+        painter.drawText(QRect(self.LEFT + len(self.LEVELS) * (self.CELL + 4) + 6, legend_y, 30, 14),
+                         Qt.AlignLeft | Qt.AlignVCenter, "多")
+
+
+class ReadingStatsDialog(QDialog):
+    """阅读统计页：选中一本书就看那本，没选书就是全部（多一个「书籍」榜）。"""
+
+    def __init__(self, window, book=None, parent=None):
+        super().__init__(parent)
+        self.win = window
+        self.book = book if isinstance(book, dict) else None
+        self.data = reading_stats.normalize(getattr(window, "stats_data", None) or {})
+        self.setStyleSheet(STATS_STYLESHEET)
+        self.setWindowTitle("📊 阅读统计")
+        self.resize(900, 660)
+        self._build()
+        self.refresh()
+
+    # ---------------- 数据 ----------------
+    def _book_key(self):
+        if not self.book:
+            return ""
+        key = self.book.get("key") or ""
+        if not key:
+            key = self.win.book_pos_key(self.book.get("path") or "")
+        return str(key or "")
+
+    def _title_of(self, key):
+        book = (self.data.get("books") or {}).get(str(key)) or {}
+        return book.get("title") or str(key or "")
+
+    def _book_view(self):
+        return reading_stats.book_view(self.data, self._book_key(),
+                                       total=self.book.get("total") or 0,
+                                       pos=self.book.get("pos") or 0)
+
+    # ---------------- 界面 ----------------
+    def _build(self):
+        box = QVBoxLayout(self)
+        box.setContentsMargins(18, 16, 18, 14)
+        box.setSpacing(12)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+        self.title_label = QLabel("")
+        self.title_label.setStyleSheet("color:#f2f2f2; font-size:19px; font-weight:600;")
+        self.sub_label = QLabel("")
+        self.sub_label.setStyleSheet("color:#9a9a9a; font-size:12px;")
+        titles.addWidget(self.title_label)
+        titles.addWidget(self.sub_label)
+        head.addLayout(titles, 1)
+        self.btn_refresh = QPushButton("刷新")
+        self.btn_refresh.clicked.connect(self.refresh)
+        head.addWidget(self.btn_refresh)
+        btn_close = QPushButton("关闭")
+        btn_close.clicked.connect(self.close)
+        head.addWidget(btn_close)
+        box.addLayout(head)
+
+        self.tabs = QTabWidget()
+        box.addWidget(self.tabs, 1)
+
+        # --- 概览 ---
+        self.overview_page = QWidget()
+        ov = QVBoxLayout(self.overview_page)
+        ov.setContentsMargins(2, 10, 2, 8)
+        ov.setSpacing(12)
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        self.cards = []
+        for i in range(6):
+            card = StatsKpi()
+            self.cards.append(card)
+            grid.addWidget(card, i // 3, i % 3)
+        ov.addLayout(grid)
+
+        self.progress_label = QLabel("")
+        self.progress_label.setStyleSheet("color:#c8c8c8; font-size:12px;")
+        ov.addWidget(self.progress_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(8)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar { background:#3a3a3a; border:none; border-radius:4px; }"
+            "QProgressBar::chunk { background:#5aa46d; border-radius:4px; }")
+        ov.addWidget(self.progress_bar)
+
+        self.bars_title = QLabel("近 14 天")
+        self.bars_title.setStyleSheet("color:#9a9a9a; font-size:12px;")
+        ov.addWidget(self.bars_title)
+        self.bars = StatsBars()
+        ov.addWidget(self.bars, 1)
+        self.tabs.addTab(self.overview_page, "概览")
+
+        # --- 热力图 ---
+        self.heat_page = QWidget()
+        hp = QVBoxLayout(self.heat_page)
+        hp.setContentsMargins(2, 10, 2, 8)
+        self.heat = StatsHeatmap()
+        heat_scroll = QScrollArea()
+        heat_scroll.setWidgetResizable(True)
+        heat_scroll.setFrameShape(QFrame.NoFrame)
+        heat_scroll.setWidget(self.heat)
+        hp.addWidget(heat_scroll, 1)
+        hint = QLabel("颜色越深，那天读得越久；鼠标停在格子上看具体时长。")
+        hint.setStyleSheet("color:#8a8a8a; font-size:11px;")
+        hp.addWidget(hint)
+        self.tabs.addTab(self.heat_page, "热力图")
+
+        # --- 会话 ---
+        self.session_page = QWidget()
+        sp = QVBoxLayout(self.session_page)
+        sp.setContentsMargins(2, 10, 2, 8)
+        self.session_table = self._make_table(["开始", "时长", "字数", "速度", "书名"])
+        sp.addWidget(self.session_table)
+        self.tabs.addTab(self.session_page, "会话")
+
+        # --- 书籍榜（只有全局模式有）---
+        self.book_page = None
+        self.book_table = None
+        if not self.book:
+            self.book_page = QWidget()
+            bp = QVBoxLayout(self.book_page)
+            bp.setContentsMargins(2, 10, 2, 8)
+            self.book_table = self._make_table(
+                ["书名", "累计时长", "字数", "速度", "在读天数", "最近"])
+            bp.addWidget(self.book_table)
+            self.tabs.addTab(self.book_page, "书籍")
+
+    def _make_table(self, headers):
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        table.setSelectionMode(QTableWidget.SingleSelection)
+        table.setShowGrid(False)
+        table.setWordWrap(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setHighlightSections(False)
+        table.verticalHeader().setDefaultSectionSize(30)
+        return table
+
+    def _fill_table(self, table, headers, rows, right_cols=()):
+        """往表里灌数据；没数据就留一行说明，别让用户对着空表发呆。"""
+        table.clearSpans()
+        table.setRowCount(max(1, len(rows)))
+        if not rows:
+            table.setSpan(0, 0, 1, len(headers))
+            item = QTableWidgetItem("还没有记录：读几分钟，这里就会长出来。")
+            item.setForeground(QColor("#8a8a8a"))
+            table.setItem(0, 0, item)
+            return
+        for i, values in enumerate(rows):
+            for c, text in enumerate(values):
+                item = QTableWidgetItem(str(text))
+                if c in right_cols:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(i, c, item)
+
+    # ---------------- 刷新 ----------------
+    def refresh(self):
+        self.data = reading_stats.normalize(getattr(self.win, "stats_data", None) or {})
+        if self.book:
+            self._refresh_book()
+        else:
+            self._refresh_all()
+        self._fill_sessions()
+        if self.book_table is not None:
+            self._fill_books()
+
+    def _refresh_book(self):
+        view = self._book_view()
+        title = self.book.get("title") or os.path.splitext(
+            os.path.basename(self.book.get("path") or ""))[0]
+        self.setWindowTitle("📊 %s · 阅读统计" % title)
+        self.title_label.setText(title)
+        span = ""
+        if view["first"]:
+            span = "%s → %s（%d 天）" % (reading_stats.day_key(view["first"]),
+                                        reading_stats.day_key(view["last"]),
+                                        view["span_days"])
+        self.sub_label.setText(" · ".join(x for x in (
+            "累计 %s" % reading_stats.fmt_duration(view["sec"]),
+            "速度 %s" % reading_stats.fmt_speed(view["speed"]),
+            span) if x))
+        remain_text = reading_stats.fmt_duration(view["remaining_sec"]) \
+            if view["remaining_sec"] else "--"
+        rows = [
+            ("累计阅读", reading_stats.fmt_duration(view["sec"]),
+             "今天 %s · 共 %d 次会话" % (reading_stats.fmt_duration(view["today_sec"]),
+                                    view["sessions"])),
+            ("阅读速度", reading_stats.fmt_speed(view["speed"]),
+             "按这个速度，剩下还要 %s" % remain_text),
+            ("进度", ("%.0f%%" % view["pct"]) if view["total"] else "--",
+             ("已读 %s / 共 %s" % (fmt_words(view["pos"]), fmt_words(view["total"])))
+             if view["total"] else "字数还没算出来"),
+            ("连续阅读", "%d 天" % view["streak"],
+             "累计 %d 天在读" % view["active_days"]),
+            ("日期跨度", ("%d 天" % view["span_days"]) if view["span_days"] else "--",
+             ("%s → %s" % (reading_stats.day_key(view["first"]),
+                           reading_stats.day_key(view["last"]))) if view["first"] else "还没读过"),
+            ("平均每次", reading_stats.fmt_duration(view["sec"] / max(1, view["sessions"])),
+             "单场最长 %s" % self._longest_session_text()),
+        ]
+        for card, (t, v, s) in zip(self.cards, rows):
+            card.set_values(t, v, s)
+
+        if view["total"]:
+            self.progress_label.setText("进度 %s（已读 %s / 共 %s）" % (
+                "%.1f%%" % view["pct"], fmt_words(view["pos"]), fmt_words(view["total"])))
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 1000)
+            self.progress_bar.setValue(int(max(0.0, min(100.0, view["pct"])) * 10))
+        else:
+            self.progress_label.setText("这本书的字数还没算出来，进度暂时空着")
+            self.progress_bar.setVisible(False)
+
+        self.bars_title.setText("近 14 天（这本）")
+        self.bars.set_points(reading_stats.series(self.data, 14, self._book_key()))
+        self.heat.set_cols(reading_stats.heatmap(self.data, 53, self._book_key()))
+
+    def _longest_session_text(self):
+        key = self._book_key()
+        secs = [s.get("sec") or 0 for s in (self.data.get("sessions") or [])
+                if s.get("k") == key]
+        return reading_stats.fmt_duration(max(secs)) if secs else "--"
+
+    def _refresh_all(self):
+        ov = reading_stats.overview(self.data)
+        self.setWindowTitle("📊 阅读统计 · 全部书籍")
+        self.title_label.setText("全部书籍")
+        self.sub_label.setText("今日 %s · 本周 %s · 累计 %s · 连续 %d 天" % (
+            reading_stats.fmt_duration(ov["today_sec"]),
+            reading_stats.fmt_duration(ov["week_sec"]),
+            reading_stats.fmt_duration(ov["sec"]), ov["streak"]))
+        span = ""
+        if ov["first_day"]:
+            span = "%s → %s" % (ov["first_day"], ov["last_day"])
+        rows = [
+            ("今日", reading_stats.fmt_duration(ov["today_sec"]),
+             fmt_words(ov["today_chars"]) + " · 连续 %d 天" % ov["streak"]),
+            ("本周", reading_stats.fmt_duration(ov["week_sec"]),
+             "近 7 天 · %s" % fmt_words(ov["week_chars"])),
+            ("累计", reading_stats.fmt_duration(ov["sec"]),
+             "%s · %d 天在读" % (fmt_words(ov["chars"]), ov["active_days"])),
+            ("平均速度", reading_stats.fmt_speed(ov["speed"]), "总字数 ÷ 总时长"),
+            ("连续阅读", "%d 天" % ov["streak"], "最近一次 %s" % (ov["last_day"] or "--")),
+            ("日期跨度", ("%d 天" % len(ov["days"])) if ov["days"] else "--", span or "还没读过"),
+        ]
+        for card, (t, v, s) in zip(self.cards, rows):
+            card.set_values(t, v, s)
+        self.progress_label.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.bars_title.setText("近 30 天")
+        self.bars.set_points(reading_stats.series(self.data, 30))
+        self.heat.set_cols(reading_stats.heatmap(self.data, 53))
+
+    def _fill_sessions(self):
+        key = self._book_key() if self.book else ""
+        rows = [s for s in (self.data.get("sessions") or []) if not key or s.get("k") == key]
+        rows = list(reversed(rows))[:200]
+        table_rows = []
+        for s in rows:
+            sec = s.get("sec") or 0
+            chars = s.get("chars") or 0
+            speed = (chars / (sec / 60.0)) if sec >= 10 else 0.0
+            table_rows.append([
+                reading_stats.fmt_day(s.get("start")),
+                reading_stats.fmt_duration(sec),
+                fmt_words(chars),
+                reading_stats.fmt_speed(speed),
+                s.get("title") or self._title_of(s.get("k")),
+            ])
+        self._fill_table(self.session_table,
+                         ["开始", "时长", "字数", "速度", "书名"], table_rows, right_cols=(1, 2, 3))
+
+    def _fill_books(self):
+        books = list((self.data.get("books") or {}).items())
+        rows = []
+        for key, book in books:
+            sec = sum((r.get("sec") or 0) for r in (book.get("days") or {}).values())
+            chars = sum((r.get("chars") or 0) for r in (book.get("days") or {}).values())
+            days = book.get("days") or {}
+            speed = (chars / (sec / 60.0)) if sec >= 10 else 0.0
+            rows.append((sec, [
+                book.get("title") or key,
+                reading_stats.fmt_duration(sec),
+                fmt_words(chars),
+                reading_stats.fmt_speed(speed),
+                "%d 天" % len(days),
+                reading_stats.fmt_day(book.get("last")),
+            ]))
+        rows.sort(key=lambda r: -r[0])
+        self._fill_table(self.book_table,
+                         ["书名", "累计时长", "字数", "速度", "在读天数", "最近"],
+                         [r[1] for r in rows], right_cols=(1, 2, 3, 4))
+
+
 class ReadingMarksDialog(QDialog):
     """目录 / 书签 / 划线 三合一：双击跳转、右键删除、划线页可导出。"""
 
@@ -3387,6 +3907,16 @@ class StealthReader(QWidget):
         # --- 划线 / 书签 ---
         self.annotations = load_annotations()   # {书key: {"highlights": [...], "bookmarks": [...]}}
         self.highlight_default_color = "yellow"  # 上次用过的颜色即下次默认
+
+        # --- 阅读统计（口径全在 reading_stats.py 顶部）---
+        self.stats_data = reading_stats.load(stats_path())
+        self.stats_session = None      # 正在记的这一场：{key,title,start,sec,chars,pos}
+        self.stats_active_ts = 0.0     # 最近一次"人在读"的信号（monotonic）
+        self.stats_saved_ts = 0.0      # 上次落盘（wall clock）
+        self.stats_timer = QTimer(self)
+        self.stats_timer.setInterval(reading_stats.TICK_SEC * 1000)
+        self.stats_timer.timeout.connect(self._stats_tick)
+        self.stats_timer.start()
         self.is_popup_open = False               # 弹菜单/对话框时别让幽灵模式把字淡掉
         self.ghost_veiled = False                # 幽灵态下连高亮一起藏，别让彩色条露馅
         self.filter_drag_origin = None           # 中键/Alt+左键拖动窗口用
@@ -3968,6 +4498,7 @@ class StealthReader(QWidget):
             return
         if not self.is_local_mode or not self.local_full_text:
             return
+        self.note_reading_activity()      # 铺书页 / 翻页 = 人在读（统计用）
 
         # 截取缓冲区（保证填满屏幕，取5000字足以覆盖各种屏幕）
         buffer_length = 5000
@@ -4047,6 +4578,7 @@ class StealthReader(QWidget):
             return
         if not self.displayed_is_local_page():
             return
+        self.note_reading_activity()      # 滚了/翻页了 = 人在读（统计用）
         self.config["last_local_pos"] = self.current_top_offset()
         self.progress_save_timer.start()
 
@@ -4381,6 +4913,8 @@ class StealthReader(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def note_book_opened(self, path, total):
+        if getattr(self, "stats_data", None) is not None:
+            self._stats_flush("换书")
         """一本书刚被打开：记下它的字数和"上次读的时间"。"""
         key = self.book_pos_key(path)
         if not key:
@@ -4407,6 +4941,92 @@ class StealthReader(QWidget):
         while len(times) > SHELF_KEEP:
             times.pop(next(iter(times)))
         self.config["local_book_times"] = times
+
+    # --- 阅读统计：心跳 → 会话 → 日账 ---
+    def note_reading_activity(self):
+        """有人动了（翻页 / 滚轮 / 打开书）：统计认为"人正看着"。"""
+        try:
+            self.stats_active_ts = time.monotonic()
+        except Exception:
+            pass
+
+    def _stats_can_count(self):
+        """此刻算不算在读：窗口真露着、屏幕上真是书。"""
+        try:
+            if not self.isVisible():
+                return False
+            if self.feed_mode or self.review_mode:
+                return False
+            if not (self.is_local_mode and self.local_full_text):
+                return False
+            if self._book_veiled():        # 安全文档 / 隐形背诵：正文不是书
+                return False
+            if not self.displayed_is_local_page():
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _stats_book_title(self):
+        try:
+            path = self.local_file_path or ""
+            return os.path.splitext(os.path.basename(path))[0] or path
+        except Exception:
+            return ""
+
+    def _stats_tick(self):
+        """5 秒一拍：在读就累加，人走了就收场。"""
+        if not self._stats_can_count():
+            self._stats_flush("离开了书页")
+            return
+        now = time.monotonic()
+        if not self.stats_active_ts or (now - self.stats_active_ts) > reading_stats.IDLE_SEC:
+            self._stats_flush("闲着")
+            return
+        key = self.book_pos_key(self.local_file_path)
+        if not key:
+            return
+        pos = self.current_top_offset()
+        session = self.stats_session
+        if not session or session.get("key") != key:
+            if session:
+                self._stats_flush("换书")
+            session = {"key": key, "title": self._stats_book_title(), "start": time.time(),
+                       "sec": 0.0, "chars": 0.0, "pos": int(pos)}
+            self.stats_session = session
+        delta = max(0, int(pos) - int(session.get("pos") or 0))
+        session["pos"] = int(pos)
+        session["sec"] += reading_stats.TICK_SEC
+        session["chars"] += delta
+        if not session.get("title"):
+            session["title"] = self._stats_book_title()
+        # 一分钟落一次盘：被强杀也不至于丢掉整场
+        if time.time() - (self.stats_saved_ts or 0.0) >= 60:
+            self._stats_commit()
+
+    def _stats_flush(self, reason=""):
+        """收一场：写进日账 / 书账 / 会话表，再落盘。返回是否真写了一笔。"""
+        session = self.stats_session
+        self.stats_session = None
+        # 不在这里清 stats_active_ts：清掉的话，本拍刚判定的「换书」会顺手把活跃时间抹了，
+        # 下一拍立刻当成闲着，一场就只剩 5 秒（这坑就是这么踩出来的）。
+        # 闲着那一拍之所以能停住，是因为 active_ts 本来就老了，不需要谁去清。
+        if not session or float(session.get("sec") or 0) <= 0:
+            return False
+        reading_stats.add_span(self.stats_data, session.get("key") or "",
+                               session.get("title") or "",
+                               session.get("start") or time.time(),
+                               session.get("sec") or 0,
+                               session.get("chars") or 0)
+        self._stats_commit()
+        log_event("阅读统计：记一场 %s（%s，%s）" % (
+            reading_stats.fmt_duration(session.get("sec")),
+            reason or "结束", fmt_words(session.get("chars"))))
+        return True
+
+    def _stats_commit(self):
+        self.stats_saved_ts = time.time()
+        return reading_stats.save(stats_path(), self.stats_data)
 
     def forget_book(self, path):
         """从书架移出：位置/字数/时间三本账一起删，文件本身不动。
@@ -5804,6 +6424,7 @@ class StealthReader(QWidget):
         同一个手势两处走得不一样（真人 2026-11-09："ce 和 cs 的鼠标滚动行数不一样"）。
         现在这条路也折成**行**：攒够一行才走一行，一次最多走 `lines` 行，
         余数留到下一次——和偷瞄那条路同一个单位。"""
+        self.note_reading_activity()      # 滚轮 = 人在读（统计用）
         lines = clamp_config_int(self.config, "arrow_scroll_lines",
                                  ARROW_SCROLL_LINES, 1, ARROW_SCROLL_MAX)
         px = self._lines_to_px(lines)
@@ -10183,7 +10804,12 @@ class StealthReader(QWidget):
         elif key in [Qt.Key_Left, Qt.Key_PageUp, Qt.Key_C]:
             self.scroll_page(-1)
 
+    def hideEvent(self, event):
+        self._stats_flush("窗口收起")
+        super().hideEvent(event)
+
     def closeEvent(self, event):
+        self._stats_flush("关窗口")
         self.exit_peek("close")  # 窗口关了必须先卸全局钩子，再走保存
         if self.review_mode:
             self.exit_review_mode(reason="close")   # 关窗口＝整套收起（只想藏卡片用 Ctrl+D）

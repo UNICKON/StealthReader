@@ -18,6 +18,11 @@ sys.path.insert(0, SR)
 os.chdir(SR)
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
+# 统计账（reading_stats.json）不能落在真人的目录里：探针跑的是真逻辑，账要指到临时文档。
+import tempfile                                                            # noqa: E402
+_STATS_TMP = tempfile.mkdtemp(prefix="sr-stats-")
+os.environ["STEALTHREADER_STATS"] = os.path.join(_STATS_TMP, "reading_stats.json")
+
 # 探针一律不落盘：真人的 config.json 不能被探针改。这一轮真被改过（社区字体被写成 Helvetica、
 # 多了个 feed_board_boardsrc、阅读进度被清成 0），查了半天才发现是某条路绕过了替身直接存盘。
 # 不管是谁写的，收尾时按开跑前那份原样写回——探针的结果只该出现在屏幕上。
@@ -4224,6 +4229,184 @@ try:
     _dlg37.deleteLater()
 finally:
     w.shelf_books = _shelf_bak
+
+print("\n=== 38. 阅读统计：心跳 / 会话 / 统计页 ===")
+
+import reading_stats as _rs38
+
+_BACK38 = {
+    "stats_data": w.stats_data,
+    "displayed": w.displayed_is_local_page,
+    "veiled": w._book_veiled,
+    "top": w.current_top_offset,
+    "poskey": w.book_pos_key,
+    "feed": getattr(w, "feed_mode", False),
+    "review": getattr(w, "review_mode", False),
+    "local": (w.is_local_mode, w.local_full_text, w.local_file_path, w.local_start_index),
+}
+_pos38 = {"v": 1000}
+try:
+    w.stats_data = _rs38.blank()
+    w.stats_timer.stop()
+    w.show()
+    qapp.processEvents()
+    w.displayed_is_local_page = lambda: True
+    w._book_veiled = lambda: False
+    w.feed_mode = False
+    w.review_mode = False
+    w.is_local_mode = True
+    w.local_full_text = "字" * 50000
+    w.local_file_path = os.path.join(SR, "books", "统计用例.txt")
+    w.local_start_index = 0
+    w.current_top_offset = lambda: _pos38["v"]
+    w.book_pos_key = lambda path: "probe-stats-k"
+
+    check("守卫：窗口收起就不算在读", (w.hide() or True) and not w._stats_can_count(), None)
+    w.show()
+    qapp.processEvents()
+    check("守卫：露出书页才算在读", w._stats_can_count() is True, None)
+
+    w.note_reading_activity()
+    for _ in range(3):
+        w._stats_tick()
+    _s = w.stats_session or {}
+    check("心跳 5 秒一拍：三拍 = 15 秒", abs(_s.get("sec", 0) - 15) < 0.01, _s.get("sec"))
+
+    _pos38["v"] = 4000
+    w._stats_tick()
+    _s = w.stats_session or {}
+    check("往前读 3000 字，字数进这一场", abs(_s.get("chars", 0) - 3000) < 0.01, _s.get("chars"))
+    _pos38["v"] = 500
+    w._stats_tick()
+    _s = w.stats_session or {}
+    check("往回翻不记负数（字数原地不动）", abs(_s.get("chars", 0) - 3000) < 0.01, _s.get("chars"))
+
+    w.stats_active_ts = time.monotonic() - 240          # 4 分钟没动 = 人走了
+    w._stats_tick()
+    _day = w.stats_data["days"].get(_rs38.day_key(), {})
+    check("闲置一拍就收场：这场写进日账（25 秒 / 3000 字）",
+          w.stats_session is None and int(_day.get("sec", 0)) == 25
+          and int(_day.get("chars", 0)) == 3000, (w.stats_session, _day))
+    _disk = _rs38.load(os.environ["STEALTHREADER_STATS"])
+    check("落盘了，而且能原样读回来（reading_stats.json 不是 config）",
+          bool(_disk["sessions"]) and _disk["sessions"][-1]["sec"] == 25
+          and os.path.basename(os.environ["STEALTHREADER_STATS"]) == "reading_stats.json",
+          _disk["sessions"][-1:])
+    check("收场之后不点不动，不会凭空再长一场",
+          w._stats_tick() is None and w.stats_session is None, w.stats_session)
+
+    w.book_pos_key = lambda path: "probe-stats-k2"
+    w.local_file_path = os.path.join(SR, "books", "统计用例二.txt")
+    _pos38["v"] = 0
+    w.note_reading_activity()
+    w._stats_tick()
+    check("换书立刻切新场（不把两本书的时长混在一起）",
+          (w.stats_session or {}).get("key") == "probe-stats-k2"
+          and "probe-stats-k" in w.stats_data["books"], list(w.stats_data["books"]))
+    _session_seconds = int((w.stats_session or {}).get("sec", 0))
+
+    # ---- 统计页（一本书）----
+    _now38 = time.time()
+    for i in range(40):
+        if i % 7 in (2, 5):
+            continue
+        _rs38.add_span(w.stats_data, "probe-stats-k", "统计用例",
+                       _now38 - i * 86400 - 1200, 600 + 60 * (i % 5), 4000 + 500 * (i % 3))
+    _book38 = {"key": "probe-stats-k", "path": os.path.join(SR, "books", "统计用例.txt"),
+               "title": "统计用例", "pos": 40000, "total": 100000, "pct": 40.0, "when": "刚刚"}
+    _dlg38 = app_mod.ReadingStatsDialog(w, book=_book38)
+    _dlg38.show()
+    qapp.processEvents()
+    check("书的统计页：三个 tab（概览 / 热力图 / 会话）",
+          _dlg38.tabs.count() == 3
+          and [_dlg38.tabs.tabText(i) for i in range(3)] == ["概览", "热力图", "会话"], None)
+    _cards38 = [(c.title_label.text(), c.value_label.text()) for c in _dlg38.cards]
+    check("六块指标卡：时长 / 速度 / 进度 / 连续 / 跨度 / 平均每次",
+          [t for t, _v in _cards38] == ["累计阅读", "阅读速度", "进度", "连续阅读", "日期跨度", "平均每次"],
+          _cards38)
+    check("进度按 40% 画（已读 4.0 万字 / 共 10.0 万字）",
+          _dlg38.progress_bar.value() == 400 and "4.0 万字" in _dlg38.progress_label.text(),
+          (_dlg38.progress_bar.value(), _dlg38.progress_label.text()))
+    check("速度不是 --（有真数据就要算出来）",
+          _cards38[1][1].endswith("字/分"), _cards38[1][1])
+    check("热力图满 53 周，今天那格有数据",
+          len(_dlg38.heat.cols) == 53
+          and any(c and c[0] == _rs38.day_key() for c in _dlg38.heat.cols[-1]),
+          len(_dlg38.heat.cols))
+    check("会话表只列这本书的场次",
+          _dlg38.session_table.rowCount() == len(
+              [s for s in w.stats_data["sessions"] if s["k"] == "probe-stats-k"]),
+          _dlg38.session_table.rowCount())
+    check("热力图 / 柱状图的自绘区域都拿到了数据",
+          len(_dlg38.bars.points) == 14 and bool(_dlg38.heat.cols), len(_dlg38.bars.points))
+    _dlg38.resize(900, 660)
+    qapp.processEvents()
+    check("窗口拉不拉得动都不炸，热力图最窄也在窗口里",
+          _dlg38.heat.width() <= 900 and _dlg38.heat.minimumWidth() <= 900,
+          (_dlg38.heat.width(), _dlg38.heat.minimumWidth()))
+
+    # ---- 统计页（全部书籍）----
+    _dlg38b = app_mod.ReadingStatsDialog(w, book=None)
+    _dlg38b.show()
+    qapp.processEvents()
+    check("全部书籍页：多一个「书籍」tab，共四个",
+          _dlg38b.tabs.count() == 4
+          and _dlg38b.tabs.tabText(3) == "书籍", _dlg38b.tabs.count())
+    check("书籍榜按书一行一行列出来",
+          _dlg38b.book_table.rowCount() == max(1, len(w.stats_data["books"])),
+          (_dlg38b.book_table.rowCount(), len(w.stats_data["books"])))
+    _all38 = [(c.title_label.text(), c.value_label.text()) for c in _dlg38b.cards]
+    check("全部页的六块卡：今日 / 本周 / 累计 / 速度 / 连续 / 跨度",
+          [t for t, _v in _all38] == ["今日", "本周", "累计", "平均速度", "连续阅读", "日期跨度"],
+          _all38)
+
+    # ---- 空账也要像样 ----
+    _dlg38c = app_mod.ReadingStatsDialog(w, book=None)
+    _empty_stats = _rs38.blank()
+    w.stats_data = _empty_stats
+    _dlg38c.refresh()
+    qapp.processEvents()
+    check("空账不炸：会话表给一句说明，不显示空白表格",
+          _dlg38c.session_table.rowCount() == 1
+          and "还没有记录" in _dlg38c.session_table.item(0, 0).text(), None)
+    _dlg38c.close()
+
+    # ---- 书架入口 ----
+    w.stats_data = _BACK38["stats_data"] if _BACK38["stats_data"] else _rs38.blank()
+    _shelf_bak38 = w.shelf_books
+    try:
+        w.shelf_books = lambda: [_book38]
+        _sdlg38 = app_mod.LocalShelfDialog(w)
+        _sdlg38.list_widget.setCurrentRow(0)
+        _opened38 = _sdlg38.open_stats()
+        qapp.processEvents()
+        check("书架「📊 阅读统计」就在移出书架旁边，选中哪本就先看哪本",
+              isinstance(_opened38, app_mod.ReadingStatsDialog)
+              and _opened38.book and _opened38.book.get("key") == "probe-stats-k",
+              getattr(_opened38.book, "get", lambda k: None)("key"))
+        _opened38.close()
+        _sdlg38.list_widget.setCurrentRow(-1)
+        _opened38b = _sdlg38.open_stats()
+        qapp.processEvents()
+        check("没选书时点进去 = 全部书籍",
+              _opened38b.book is None, _opened38b.book)
+        _opened38b.close()
+        _sdlg38.reject()
+    finally:
+        w.shelf_books = _shelf_bak38
+
+    check("统计这套不影响 config：一条 self.config 都没写",
+          all(k not in w.config for k in ("days", "books", "sessions", "stats")), None)
+finally:
+    w.stats_data = _BACK38["stats_data"]
+    w.displayed_is_local_page = _BACK38["displayed"]
+    w._book_veiled = _BACK38["veiled"]
+    w.current_top_offset = _BACK38["top"]
+    w.book_pos_key = _BACK38["poskey"]
+    w.feed_mode = _BACK38["feed"]
+    w.review_mode = _BACK38["review"]
+    (w.is_local_mode, w.local_full_text, w.local_file_path, w.local_start_index) = _BACK38["local"]
+    w.stats_timer.start()
 
 w.config.clear()
 w.config.update(_cfg_bak)

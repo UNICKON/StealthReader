@@ -3256,6 +3256,52 @@ check("滚轮像素路折成行：攒够一行才走一行、一次最多一个�
       and "self._wheel_px_acc = max(-unit * lines, min(unit * lines, acc - whole * unit))" in _main_src
       and "self.scroll_px(-whole * px, flip=False)" in _main_src, None)
 
+# ===== 28. 阅读统计：心跳、日账、统计页 =====
+print("\n=== 28. 阅读统计：心跳 / 日账 / 统计页 ===")
+try:
+    _rs_src = io.open(os.path.join(SR, "reading_stats.py"), encoding="utf-8").read()
+except Exception:
+    _rs_src = ""
+
+check("统计这一层是独立模块：纯标准库、不碰 Qt，记账与聚合都在这儿",
+      "def add_span(" in _rs_src and "def heatmap(" in _rs_src and "def streak(" in _rs_src
+      and "def overview(" in _rs_src and "PyQt5" not in _rs_src, len(_rs_src))
+check("口径写死：5 秒一拍、3 分钟没输入算离开、单日封顶 18 小时",
+      "TICK_SEC = 5" in _rs_src and "IDLE_SEC = 180" in _rs_src
+      and "DAY_SEC_CAP = 18 * 3600" in _rs_src, None)
+check("账不进 config.json：单开 reading_stats.json，写的时候先 tmp 再 replace",
+      "def stats_path()" in _main_src and "reading_stats.STATS_NAME" in _main_src
+      and "os.replace(tmp, path)" in _rs_src and 'self.config["days"]' not in _main_src, None)
+check("心跳接上了：定时器按 TICK_SEC 走，只在「窗口露着 + 正文是书」时计时",
+      "self.stats_timer.setInterval(reading_stats.TICK_SEC * 1000)" in _main_src
+      and "def _stats_tick(" in _main_src and "def _stats_can_count(" in _main_src
+      and "if not self.isVisible():" in _main_src
+      and "if self.feed_mode or self.review_mode:" in _main_src
+      and "if not self.displayed_is_local_page():" in _main_src, None)
+check("翻页/滚轮都算「人在读」，字数只累加正增量（往回翻不记负数）",
+      _main_src.count("self.note_reading_activity()") >= 3
+      and 'delta = max(0, int(pos) - int(session.get("pos") or 0))' in _main_src, None)
+check("换书 / 收窗 / 关窗都当场收场（两本书的时长不会搅在一起）",
+      'self._stats_flush("换书")' in _main_src
+      and 'self._stats_flush("窗口收起")' in _main_src
+      and 'self._stats_flush("关窗口")' in _main_src, None)
+check("统计页：概览 / 热力图 / 会话 / 书籍四个 tab，热力图和柱状图都是自己画的",
+      "class ReadingStatsDialog(QDialog)" in _main_src
+      and "class StatsHeatmap(QWidget)" in _main_src
+      and "class StatsBars(QWidget)" in _main_src
+      and 'self.tabs.addTab(self.overview_page, "概览")' in _main_src
+      and 'self.tabs.addTab(self.heat_page, "热力图")' in _main_src
+      and 'self.tabs.addTab(self.session_page, "会话")' in _main_src
+      and 'self.tabs.addTab(self.book_page, "书籍")' in _main_src, None)
+check("入口就在「移出书架」旁边：选中书 → 看那本，没选 → 看全部",
+      'btn_stats = QPushButton("📊 阅读统计")' in _main_src
+      and "def open_stats(self):" in _main_src
+      and "book = self.current_book()" in _main_src
+      and "dlg = ReadingStatsDialog(self.win, book=book, parent=self)" in _main_src, None)
+check("进度与时间仍然是右对齐那套（统计入口不能把书架的行格式搞回去）",
+      "class ShelfRowDelegate(QStyledItemDelegate)" in _main_src
+      and "size.setWidth(10)" in _main_src, None)
+
 ok = sum(1 for _n, c in RESULTS if c)
 bad = [n for n, c in RESULTS if not c]
 # ---------------------------------------------------------------- 23
