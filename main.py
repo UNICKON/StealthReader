@@ -1172,41 +1172,6 @@ def window_rect(hwnd):
         return None
 
 
-_fg_user32 = None
-
-
-def _fg_api():
-    """user32 里拿前台窗口那一套。HWND 在 64 位下是 8 字节指针，
-    不钉 restype 会被按 c_int 截断（截断后也能问出一个 pid，只是那个 pid 是错的）。"""
-    global _fg_user32
-    if _fg_user32 is None:
-        lib = ctypes.windll.user32
-        lib.GetForegroundWindow.restype = ctypes.c_void_p
-        lib.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
-                                                ctypes.POINTER(ctypes.c_ulong)]
-        lib.GetWindowThreadProcessId.restype = ctypes.c_ulong
-        lib.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
-        _fg_user32 = lib
-    return _fg_user32
-
-
-def foreground_pid():
-    """当前前台窗口属于哪个进程；拿不到就是 0。
-
-    偷瞄时记下这个号：前台换了进程（Alt+Tab、点了别的窗口、别的程序自己弹到前面），
-    书页就该收回去，别挂在别人的窗口上。
-    """
-    try:
-        u = _fg_api()
-        hwnd = u.GetForegroundWindow()
-        if not hwnd:
-            return 0
-        pid = ctypes.c_ulong(0)
-        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        return int(pid.value)
-    except Exception:
-        return 0
-
 
 _tb_user32 = None
 
@@ -2216,6 +2181,9 @@ class LocalShelfDialog(QDialog):
         layout.addLayout(top)
 
         self.list_widget = QListWidget()
+        # 书名再长也不许出横向滚动条：一行放不下就把书名中间省略（进度、日期必须留着）
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list_widget.setTextElideMode(Qt.ElideRight)
         self.list_widget.itemDoubleClicked.connect(self.on_activate)
         layout.addWidget(self.list_widget)
 
@@ -2251,9 +2219,9 @@ class LocalShelfDialog(QDialog):
         rows = [b for b in self.books if not needle or needle in b["title"].lower()]
         self.list_widget.clear()
         for b in rows:
-            item = QListWidgetItem(self.row_text(b))
+            item = QListWidgetItem(self._row_label(b))
             item.setData(Qt.UserRole, b)
-            item.setToolTip("%s\n%s" % (b["path"], b.get("tip", "")))
+            item.setToolTip("\n".join(x for x in (b["title"], b["path"], b.get("tip", "")) if x))
             self.list_widget.addItem(item)
         self.setWindowTitle("📚 本地书架（%d 本）" % len(self.books))
         if not rows:
@@ -2271,6 +2239,43 @@ class LocalShelfDialog(QDialog):
         pct = b.get("pct")
         prog = "  --" if pct is None else "%3d%%" % int(round(pct))
         return "%s  %s  %s" % (b["title"], prog, b.get("when", ""))
+
+    def _row_label(self, b):
+        """一行字按列表当前宽度缩到放得下：**只缩书名**，进度和日期一个都不许丢。
+
+        直接用 `setTextElideMode` 省事，但它是整行一起省略——进度正好在行中间，
+        书一长就先把「37%」吃掉，等于把书架最有用的那列干掉。所以自己量宽度。
+        """
+        pct = b.get("pct")
+        tail = "%s  %s" % ("  --" if pct is None else "%3d%%" % int(round(pct)),
+                           b.get("when", ""))
+        title = str(b.get("title") or "")
+        fm = self.list_widget.fontMetrics()
+        try:
+            avail = int(self.list_widget.viewport().width()) - 16
+        except Exception:
+            avail = 0
+        if avail <= 60:
+            return "%s  %s" % (title, tail)
+        title = fm.elidedText(title, Qt.ElideMiddle,
+                              max(40, avail - fm.horizontalAdvance(tail)))
+        return "%s  %s" % (title, tail)
+
+    def _relabel(self):
+        """窗口宽度变了就按新宽度重排（不重建列表，选中项原地不动）。"""
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            b = item.data(Qt.UserRole)
+            if isinstance(b, dict):
+                item.setText(self._row_label(b))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._relabel()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relabel()
 
     def current_book(self):
         item = self.list_widget.currentItem()
@@ -2336,6 +2341,8 @@ class ReadingMarksDialog(QDialog):
 
     def _make_list(self):
         lst = QListWidget()
+        lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)   # 长章节名不出横向滚动条
+        lst.setTextElideMode(Qt.ElideRight)
         lst.itemDoubleClicked.connect(self.on_item_double_clicked)
         lst.setContextMenuPolicy(Qt.CustomContextMenu)
         lst.customContextMenuRequested.connect(self.on_context_menu)
@@ -3496,14 +3503,6 @@ class StealthReader(QWidget):
         self.chameleon_timer = QTimer(self)
         self.chameleon_timer.setInterval(500)
         self.chameleon_timer.timeout.connect(self.adjust_color_to_background)
-
-        # 偷瞄期间盯着前台进程：换人了就把书页收回去（见 _watch_peek_focus）
-        self.peek_owner_pid = 0
-        self.peek_foreign_pid = 0
-        self.peek_foreign_ticks = 0
-        self.peek_watch_timer = QTimer(self)
-        self.peek_watch_timer.setInterval(150)
-        self.peek_watch_timer.timeout.connect(self._watch_peek_focus)
 
         # 启动器叫醒：桌面快捷方式再点一次，第二个进程撞上单实例互斥体，就用这个事件
         # 让已经在跑的这个把窗口亮出来（400ms 一次，读一下自动复位的事件，代价可以忽略）。
@@ -5584,10 +5583,6 @@ class StealthReader(QWidget):
         self.dismiss_action_panel(cancelled=True)   # 进偷瞄时收掉已经在的面板
         self.peek_was_visible = self.isVisible()
         self.peek_mode = True
-        self.peek_owner_pid = foreground_pid()      # 进来的这一刻，前台是谁
-        self.peek_foreign_pid = 0
-        self.peek_foreign_ticks = 0
-        self.peek_watch_timer.start()
         self.text_edit.set_pinned_cursor(Qt.ArrowCursor)   # 模式切换后光标形状回到默认
         if not self.isVisible():
             self.show()  # WA_ShowWithoutActivating：不夺走工作窗口的焦点
@@ -5611,13 +5606,6 @@ class StealthReader(QWidget):
             return
         self.peek_mode = False
         self.peek_last_exit = time.time()
-        self.peek_owner_pid = 0
-        self.peek_foreign_pid = 0
-        self.peek_foreign_ticks = 0
-        try:
-            self.peek_watch_timer.stop()
-        except Exception:
-            pass
         try:
             self.peek_input_hook.uninstall()
         except Exception:
@@ -5639,34 +5627,6 @@ class StealthReader(QWidget):
         self.apply_style()                # 先恢复正常样式，免得偷瞄那套样式留到下次露脸
         self.hide()
         log_event(f"偷瞄退出（{reason or '未说明'}）→ 窗口已隐藏")
-
-    def _watch_peek_focus(self):
-        """偷瞄时前台换了进程就退出：书页不该留在别人的窗口上。
-
-        不动的情况：拿不到前台（0）、进来时没记上（0，比不了）、还是进来时那个进程、
-        前台是我们自己（钩子/托盘把窗口叫到前面时，焦点确实会落回我们身上）。
-        剩下那种要**连着两拍（约 0.3 秒）**都是同一个陌生进程才退：Windows 上焦点会闪
-        （提示框、输入法、程序自己抢一下又还回来），只晃一拍不算换人。
-        """
-        if not self.peek_mode:
-            self.peek_watch_timer.stop()
-            return
-        pid = foreground_pid()
-        if not pid or not self.peek_owner_pid or pid == self.peek_owner_pid \
-                or pid == os.getpid():
-            self.peek_foreign_pid = 0
-            self.peek_foreign_ticks = 0
-            return
-        if pid == self.peek_foreign_pid:
-            self.peek_foreign_ticks += 1
-        else:
-            self.peek_foreign_pid = pid
-            self.peek_foreign_ticks = 1
-        if self.peek_foreign_ticks >= 2:
-            owner = self.peek_owner_pid
-            self.peek_foreign_pid = 0
-            self.peek_foreign_ticks = 0
-            self.exit_peek("前台换了进程（%d → %d）" % (owner, pid))
 
     def on_peek_wheel(self, delta):
         """偷瞄模式的滚轮 = 窗口内的手感：一格还是设置里那几行，到边沿才衔接前后页。

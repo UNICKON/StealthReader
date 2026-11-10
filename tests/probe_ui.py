@@ -3824,50 +3824,11 @@ try:
           _has_chk and _chk_on and _grey, (_has_chk, _chk_on, _grey))
     _set4.reject()
 
-    # ---- 偷瞄：前台进程一变就退出 ----
-    _fg_bak = app_mod.foreground_pid
-    try:
-        w.show()
-        _logged = []
-        _log_bak2 = app_mod.log_event
-        app_mod.log_event = lambda msg, *a, **k: _logged.append(str(msg))
-        try:
-            app_mod.foreground_pid = lambda: 4321
-            w.peek_mode = True
-            w.peek_owner_pid = 4321
-            w._watch_peek_focus()
-            _stays = w.peek_mode
-
-            app_mod.foreground_pid = lambda: 5555     # 换了个进程（不是我们）
-            w._watch_peek_focus()
-            _flicker = w.peek_mode                    # 只晃一拍：还不退
-            w._watch_peek_focus()                     # 同一个陌生进程连着两拍：退
-            _left = (not w.peek_mode) and (not w.isVisible())
-            _said = any("前台换了进程" in s for s in _logged)
-
-            app_mod.foreground_pid = lambda: 0        # 拿不到前台：不乱退
-            w.peek_mode = True
-            w.peek_owner_pid = 4321
-            w._watch_peek_focus()
-            _keep0 = w.peek_mode
-
-            app_mod.foreground_pid = lambda: os.getpid()   # 前台是我们自己
-            w._watch_peek_focus()
-            _keep_self = w.peek_mode
-        finally:
-            app_mod.log_event = _log_bak2
-    finally:
-        app_mod.foreground_pid = _fg_bak
-
-    check("偷瞄时前台没变：不动", _stays, _stays)
-    check("只晃一拍不退（Windows 上焦点会闪一下）", _flicker, _flicker)
-    check("偷瞄时前台换了进程（连着两拍）：退出并藏起来（日志写明是哪个 pid）",
-          _left and _said, (_left, _said))
-    check("拿不到前台（0）不乱退", _keep0, _keep0)
-    check("前台是我们自己（钩子/托盘把窗口叫出来）不乱退", _keep_self, _keep_self)
-
-    check("退出偷瞄时那块盯前台的定时器也停掉了",
-          not w.peek_watch_timer.isActive(), w.peek_watch_timer.isActive())
+    # ---- 偷瞄：前台进程换了**不再**退出（真人 2026-11-10 明确说这条删掉）----
+    check("偷瞄不再盯前台进程：定时器 / 状态 / 方法全没了",
+          not hasattr(w, "peek_watch_timer")
+          and not hasattr(w, "peek_owner_pid")
+          and not hasattr(w, "_watch_peek_focus"), None)
 finally:
     w.peek_mode = False
     w.peek_owner_pid = 0
@@ -3950,8 +3911,9 @@ finally:
     w.peek_mode = False
     w.show()
 
-check("盯前台那张表的节奏调快了（150ms 一拍，两拍约 0.3 秒）",
-      w.peek_watch_timer.interval() == 150, w.peek_watch_timer.interval())
+_main_text = open(app_mod.__file__, encoding="utf-8-sig").read()
+check("偷瞄的退出理由里已经没有「前台换了进程」（代码里连这几个字都没有）",
+      "前台换了进程" not in _main_text and "peek_watch_timer" not in _main_text, None)
 
 print("\n=== 32. 幽灵态：实色档鼠标离开后要整窗淡出（不能剩一块实色空白）===")
 
@@ -4205,6 +4167,40 @@ try:
 finally:
     w.config["font_size"], w.config["auto_mode"] = _s36[0], _s36[1]
     w.apply_style()
+
+print("\n=== 37. 本地书架：书名再长也不出横向滚动条 ===")
+
+_shelf_bak = w.shelf_books
+_long = "万历十五年（增订本）" + "·副标题很长很长" * 10
+try:
+    w.shelf_books = lambda: [{"key": "probe-k", "path": r"C:\books\probe.epub",
+                              "title": _long, "pct": 37.5, "when": "3 小时前",
+                              "total": 120000, "tip": "epub"}]
+    _dlg37 = app_mod.LocalShelfDialog(w)
+    _dlg37.resize(560, 520)
+    _dlg37.show()
+    qapp.processEvents()
+    _lw = _dlg37.list_widget
+    _txt = _lw.item(0).text()
+    _fm = _lw.fontMetrics()
+    check("书架列表关掉横向滚动条，长书名被省略到放得下",
+          _lw.horizontalScrollBarPolicy() == app_mod.Qt.ScrollBarAlwaysOff
+          and "…" in _txt
+          and _fm.horizontalAdvance(_txt) <= _lw.viewport().width(),
+          (_txt[:26], _fm.horizontalAdvance(_txt), _lw.viewport().width()))
+    check("省的是书名，进度和日期一个都没丢（全文在 tooltip 里）",
+          "38%" in _txt and "3 小时前" in _txt and _long in _lw.item(0).toolTip(),
+          (_txt[-24:], _lw.item(0).toolTip()[:20]))
+    _dlg37.resize(320, 460)
+    qapp.processEvents()
+    _txt2 = _lw.item(0).text()
+    check("窗口拉窄之后还是不出横向滚动条（书名再缩一段，进度日期留着）",
+          _fm.horizontalAdvance(_txt2) <= _lw.viewport().width()
+          and "38%" in _txt2 and len(_txt2) <= len(_txt), (_txt2, _lw.viewport().width()))
+    _dlg37.reject()
+    _dlg37.deleteLater()
+finally:
+    w.shelf_books = _shelf_bak
 
 w.config.clear()
 w.config.update(_cfg_bak)

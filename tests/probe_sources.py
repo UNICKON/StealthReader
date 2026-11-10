@@ -3172,23 +3172,12 @@ check("打开一本书就记字数与时间（书架的进度靠这两本账）"
       "self.note_book_opened(file_path, len(content))" in _main_src
       and "self.note_book_read(key)" in _main_src, None)
 
-# ===== 27. 偷瞄盯前台进程 + 融景实色档 =====
-print("\n=== 27. 偷瞄盯前台进程 + 融景实色档 ===")
-check("有 foreground_pid()：前台窗口属于哪个进程", "def foreground_pid():" in _main_src, None)
-check("进偷瞄时记下前台进程、并起那块盯人的表",
-      "self.peek_owner_pid = foreground_pid()" in _main_src
-      and "self.peek_watch_timer.start()" in _main_src, None)
-check("前台换了进程就退出偷瞄（自己和自己人不算）",
-      "def _watch_peek_focus" in _main_src
-      and "pid == self.peek_owner_pid" in _main_src
-      and "pid == os.getpid()" in _main_src
-      and 'self.exit_peek("前台换了进程（%d → %d）" % (owner, pid))' in _main_src, None)
-check("换人要连着两拍才算（只晃一拍不算）",
-      "self.peek_foreign_ticks >= 2" in _main_src
-      and "self.peek_foreign_ticks = 0" in _main_src, None)
-check("退出偷瞄时把盯人的表停掉、进程号清掉",
-      "self.peek_owner_pid = 0" in _main_src
-      and "self.peek_watch_timer.stop()" in _main_src, None)
+# ===== 27. 偷瞄退出路线 + 融景实色档 =====
+print("\n=== 27. 偷瞄退出路线（不再盯前台进程）+ 融景实色档 ===")
+check("偷瞄不再盯前台进程（2026-11-10 真人说不要了）：函数/定时器/状态全删干净",
+      not any(s in _main_src for s in ("def foreground_pid", "_fg_api", "peek_watch_timer",
+                                       "peek_owner_pid", "peek_foreign_", "_watch_peek_focus",
+                                       "前台换了进程")), None)
 check("默认配置里有实色档 auto_bg_solid", '"auto_bg_solid"' in _main_src, None)
 check("实色档 alpha 255、老档 alpha 2",
       "return 255 if self.solid_bg else 2" in _main_src
@@ -3208,8 +3197,17 @@ check("点到任务栏当场退出：左键那三种消息 + 命中判定",
       and '"Shell_TrayWnd"' in _main_src
       and "if point_on_taskbar(info.pt.x, info.pt.y):" in _main_src
       and 'self.owner.peek_exit_signal.emit("点到了任务栏")' in _main_src, None)
-check("盯前台的节奏是 150ms 一拍（两拍约 0.3 秒）",
-      "self.peek_watch_timer.setInterval(150)" in _main_src, None)
+check("偷瞄的退出只剩键盘 / 右键 / 点任务栏三条（任务栏那条还得在）",
+      'self.owner.peek_exit_signal.emit("点到了任务栏")' in _main_src
+      and "def point_on_taskbar(" in _main_src
+      and 'self.owner.peek_exit_signal.emit("click")' in _main_src, None)
+
+check("书架列表：关横向滚动条 + 只缩书名（进度/日期留着）+ 拉窗重排",
+      "self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)" in _main_src
+      and "def _row_label(" in _main_src
+      and "fm.elidedText(title, Qt.ElideMiddle" in _main_src
+      and "def _relabel(" in _main_src
+      and "def resizeEvent(self, event):" in _main_src, None)
 
 check("幽灵态抽成 _ghost_out，实色档下整窗淡出（0.005）、老档保持不淡",
       "def _ghost_out(" in _main_src
