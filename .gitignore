@@ -10,6 +10,7 @@ reading_stats.json.tmp
 
 # 事件日志
 stealthreader.log
+stealthreader.prev.log
 
 # 本机依赖：PyQt5 等 wheel 解包出来的目录（约 140MB）
 libs/

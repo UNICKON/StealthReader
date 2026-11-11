@@ -7034,12 +7034,6 @@ class StealthReader(QWidget):
         _d = int(delta or 0)
         # 必须**同向同量**才算同一格：反向（往上、往下各一格连着来）本来就该各滚各的
         _dup = _gap_ms < 15.0 and _d == int(getattr(self, "_wheel_last_d", 0) or 0)          # 同一个 delta 紧跟着又来一发 = 同一格
-        _dbg = int(getattr(self, "_wheel_dbg_n", 0) or 0)
-        if _dbg < 60:
-            self._wheel_dbg_n = _dbg + 1
-            log_event("WHEELDIAG peek=%s delta=%s pixel=%s gap=%.1fms %s"
-                      % (self.peek_mode, delta, pixel_dy, _gap_ms,
-                         "丢掉（同一格）" if _dup else "走"))
         if _dup:
             return
         self._wheel_last_t = _now
