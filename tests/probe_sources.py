@@ -3441,6 +3441,12 @@ check("入口搬家：统计进右键菜单、导出笔记进书架（原统计�
       and '"📤 导出笔记"' in _main_src and "def export_selected(" in _main_src
       and "def export_annotations_for(" in _main_src
       and 'cmenu.addAction("📤 导出划线笔记' not in _main_src, None)
+_rs38 = io.open(os.path.join(SR, "reading_stats.py"), encoding="utf-8").read()
+check("时序图收尾：结束 = 最后一次在读，尾巴不画（条子和细时间线都走 session_span）",
+      "def session_span(" in _rs38 and "def _session_split(" in _rs38
+      and _main_src.count("reading_stats.session_span(") >= 2
+      and "session_tail(" in _main_src,
+      _main_src.count("reading_stats.session_span("))
 check("对话框也置顶：正文页是常驻顶层，统计页/书架/目录/设置都压在它上面",
       "def keep_above_page(" in _main_src
       and _main_src.count("keep_above_page(self)") == 4,

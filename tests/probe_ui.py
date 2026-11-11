@@ -4611,6 +4611,42 @@ try:
           int(_m38.windowFlags()))
     _m38.deleteLater()
 
+    # 时序图：尾巴剪掉之后，绿段合计 = 账上在读，条子右端不留灰尾巴；两头标出起止时间
+    _s38 = {"k": "k1", "title": "t", "start": 1000.0, "sec": 900.0, "chars": 3000.0,
+            "end": 1000.0 + 900.0 + 600.0 + 720.0,
+            "gaps": [[600.0, 120.0], [1500.0, 720.0]]}      # 后一段一直歇到收场 = 尾巴
+    _iv38 = app_mod.reading_stats.active_intervals(_s38)
+    _st38, _en38 = app_mod.reading_stats.session_span(_s38)
+    check("尾巴剪掉：绿段合计 = 账上在读，结束收在最后一次在读上",
+          abs(sum(b - a for a, b in _iv38) - 900.0) < 1.0
+          and abs((_en38 - _st38) - (900.0 + 120.0)) < 1.0
+          and abs(app_mod.reading_stats.session_tail(_s38) - 720.0) < 1.0,
+          (round(sum(b - a for a, b in _iv38)), round(_en38 - _st38),
+           round(app_mod.reading_stats.session_tail(_s38))))
+    _tl38 = app_mod.SessionTimeline()
+    _tl38.resize(760, 130)
+    _tl38.set_session(_s38)
+    _tl38.show()
+    qapp.processEvents()
+    _img38 = _tl38.grab().toImage()
+    _r38 = _tl38.rect().adjusted(16, 30, -16, -22)
+    _row38 = _r38.top() + 4 + 7
+    _green38 = [x for x in range(_r38.left(), _r38.right() + 1)
+                if (lambda c: abs(c.red() - 0x6f) < 26 and abs(c.green() - 0xa8) < 26
+                    and abs(c.blue() - 0x6f) < 26)(_img38.pixelColor(x, _row38))]
+    _lbl_row38 = _r38.top() + 4 + 14 + 4 + 7
+    _left38 = [x for x in range(_r38.left(), _r38.left() + 44)
+               if _img38.pixelColor(x, _lbl_row38).red() > 120]
+    _right38 = [x for x in range(max(_r38.left(), _r38.right() - 44), _r38.right() + 1)
+                if _img38.pixelColor(x, _lbl_row38).red() > 120]
+    check("时间轴：绿画到右端不留灰尾巴，两头分别写着开始 / 结束的时间",
+          bool(_green38) and max(_green38) >= _r38.right() - 3
+          and len(_left38) > 10 and len(_right38) > 10,
+          (max(_green38) if _green38 else None, _r38.right(), len(_left38), len(_right38)))
+    _tl38.close()
+    _tl38.deleteLater()
+    qapp.processEvents()
+
     _dlg38 = [("阅读统计", app_mod.ReadingStatsDialog(w, book=None, parent=w)),
               ("本地书架", app_mod.LocalShelfDialog(w, parent=w)),
               ("目录划线", app_mod.ReadingMarksDialog(w)),

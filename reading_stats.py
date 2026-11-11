@@ -463,17 +463,60 @@ def session_gaps(s):
     return _gaps(s.get("gaps"))
 
 
-def active_intervals(s):
-    """这一场里"真在读"的时间段 [(起, 止), ...]：整场减去空隙。"""
+TAIL_EPS = 5.0        # 判"歇到收场"的余量：差这么几秒也算尾巴
+
+
+def _session_split(s):
+    """(起点, 终点, 保留下来的空隙, 尾巴时长)：把"歇到收场"那段尾巴剪掉之后的那一场。
+
+    账上的 `end` 是最后一次"计时落点"，它后面常还挂着一段沉默——同一本书要断满
+    `SESSION_GAP_SEC`（45 分钟）才算另一场，这段静默既不是在读、也不是场内歇着。
+    老账本里它还常被记成一段一直伸到 `end` 的空隙，画在时间线上就是一条没来由的
+    灰尾巴，看着像"这一场读到了最后"（真人 2026-11-11：时序图尾部总是空白）。
+
+    所以画之前先把"一直歇到收场"的空隙剪掉，`end` 收回到最后一次在读：
+    `end = 起点 + 在读 + 保留下来的空隙`——绿段加起来正好等于账上记的在读时长。
+    """
     if not isinstance(s, dict):
-        return []
+        return 0.0, 0.0, [], 0.0
     start = _num(s.get("start"))
     if start <= 0:
+        return 0.0, 0.0, [], 0.0
+    sec = _num(s.get("sec"))
+    span = max(_num(s.get("end")), start + sec) - start
+    kept, tail_at = [], None
+    for off, dur in session_gaps(s):
+        if off + dur >= span - TAIL_EPS:        # 一直歇到收场：尾巴，不画
+            tail_at = off if tail_at is None else min(tail_at, off)
+            continue
+        kept.append([max(0.0, off), dur])
+    end = start + sec + sum(d for _, d in kept)
+    if tail_at is not None and kept:            # 剪完之后不能早于最后一段空隙的结束
+        end = max(end, start + max(o + d for o, d in kept))
+    tail = max(0.0, (start + span) - max(end, start + (tail_at or 0.0))) if tail_at is not None else 0.0
+    return start, max(end, start), kept, tail
+
+
+def session_span(s):
+    """这一场"画得出证据"的时间范围 `(起点, 终点)`：终点收在最后一次在读上。"""
+    start, end, _, _ = _session_split(s)
+    return start, end
+
+
+def session_tail(s):
+    """收场前那段沉默有多长（剪掉了、画在条上就是空尾巴；悬停时说明一下）。"""
+    _, _, _, tail = _session_split(s)
+    return tail
+
+
+def active_intervals(s):
+    """这一场里"真在读"的时间段 [(起, 止), ...]：整场减去空隙（尾巴已剪掉）。"""
+    start, end, gaps, _tail = _session_split(s)
+    if start <= 0 or end <= start:
         return []
-    end = max(_num(s.get("end")), start + _num(s.get("sec")))
     out = []
     cur = start
-    for off, dur in session_gaps(s):
+    for off, dur in gaps:
         g0 = start + off
         g1 = min(end, g0 + dur)
         if g1 <= cur or g0 >= end:

@@ -2658,9 +2658,10 @@ class SessionBarDelegate(QStyledItemDelegate):
             return
         h = 9
         y = rect.center().y() - h // 2
-        start = float(s.get("start") or 0) or 1.0
-        end = max(float(s.get("end") or 0), start + 1.0)
-        span = max(1.0, end - start)
+        start, end = reading_stats.session_span(s)   # 尾巴已剪：结束 = 最后一次在读
+        if end - start < 1.0:
+            return
+        span = end - start
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
@@ -2712,7 +2713,9 @@ class SessionTimeline(QWidget):
                        "这一场没有细粒度记录（旧账本），只有总时长。")
             return
         ivs = reading_stats.active_intervals(s)
-        start, end = ivs[0][0], ivs[-1][1]
+        start, end = reading_stats.session_span(s)
+        if end <= start:
+            start, end = ivs[0][0], ivs[-1][1]
         span = max(1.0, end - start)
         sec = float(s.get("sec") or 0)
         gaps = reading_stats.session_gaps(s)
@@ -2751,16 +2754,28 @@ class SessionTimeline(QWidget):
                 p.setPen(QPen(QColor("#9a9a9a")))
                 p.drawText(gx + 3, bar_y + bar_h + 14, label)
                 p.setPen(QPen(QColor("#9a9a9a"), 1, Qt.DashLine))
-        # 时间刻度
+        # 时间刻度：两头的"开始 / 结束"写死（这一场到底从几点读到几点），
+        # 中间的整点刻度只当参考，靠近两头就不画了，免得糊成一团。
         p.setPen(QPen(QColor("#8a8a8a")))
         step = 3600 if span > 3 * 3600 else (1800 if span > 3600 else 600)
         tick = int(start // step) * step + step
+        start_lbl = reading_stats.fmt_clock(start)
+        end_lbl = reading_stats.fmt_clock(end)
+        start_w = fm.width(start_lbl)
+        end_w = fm.width(end_lbl)
+        label_y = bar_y + bar_h + 4
         while tick < end:
             tx = rect.left() + int((tick - start) / span * rect.width())
             p.drawLine(tx, bar_y + bar_h, tx, bar_y + bar_h + 4)
-            if tx + 30 < rect.right():
-                p.drawText(tx + 2, bar_y + bar_h + 17, reading_stats.fmt_clock(tick))
+            if (tx - 10 > rect.left() + start_w + 6
+                    and tx + 34 < rect.right() - end_w - 6):
+                p.drawText(tx + 2, label_y + 13, reading_stats.fmt_clock(tick))
             tick += step
+        p.setPen(QPen(QColor("#cfcfcf")))
+        p.drawText(QRect(rect.left(), label_y, start_w + 2, 14),
+                   Qt.AlignLeft | Qt.AlignVCenter, start_lbl)
+        p.drawText(QRect(rect.right() - end_w - 1, label_y, end_w + 1, 14),
+                   Qt.AlignRight | Qt.AlignVCenter, end_lbl)
 
     def _time_at(self, x):
         s = self.session_
@@ -2770,7 +2785,9 @@ class SessionTimeline(QWidget):
         rect = self._geom()
         if rect.width() <= 0:
             return None, None, None
-        start, end = ivs[0][0], ivs[-1][1]
+        start, end = reading_stats.session_span(s)
+        if end <= start:
+            start, end = ivs[0][0], ivs[-1][1]
         span = max(1.0, end - start)
         ts = start + max(0.0, min(1.0, (x - rect.left()) / float(rect.width()))) * span
         for off, dur in reading_stats.session_gaps(s):
@@ -3219,7 +3236,7 @@ class ReadingStatsDialog(QDialog):
     def _session_tip(self, s):
         """会话的悬停详情：开始 / 结束 / 跨度 / 在读（含中断）/ 字数 / 书名。"""
         start = float(s.get("start") or 0)
-        end = max(float(s.get("end") or 0), start)
+        end = reading_stats.session_span(s)[1] or start
         sec = float(s.get("sec") or 0)
         chars = float(s.get("chars") or 0)
         gaps = reading_stats.session_gaps(s)
@@ -3233,6 +3250,9 @@ class ReadingStatsDialog(QDialog):
             lines[-1] += "（中间歇了 %s，共 %d 次，最长 %s）" % (
                 reading_stats.fmt_gap(sum(g[1] for g in gaps)), len(gaps),
                 reading_stats.fmt_gap(max(g[1] for g in gaps)))
+        tail = reading_stats.session_tail(s)
+        if tail >= 60:                       # 收场前那段沉默：不算场内，但别瞒着
+            lines.append("收场前静了 " + reading_stats.fmt_gap(tail) + "（不算场内）")
         speed = (chars / (sec / 60.0)) if sec >= 10 else 0.0
         lines.append("字数  %s · %s" % (fmt_words(chars), reading_stats.fmt_speed(speed)))
         lines.append("书名  " + (s.get("title") or self._title_of(s.get("k"))))
