@@ -1584,6 +1584,21 @@ def modernize_menu(menu):
     return menu
 
 
+def keep_above_page(widget):
+    """把窗口提到正文页上面——对话框和菜单共用同一条规矩。
+
+    正文页是常驻顶层（`Qt.Tool | WindowStaysOnTopHint`，见 initUI）。Win32 里
+    "顶层带"整个高于普通层，所以子对话框不带顶层标志就只在普通层：正文页一铺
+    过来，对话框就被压在下面（使用者报的正是"阅读统计页被正文页盖住"——
+    量过：正文页 WS_EX_TOPMOST=True，统计页 False，Z 序排在正文页后面）。
+    """
+    try:
+        widget.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    except Exception:
+        pass
+    return widget
+
+
 class HighlightActionPanel(QWidget):
     """划选或点中划线后浮出的小面板（非模态）。
 
@@ -2262,6 +2277,7 @@ class LocalShelfDialog(QDialog):
         self.books = []
         self.selected = None
         self._scan = None
+        keep_above_page(self)           # 正文页是常驻顶层，书架得压在它上面
         self.setWindowTitle("📚 本地书架")
         self.resize(560, 580)
         self.setStyleSheet(DARK_STYLESHEET + SETTINGS_QSS)
@@ -2941,6 +2957,7 @@ class ReadingStatsDialog(QDialog):
         self.book = book if isinstance(book, dict) else None
         self.data = reading_stats.normalize(getattr(window, "stats_data", None) or {})
         self.range_key = reading_stats.RANGES[0][0]      # 今天 / 本周 / 本月 / 全部
+        keep_above_page(self)           # 不然统计页会被正文页盖住（使用者报过）
         self.setStyleSheet(STATS_STYLESHEET)
         self.setWindowTitle("📊 阅读统计")
         self.resize(900, 660)
@@ -3329,6 +3346,7 @@ class ReadingMarksDialog(QDialog):
         super().__init__(window)
         self.win = window
         self.jump_offset = None
+        keep_above_page(self)
         self.setWindowTitle("📑 目录 / 书签 / 划线")
         self.resize(540, 640)
         self.setStyleSheet(DARK_STYLESHEET)
@@ -3445,6 +3463,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.config = config
         self.main_window = parent
+        keep_above_page(self)
         self.original_opacity = self.config.get("opacity", 0.9)
         self.temp_text_color = self.config.get("text_color")
         self.temp_bg_color = self.config.get("bg_color")

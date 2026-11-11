@@ -3441,6 +3441,10 @@ check("入口搬家：统计进右键菜单、导出笔记进书架（原统计�
       and '"📤 导出笔记"' in _main_src and "def export_selected(" in _main_src
       and "def export_annotations_for(" in _main_src
       and 'cmenu.addAction("📤 导出划线笔记' not in _main_src, None)
+check("对话框也置顶：正文页是常驻顶层，统计页/书架/目录/设置都压在它上面",
+      "def keep_above_page(" in _main_src
+      and _main_src.count("keep_above_page(self)") == 4,
+      _main_src.count("keep_above_page(self)"))
 check("菜单置顶 + 偷瞄右键按缩放比换算坐标（不然菜单跑到右下角）",
       "| Qt.NoDropShadowWindowHint | Qt.WindowStaysOnTopHint)" in _main_src
       and "def screens_physical(" in _main_src and "def physical_to_logical(" in _main_src

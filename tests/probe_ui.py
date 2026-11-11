@@ -4611,6 +4611,18 @@ try:
           int(_m38.windowFlags()))
     _m38.deleteLater()
 
+    _dlg38 = [("阅读统计", app_mod.ReadingStatsDialog(w, book=None, parent=w)),
+              ("本地书架", app_mod.LocalShelfDialog(w, parent=w)),
+              ("目录划线", app_mod.ReadingMarksDialog(w)),
+              ("设置", app_mod.SettingsDialog(w.config, parent=w))]
+    check("四个对话框也在正文页上面（统计页被盖住就是这条：正文页常驻顶层）",
+          all(bool(d.windowFlags() & app_mod.Qt.WindowStaysOnTopHint) for _, d in _dlg38),
+          [(n, bool(d.windowFlags() & app_mod.Qt.WindowStaysOnTopHint)) for n, d in _dlg38])
+    for _n38, _d38 in _dlg38:
+        _d38.close()
+        _d38.deleteLater()
+    qapp.processEvents()
+
     _sc38 = app_mod.StealthReader.screens_physical()
     check("每块屏都换算成「物理矩形 + 缩放比」",
           bool(_sc38) and all(r[2] > 0 and r[3] > 0 and d > 0 for r, d in _sc38), _sc38)
