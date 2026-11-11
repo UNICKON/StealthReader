@@ -698,6 +698,14 @@ def book_view(data, key, total=0, pos=0, now=None):
 # ---------------------------------------------------------------- 窗口（今天 / 本周 / 本月 / 全部）
 RANGES = (("today", "今天"), ("week", "本周"), ("month", "本月"), ("all", "全部"))
 WEEKDAY_CN = "一二三四五六日"
+# 打开统计页先看「本周」：今天常常只读了十几二十分钟，看不出趋势（真人 2026-11-11）
+DEFAULT_RANGE = "week"
+
+
+def default_range():
+    """默认窗口；值要是写脏了（不在 RANGES 里）就退回第一个，不至于打不开。"""
+    keys = [k for k, _ in RANGES]
+    return DEFAULT_RANGE if DEFAULT_RANGE in keys else keys[0]
 
 
 def _today(now=None):

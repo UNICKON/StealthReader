@@ -3368,6 +3368,11 @@ check("窗口四档 + 自动粒度（今天=5 分钟带，跨度超 62 天按月
       'RANGES = (("today", "今天"), ("week", "本周"), ("month", "本月"), ("all", "全部"))' in _rs_src
       and "def range_bounds(" in _rs_src and "def prev_bounds(" in _rs_src
       and 'return "slot"' in _rs_src and "if span > 62:" in _rs_src, None)
+check("统计页默认停在「本周」（今天常常只有几十分钟，看不出趋势）",
+      'DEFAULT_RANGE = "week"' in _rs_src and "def default_range(" in _rs_src
+      and _main_src.count("reading_stats.default_range()") == 2
+      and "reading_stats.RANGES[0][0]" not in _main_src,
+      (_rs_src.count("DEFAULT_RANGE"), _main_src.count("reading_stats.default_range()")))
 check("对比上一期：算出上一窗口的时长和涨跌",
       "def fmt_delta(" in _rs_src and '"prev_sec"' in _rs_src and '"delta": delta' in _rs_src, None)
 

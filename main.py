@@ -2901,7 +2901,7 @@ class StatsSegments(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.current = reading_stats.RANGES[0][0]
+        self.current = reading_stats.default_range()      # 默认「本周」
         box = QHBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(3)
@@ -2973,7 +2973,7 @@ class ReadingStatsDialog(QDialog):
         self.win = window
         self.book = book if isinstance(book, dict) else None
         self.data = reading_stats.normalize(getattr(window, "stats_data", None) or {})
-        self.range_key = reading_stats.RANGES[0][0]      # 今天 / 本周 / 本月 / 全部
+        self.range_key = reading_stats.default_range()   # 今天 / 本周 / 本月 / 全部，默认本周
         keep_above_page(self)           # 不然统计页会被正文页盖住（使用者报过）
         self.setStyleSheet(STATS_STYLESHEET)
         self.setWindowTitle("📊 阅读统计")
