@@ -3401,11 +3401,50 @@ _books28 = _rs28.books_in_range(_win28, "all")
 check("书籍榜按窗口排序且占比合计 100%",
       len(_books28) == 1 and abs(_books28[0]["share"] - 100.0) < 0.01,
       [(b["title"], round(b["share"], 1)) for b in _books28])
+import reading_stats as _rs_con                                              # noqa: E402
+
+# 9 段碎场，形状照抄本机旧账：前 8 段间隔都不到 45 分钟，第 9 段隔了两个半钟头
+_con_base = 1794303492.0
+_con_rows = [(0, 5, 0), (30, 50, 0), (91, 80, 505), (180, 150, 734), (620, 15, 0),
+             (650, 30, 0), (670, 160, 1280), (900, 415, 2608), (11400, 500, 2322)]
+_con = _rs_con.blank()
+for _off, _sec, _chars in _con_rows:
+    _con["sessions"].append({"k": "b1", "title": "书", "start": _con_base + _off,
+                            "sec": _sec, "chars": _chars,
+                            "end": _con_base + _off + _sec, "gaps": []})
+_con["sessions"][7]["end"] = _con_base + 900 + 1140     # 第 8 段跨度 19 分钟、只记了 415 秒
+_con["sessions"][8]["end"] = _con_base + 11400 + 720     # 最后一段跨度 12 分钟、只记了 500 秒
+_con = _rs_con.normalize(_con)
+_con1 = _rs_con.consolidate(_con)
+_con2 = _rs_con.consolidate(_con1)
+check("碎场并成新口径：同书断不到 45 分钟并成一场，秒数字数一分不差",
+      len(_con1["sessions"]) == 2
+      and abs(sum(s["sec"] for s in _con1["sessions"])
+              - sum(s["sec"] for s in _con["sessions"])) < 0.5
+      and abs(sum(s["chars"] for s in _con1["sessions"])
+              - sum(s["chars"] for s in _con["sessions"])) < 0.5,
+      len(_con1["sessions"]))
+check("并出来的场带着场内空隙：时间线上画的在读 ≈ 账上记的时长",
+      all(len(_rs_con.session_gaps(s)) >= 1 for s in _con1["sessions"])
+      and sum(len(_rs_con.session_gaps(s)) for s in _con1["sessions"]) >= 3
+      and all(sum(d for _, d in _rs_con.session_gaps(s)) < (s["end"] - s["start"])
+              for s in _con1["sessions"]),
+      [len(_rs_con.session_gaps(s)) for s in _con1["sessions"]])
+check("反复并结果不变（幂等），日账 / 书账按场次重算",
+      [(s["start"], s["sec"], s["gaps"]) for s in _con1["sessions"]]
+      == [(s["start"], s["sec"], s["gaps"]) for s in _con2["sessions"]]
+      and _con1["days"][_rs_con.day_key(_con_base)]["n"] == 2
+      and list(_con1["books"].values())[0]["n"] == 2, _con1["days"])
+
 check("入口搬家：统计进右键菜单、导出笔记进书架（原统计那个位置）",
       '"📊 阅读统计"' in _main_src and "def open_reading_stats(" in _main_src
       and '"📤 导出笔记"' in _main_src and "def export_selected(" in _main_src
       and "def export_annotations_for(" in _main_src
       and 'cmenu.addAction("📤 导出划线笔记' not in _main_src, None)
+check("菜单置顶 + 偷瞄右键按缩放比换算坐标（不然菜单跑到右下角）",
+      "| Qt.NoDropShadowWindowHint | Qt.WindowStaysOnTopHint)" in _main_src
+      and "def screens_physical(" in _main_src and "def physical_to_logical(" in _main_src
+      and "cmenu.exec_(self.physical_to_logical(int(x), int(y)))" in _main_src, None)
 check("偷瞄（ce）里窗口内右键 = 出右键菜单，不退出偷瞄",
       "PEEK_MENU_MESSAGES = {WM_RBUTTONDOWN, WM_RBUTTONDBLCLK}" in _main_src
       and "def peek_point_inside(" in _main_src and "def show_peek_menu(" in _main_src

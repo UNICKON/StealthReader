@@ -1568,10 +1568,16 @@ PANEL_QSS = """
 
 
 def modernize_menu(menu):
-    """给 QMenu 套上圆角深色皮（原生外观太"系统设置"了）。"""
+    """给 QMenu 套上圆角深色皮（原生外观太"系统设置"了）。
+
+    **必须带 `WindowStaysOnTopHint`**：主窗口本身是常驻顶层（`Qt.Tool |
+    WindowStaysOnTopHint`，见 initUI），菜单不顶层就会被正文页盖住——
+    菜单确实弹了、也抓了键盘，但人在屏幕上找不到它（cq / ce 都遇到过）。
+    """
     try:
         menu.setAttribute(Qt.WA_TranslucentBackground)
-        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        menu.setWindowFlags(menu.windowFlags() | Qt.FramelessWindowHint
+                            | Qt.NoDropShadowWindowHint | Qt.WindowStaysOnTopHint)
         menu.setStyleSheet(MODERN_MENU_QSS)
     except Exception:
         pass
@@ -6723,6 +6729,39 @@ class StealthReader(QWidget):
             rect = (g.left(), g.top(), g.left() + g.width(), g.top() + g.height())
         self.peek_window_rect = tuple(int(v) for v in rect)
 
+    @staticmethod
+    def screens_physical():
+        """[(物理像素矩形, 缩放比), ...]。
+
+        Qt 的 `QScreen.geometry()` 是逻辑像素，乘上 dpr 才是 Windows / 钩子说的
+        物理像素——两边混用就是"菜单跑到右下角"的根源。
+        """
+        out = []
+        for screen in (QApplication.screens() or []):
+            try:
+                dpr = float(screen.devicePixelRatio() or 1.0)
+            except Exception:
+                dpr = 1.0
+            g = screen.geometry()
+            out.append(((g.x(), g.y(), int(round(g.width() * dpr)),
+                         int(round(g.height() * dpr))), dpr or 1.0))
+        return out
+
+    @staticmethod
+    def physical_to_logical(x, y, screens=None):
+        """物理像素 → Qt 逻辑像素：落在哪块屏上就按那块屏的缩放比除。"""
+        sc = screens if screens is not None else StealthReader.screens_physical()
+        dpr = None
+        for (gx, gy, gw, gh), sdpr in sc:
+            if gx <= x < gx + gw and gy <= y < gy + gh:
+                dpr = sdpr
+                break
+        if dpr is None:
+            dpr = sc[0][1] if sc else 1.0          # 不在任何屏上：按主屏算
+        if not dpr or dpr <= 0:
+            dpr = 1.0
+        return QPoint(int(round(x / dpr)), int(round(y / dpr)))
+
     def peek_point_inside(self, x, y):
         """这一点是不是落在自己窗口里（钩子线程也能调：只读一个元组，不碰 Qt 对象）。"""
         rect = getattr(self, "peek_window_rect", None)
@@ -6732,14 +6771,19 @@ class StealthReader(QWidget):
         return left <= int(x) < right and top <= int(y) < bottom
 
     def show_peek_menu(self, x, y):
-        """偷瞄里在窗口上按右键：弹右键菜单，**不退出偷瞄**。"""
+        """偷瞄里在窗口上按右键：弹右键菜单，**不退出偷瞄**。
+
+        `x, y` 是低级鼠标钩子给的**物理像素**（这台机器 3840×2160），而 Qt 的窗口
+        坐标是去掉了缩放的**逻辑像素**（1920×1080，dpr=2）。以前直接拿物理坐标去
+        `exec_`，点明明在窗口里，菜单却被判成"在屏幕外"，被夹到屏幕右下角。
+        """
         if not self.peek_mode:
             return
         self.peek_menu_open = True
         try:
             cmenu = self.build_context_menu()
             modernize_menu(cmenu)
-            cmenu.exec_(QPoint(int(x), int(y)))
+            cmenu.exec_(self.physical_to_logical(int(x), int(y)))
             cmenu.deleteLater()
         finally:
             self.peek_menu_open = False

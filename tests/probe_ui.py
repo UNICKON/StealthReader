@@ -4603,6 +4603,32 @@ try:
     finally:
         app_mod.QMenu.exec_ = _exec_bak38
         w.peek_mode = False
+    _m38 = app_mod.QMenu()
+    app_mod.modernize_menu(_m38)
+    check("菜单全是顶层窗口（正文页是常驻顶层，菜单不顶层就会被盖住）",
+          bool(_m38.windowFlags() & app_mod.Qt.WindowStaysOnTopHint)
+          and bool(_m38.windowFlags() & app_mod.Qt.FramelessWindowHint),
+          int(_m38.windowFlags()))
+    _m38.deleteLater()
+
+    _sc38 = app_mod.StealthReader.screens_physical()
+    check("每块屏都换算成「物理矩形 + 缩放比」",
+          bool(_sc38) and all(r[2] > 0 and r[3] > 0 and d > 0 for r, d in _sc38), _sc38)
+    _pl38 = [((0, 0, 3840, 2160), 2.0)]
+    check("物理 → 逻辑：200% 缩放那台，点要除二（菜单不许再贴到右下角）",
+          (lambda p: (p.x(), p.y()))(
+              app_mod.StealthReader.physical_to_logical(1000, 400, _pl38)) == (500, 200)
+          and (lambda p: (p.x(), p.y()))(
+              app_mod.StealthReader.physical_to_logical(3000, 2000, _pl38)) == (1500, 1000),
+          None)
+    _pl1 = [((0, 0, 1920, 1080), 1.0)]
+    _pl2 = [((0, 0, 1920, 1080), 1.0), ((1920, 0, 3840, 1080), 1.0)]
+    check("物理 → 逻辑：100% 缩放时原样返回；点落在哪块屏就按哪块屏的比",
+          (lambda p: (p.x(), p.y()))(
+              app_mod.StealthReader.physical_to_logical(900, 700, _pl1)) == (900, 700)
+          and (lambda p: (p.x(), p.y()))(
+              app_mod.StealthReader.physical_to_logical(4000, 300, _pl2)) == (4000, 300),
+          None)
     check("偷瞄里窗口内右键：弹菜单、点在哪弹在哪，而且人还在偷瞄里",
           _seen38.get("pos") is not None and int(_seen38["pos"].x()) == 520
           and int(_seen38["pos"].y()) == 430 and _still38 is True, _seen38.get("pos"))

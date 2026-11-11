@@ -357,6 +357,95 @@ def add_span(data, key, title, start_ts, sec, chars, end_ts=None, gaps=None):
     return data
 
 
+def consolidate(data, gap_sec=None):
+    """把会话表按"同一本书、断不到 `gap_sec`（默认 45 分钟）就并成一场"重排一遍。
+
+    旧口径记下来的会话是一串碎渣（5 秒一场、50 秒一场），看着不像"读了一次书"。
+    这里**只重排会话，秒数 / 字数一个字都不改**：
+
+    * 相邻两段同书、间隔不到 `gap_sec` → 并成一场，间隔 > `IDLE_SEC` 的记成一个 gap；
+    * 每段自己带的 gaps 跟着一起搬（偏移按并进来的位置平移）；
+    * 老记录没记场内空隙，"这一段记了多久之外"的那段时间补成一个 gap ——
+      不然时间线上画的"在读"（整场减去空隙）会比账上记的时长多出一大截；
+      自己带着空隙的会话不补（它就是新的口径），所以对同一份账本反复调用结果是稳定的；
+    * 日账 / 书账按并完的会话重算（`n` 是场次，所以会跟着变小）。
+
+    返回新账本（不原地改传入的那个）。
+    """
+    gap_sec = SESSION_GAP_SEC if gap_sec is None else max(0.0, _num(gap_sec))
+    src = normalize(data)
+    rows = sorted(src["sessions"], key=lambda s: _num(s.get("start")))
+
+    groups = []
+    cur = []
+    cur_end = 0.0
+    for s in rows:
+        start = _num(s.get("start"))
+        end = max(_num(s.get("end")), start)
+        same_book = bool(cur) and str(s.get("k") or "") == str(cur[-1].get("k") or "")
+        if same_book and (start - cur_end) < gap_sec:
+            cur.append(s)
+            cur_end = max(cur_end, end)
+        else:
+            if cur:
+                groups.append(cur)
+            cur = [s]
+            cur_end = end
+    if cur:
+        groups.append(cur)
+
+    out = blank()
+    for group in groups:
+        start = min(_num(x.get("start")) for x in group)
+        end = max(max(_num(x.get("end")), _num(x.get("start"))) for x in group)
+        sec = sum(_num(x.get("sec")) for x in group)
+        chars = sum(_num(x.get("chars")) for x in group)
+        gaps = []
+        prev_end = None
+        for x in group:
+            s0 = _num(x.get("start"))
+            e0 = max(_num(x.get("end")), s0)
+            shift = s0 - start
+            own = _gaps(x.get("gaps"))
+            if prev_end is not None and (s0 - prev_end) > IDLE_SEC:
+                gaps.append([max(0.0, prev_end - start), s0 - prev_end])
+            for off, dur in own:
+                gaps.append([max(0.0, shift + off), dur])
+            inner = (e0 - s0) - _num(x.get("sec")) - sum(d for _, d in own)
+            if not own and inner > IDLE_SEC:        # 老账本没记场内空隙：补一段，时间线才对得上
+                off = min(max(0.0, shift + _num(x.get("sec"))), end - start)
+                inner = min(inner, max(0.0, (end - start) - off))
+                if inner > IDLE_SEC:
+                    gaps.append([off, inner])
+            prev_end = max(prev_end or 0.0, e0)
+        out["sessions"].append({
+            "k": str(group[0].get("k") or ""), "title": str(group[0].get("title") or ""),
+            "start": start, "sec": sec, "chars": chars, "end": end, "gaps": _gaps(gaps)})
+
+    out["sessions"].sort(key=lambda s: s["start"])
+    out["sessions"] = out["sessions"][-KEEP_SESSIONS:]
+    for s in out["sessions"]:
+        day = day_key(s["start"])
+        row = out["days"].setdefault(day, {"sec": 0.0, "chars": 0.0, "n": 0})
+        row["sec"] = min(DAY_SEC_CAP, row["sec"] + s["sec"])
+        row["chars"] += s["chars"]
+        row["n"] += 1
+        book = out["books"].setdefault(s["k"], {"title": "", "sec": 0.0, "chars": 0.0,
+                                                "n": 0, "first": 0.0, "last": 0.0, "days": {}})
+        if s["title"]:
+            book["title"] = s["title"]
+        book["sec"] += s["sec"]
+        book["chars"] += s["chars"]
+        book["n"] += 1
+        book["first"] = min(book["first"] or s["start"], s["start"])
+        book["last"] = max(book["last"] or 0.0, s["end"])
+        sub = book["days"].setdefault(day, {"sec": 0.0, "chars": 0.0, "n": 0})
+        sub["sec"] += s["sec"]
+        sub["chars"] += s["chars"]
+        sub["n"] += 1
+    return normalize(out)
+
+
 def _trim(table, keep):
     """只留最近的 `keep` 个日期。"""
     if len(table) <= keep:
