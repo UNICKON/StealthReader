@@ -1821,6 +1821,9 @@ BOOK_KEY_NAMES = {
     # 真人 2026-11-05：「ce 模式 cd 翻页不该打破模式」。c/d 也是书页键：
     # 不列在这儿，偷瞄时按一下就会落到最后那条"其他键 → 退出偷瞄"上。
     0x43: "c", 0x44: "d",
+    # 真人 2026-11-12：偷瞄里 e = 统计开关、t = 目录/书签/划线、q = 暂放/恢复滚轮，
+    # 全都"不打破 ce 状态"（同 c/d 的道理：不列进来就落到"其他键 → 退出偷瞄"）。
+    0x45: "e", 0x54: "t", 0x51: "q",
 }
 
 # 窗口内的 Qt 键 → 复习键名。窗口内这一套走 keyPressEvent，不经过任何钩子：
@@ -1962,6 +1965,9 @@ class GlobalInputHook:
             if n_code >= 0 and self.owner.peek_mode:
                 message = int(w_param)
                 if message == WM_MOUSEWHEEL:
+                    if not getattr(self.owner, "peek_wheel_captured", True):
+                        # 偷瞄里按过 q（暂放滚轮）：这一下还给系统，底下应用照常滚
+                        return _user32.CallNextHookEx(None, n_code, w_param, l_param)
                     info = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                     delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
                     self.owner.peek_wheel_signal.emit(delta)
@@ -1995,6 +2001,11 @@ class GlobalInputHook:
                         # 菜单开着：这一下按键是给菜单的（Esc 关菜单、方向键选条目），
                         # 不能顺手把偷瞄也退了
                         return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+                    if getattr(self.owner, "peek_panel_open", False) and int(info.vkCode) == 0x1B:
+                        # 统计/目录面板开着：Esc 只收面板，不退偷瞄（同菜单的待遇）。
+                        # 面板不持焦点，放行会把 Esc 漏给当前应用（可能误关别人的东西），所以吞掉。
+                        self.owner.peek_panel_close_signal.emit()
+                        return 1
                     if self._matches_peek_key(int(info.vkCode)):
                         self.owner.peek_exit_signal.emit("peek_key")
                         return 1  # 偷瞄期间这个键归我们，别落到当前应用上
@@ -4394,6 +4405,8 @@ class StealthReader(QWidget):
     feed_key_signal = pyqtSignal(int)
     # 书页的翻页/滚动键同理：偷瞄里按空格、方向键不该被当成"别的输入"而退出偷瞄
     book_key_signal = pyqtSignal(str)
+    # 偷瞄里按 Esc 且统计/目录面板开着：只收面板、不退偷瞄（同"菜单开着 Esc 只关菜单"）
+    peek_panel_close_signal = pyqtSignal()
     # 书架后台算完字数（epub 要解压，不能在界面线程读），发回主线程
     shelf_totals_signal = pyqtSignal(dict)
 
@@ -4436,6 +4449,11 @@ class StealthReader(QWidget):
         self.peek_was_visible = False   # 进入偷瞄前窗口是否可见，退出时照原样恢复
         self.peek_window_rect = None    # 窗口在屏幕上的物理像素矩形（钩子线程只读这个）
         self.peek_menu_open = False     # 偷瞄里弹出的右键菜单开着：这时按键不退出偷瞄
+        self.peek_panel = None          # 偷瞄里浮着的统计/目录面板（同一时刻最多一个）
+        self.peek_panel_open = False    # 面板开着：Esc 只收面板、不退偷瞄
+        self.peek_wheel_captured = True # 偷瞄里滚轮归我们；按 q 暂放给系统，再按 q 收回来
+        self.stats_dialog = None        # 阅读统计窗口（e / 右键菜单共用）
+        self.marks_dialog = None        # 目录/书签/划线窗口（非模态路径；Ctrl+L 仍走模态）
         self.peek_last_toggle = 0.0     # 和老板键一样防连击
         self.peek_last_exit = 0.0       # 刚退出的一瞬，Ctrl+E 的余波不再当新指令
         self.peek_shortcut = None
@@ -4614,6 +4632,7 @@ class StealthReader(QWidget):
         self.review_key_signal.connect(self.on_review_key, Qt.QueuedConnection)
         self.feed_key_signal.connect(self.on_feed_peek_key, Qt.QueuedConnection)
         self.book_key_signal.connect(self.on_peek_book_key, Qt.QueuedConnection)
+        self.peek_panel_close_signal.connect(self.on_peek_panel_close, Qt.QueuedConnection)
         self.shelf_totals_signal.connect(self.on_shelf_totals, Qt.QueuedConnection)
         # 最后一道保险：任何退出路径（托盘退出、右键退出、关窗、异常退出）都要停掉 Anki
         # 后台线程。QThread 还在跑就被析构，PyQt 会直接崩，而且 Anki 可能停在"藏起来"的状态。
@@ -6842,6 +6861,7 @@ class StealthReader(QWidget):
         不碰内容层：屏幕上是哪一页就浮现哪一页（卡片页 = 那张卡、安全文档页 = 那份文档）。"""
         if self.peek_mode:
             return
+        self.peek_wheel_captured = True   # 重新进偷瞄：滚轮默认归我们（上次的暂放不带到这回）
         if not self.peek_input_hook.install(self.config.get("peek_key", "ctrl+e")):
             print("偷瞄模式未启动：全局输入钩子安装失败")
             return
@@ -6870,6 +6890,8 @@ class StealthReader(QWidget):
         """
         if not self.peek_mode:
             return
+        self.close_peek_panel()          # 面板是偷瞄浮层的一部分：偷瞄收起时一起收
+        self.peek_wheel_captured = True
         self.peek_mode = False
         self.peek_last_exit = time.time()
         try:
@@ -10008,7 +10030,9 @@ class StealthReader(QWidget):
         return True
 
     def on_peek_book_key(self, name):
-        """偷瞄时收到的书页键（主线程）：上下箭头逐行滚，其余整页翻。"""
+        """偷瞄时收到的书页键（主线程）：上下箭头逐行滚，其余整页翻。
+
+        e/t/q 也在这一路（2026-11-12）：统计、目录、滚轮暂放，全都不动偷瞄本身。"""
         if not self.peek_mode:
             return
         if name == "down":
@@ -10019,6 +10043,107 @@ class StealthReader(QWidget):
             self.scroll_page(1)
         elif name in ("pageup", "left", "c"):
             self.scroll_page(-1)
+        elif name == "e":
+            self.toggle_peek_panel("stats")
+        elif name == "t":
+            self.toggle_peek_panel("marks")
+        elif name == "q":
+            self.toggle_peek_wheel_capture()
+
+    # --- 偷瞄里的统计/目录面板与滚轮暂放（全都不打破 ce 状态） ---
+
+    def toggle_peek_panel(self, kind):
+        """偷瞄里 e / t：唤起或收起统计 / 目录面板。
+
+        面板不激活显示（WA_ShowWithoutActivating）：焦点仍留在你正在用的窗口，
+        钩子照旧接管滚轮——这就是"不打破 ce 状态"。同一时刻最多浮一个面板：
+        按同一个键收起，按另一个键换面板。"""
+        if not self.peek_mode:
+            return
+        cur = getattr(self, "peek_panel", None)
+        if cur is not None:
+            same = getattr(cur, "panel_kind", "") == kind
+            self.close_peek_panel()
+            if same:
+                return
+        if kind == "stats":
+            dlg = self.open_reading_stats(activate=False)
+            if dlg is not None:
+                dlg.panel_kind = "stats"
+                self.peek_panel = dlg
+                self.peek_panel_open = True
+        elif kind == "marks":
+            dlg = self.open_reading_marks(0, modal=False)
+            if dlg is not None:
+                dlg.panel_kind = "marks"
+                self.peek_panel = dlg
+                self.peek_panel_open = True
+
+    def close_peek_panel(self):
+        """收掉偷瞄里浮着的面板：只关面板，不动偷瞄本身。"""
+        cur = getattr(self, "peek_panel", None)
+        self.peek_panel = None
+        self.peek_panel_open = False
+        if cur is None:
+            return
+        try:
+            cur.close()
+            cur.deleteLater()
+        except Exception:
+            pass
+
+    def on_peek_panel_close(self):
+        """偷瞄里按 Esc 且面板开着（钩子发回主线程）：只收面板，不退偷瞄。"""
+        if getattr(self, "peek_panel_open", False):
+            self.close_peek_panel()
+
+    def toggle_peek_wheel_capture(self):
+        """偷瞄里 q：把滚轮暂放给其他窗口，再按 q 收回来继续翻页。
+
+        只改钩子对滚轮的取舍，窗口照浮、按键钩子照旧——偷瞄状态本身不破。
+        不弹提示（真人 2026-11-12：按 q 别出提示框）；状态只写日志。"""
+        if not self.peek_mode:
+            return
+        self.peek_wheel_captured = not getattr(self, "peek_wheel_captured", True)
+        log_event("偷瞄滚轮：%s" % ("已放行（按 q 恢复）" if not self.peek_wheel_captured
+                                   else "已恢复接管"))
+
+    # --- 正常阅读页的 e / t / Esc（不开偷瞄时同样好使） ---
+
+    def toggle_stats_panel_window(self):
+        """e：统计窗口开关。开着就收，没开就唤起（看当前打开这本）。"""
+        dlg = getattr(self, "stats_dialog", None)
+        if dlg is not None and dlg.isVisible():
+            dlg.close()
+            dlg.deleteLater()
+            self.stats_dialog = None
+            return
+        self.open_reading_stats()
+
+    def toggle_marks_panel_window(self):
+        """t：目录/书签/划线窗口开关（非模态，能边看书边翻目录）。"""
+        dlg = getattr(self, "marks_dialog", None)
+        if dlg is not None and dlg.isVisible():
+            dlg.close()
+            self.marks_dialog = None
+            return
+        self.open_reading_marks(0, modal=False)
+
+    def close_stats_or_marks_panel(self):
+        """Esc：统计/目录窗口开着就收掉；一个都没开就返回 False（让给原逻辑）。"""
+        closed = False
+        dlg = getattr(self, "stats_dialog", None)
+        if dlg is not None and dlg.isVisible():
+            dlg.close()
+            dlg.deleteLater()
+            self.stats_dialog = None
+            closed = True
+        dlg = getattr(self, "marks_dialog", None)
+        if dlg is not None and dlg.isVisible():
+            dlg.close()
+            self.marks_dialog = None
+            closed = True
+        return closed
 
     def on_review_key(self, name):
         """复习键回调。信号从钩子线程发过来，QueuedConnection 保证在这里是主线程。"""
@@ -10884,17 +11009,54 @@ class StealthReader(QWidget):
             self.save_config()
         self.render_local_page()
 
-    def open_reading_marks(self, initial_tab=0):
+    def open_reading_marks(self, initial_tab=0, modal=True):
+        """目录 / 书签 / 划线窗口。
+
+        modal=True（Ctrl+L / 右键菜单 / 书架，老行为）：模态，选完才回正文。
+        modal=False（阅读页 t / 偷瞄里的 t）：非模态浮窗，能边看书边翻；
+        双击条目跳转后自己关。非模态时返回窗口，调用方要留引用。"""
         if self._book_veiled() or not self.is_local_mode:
+            return None
+        if modal:
+            self.is_popup_open = True
+            try:
+                dialog = ReadingMarksDialog(self, initial_tab)
+                if dialog.exec_() == QDialog.Accepted and dialog.jump_offset is not None:
+                    self.jump_to_offset(dialog.jump_offset)
+                dialog.deleteLater()
+            finally:
+                self.is_popup_open = False
+            return None
+        dialog = ReadingMarksDialog(self, initial_tab)
+        self._forget_marks_dialog()
+        dialog.setAttribute(Qt.WA_ShowWithoutActivating)
+        dialog.finished.connect(self._on_marks_finished)
+        dialog.show()
+        self.marks_dialog = dialog
+        return dialog
+
+    def _forget_marks_dialog(self):
+        old = getattr(self, "marks_dialog", None)
+        if old is not None:
+            try:
+                old.deleteLater()
+            except Exception:
+                pass
+        self.marks_dialog = None
+
+    def _on_marks_finished(self, code):
+        """非模态目录窗收场（双击跳转 accept / Esc 或点 X reject）：跳转并清引用。"""
+        dlg = self.sender()
+        if dlg is None:
             return
-        self.is_popup_open = True
-        try:
-            dialog = ReadingMarksDialog(self, initial_tab)
-            if dialog.exec_() == QDialog.Accepted and dialog.jump_offset is not None:
-                self.jump_to_offset(dialog.jump_offset)
-            dialog.deleteLater()
-        finally:
-            self.is_popup_open = False
+        if code == QDialog.Accepted and getattr(dlg, "jump_offset", None) is not None:
+            self.jump_to_offset(dlg.jump_offset)
+        if getattr(self, "marks_dialog", None) is dlg:
+            self.marks_dialog = None
+        if getattr(self, "peek_panel", None) is dlg:
+            self.peek_panel = None
+            self.peek_panel_open = False
+        dlg.deleteLater()
 
     def export_annotations(self):
         """当前这本（笔记本里那条路的入口）。"""
@@ -11361,11 +11523,12 @@ class StealthReader(QWidget):
             QApplication.clipboard().setText(cursor.selectedText().replace("\u2029", "\n"))
             QToolTip.showText(QCursor.pos(), "已复制选中文字", self)
 
-    def open_reading_stats(self, book=None, use_current=True):
+    def open_reading_stats(self, book=None, use_current=True, activate=True):
         """阅读统计的入口（右键菜单 / 书架共用）。
 
         use_current=True（右键菜单那条路）：没指定书就看**当前打开这本**；
         use_current=False（书架）：没选书就是**全部书籍**——两边要的不一样。
+        activate=False（偷瞄里的 e）：不激活显示，焦点留在你正在用的窗口。
         """
         if self._book_veiled():
             return None
@@ -11384,8 +11547,17 @@ class StealthReader(QWidget):
                         "title": os.path.splitext(os.path.basename(self.local_file_path))[0],
                         "pos": int(self.local_start_index or 0),
                         "total": len(self.local_full_text or "")}
+        old = getattr(self, "stats_dialog", None)
+        if old is not None and not old.isVisible():
+            try:
+                old.deleteLater()      # 关掉后残留的旧统计窗，别攒着
+            except Exception:
+                pass
         dlg = ReadingStatsDialog(self, book=book)
         self.stats_dialog = dlg        # 留个引用，别让 Python 把它回收了
+        if not activate:
+            # 偷瞄里唤起：不抢焦点，不然"不打破 ce 状态"就破在 show 这一下
+            dlg.setAttribute(Qt.WA_ShowWithoutActivating)
         dlg.show()
         return dlg
 
@@ -11504,6 +11676,15 @@ class StealthReader(QWidget):
             self.scroll_page(1)
         elif key in [Qt.Key_Left, Qt.Key_PageUp, Qt.Key_C]:
             self.scroll_page(-1)
+        elif key == Qt.Key_E:
+            # e：唤起/收起阅读统计（右键菜单那个 📊，不用再点菜单）
+            self.toggle_stats_panel_window()
+        elif key == Qt.Key_T:
+            # t：唤起/收起 目录/书签/划线（非模态，能边看书边翻）
+            self.toggle_marks_panel_window()
+        elif key == Qt.Key_Escape:
+            # Esc：统计/目录窗口开着就收掉（没开就不动——书页 Esc 本来没别的含义）
+            self.close_stats_or_marks_panel()
 
     def hideEvent(self, event):
         self._stats_flush("窗口收起")
