@@ -4300,7 +4300,7 @@ try:
     w.stats_active_ts = time.monotonic() - 3000         # 停 50 分钟 = 这一场真结束了
     w._stats_tick()
     _day = w.stats_data["days"].get(_rs38.day_key(), {})
-    check("停 50 分钟（超过 45 分钟分界）才收场：这一场写进日账（30 秒 / 3000 字）",
+    check("停 50 分钟（超过 15 分钟分界）才收场：这一场写进日账（30 秒 / 3000 字）",
           w.stats_session is None and int(_day.get("sec", 0)) == 30
           and int(_day.get("chars", 0)) == 3000, (w.stats_session, _day))
     _disk = _rs38.load(os.environ["STEALTHREADER_STATS"])

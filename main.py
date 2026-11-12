@@ -5512,7 +5512,7 @@ class StealthReader(QWidget):
         now = time.monotonic()
         gap = now - (self.stats_active_ts or now)
         # 停了先**停止计时**，但别急着收场：收早了会话就碎成一片（真人 2026-11-10 提的）。
-        # 真收场要等断得够久（SESSION_GAP_SEC=45 分钟），那时候它本来就该算另一场了。
+        # 真收场要等断得够久（SESSION_GAP_SEC=15 分钟），那时候它本来就该算另一场了。
         if gap > reading_stats.SESSION_GAP_SEC:
             self._stats_flush("停了挺久")
             return
@@ -5542,7 +5542,7 @@ class StealthReader(QWidget):
             session["title"] = self._stats_book_title()
         # 一分钟落一次盘：被强杀也不至于丢掉整场。
         # 一场现在可能有一两小时，光攒着太危险，所以定期把这一场写进账本再接着开：
-        # 下一个 span 会在 45 分钟内并回同一场（间隔 ≈ 0，不记空隙），会话表里仍是一场。
+        # 下一个 span 会在 15 分钟内并回同一场（间隔 ≈ 0，不记空隙），会话表里仍是一场。
         # 按"这一场"计时（session["saved"]）：不能用进程级的全局时间戳——开场时它可能还是 0，
         # 拿它当基准会让第一拍就触发落盘，一场被切成 5 秒一段（这坑踩过）。
         if (time.time() - float(session.get("saved") or session.get("start") or 0.0) >= 60
