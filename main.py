@@ -10062,7 +10062,10 @@ class StealthReader(QWidget):
             return
         cur = getattr(self, "peek_panel", None)
         if cur is not None:
-            same = getattr(cur, "panel_kind", "") == kind
+            try:
+                same = getattr(cur, "panel_kind", "") == kind
+            except RuntimeError:            # 面板已经被 C++ 删了：当成"不是同一个"
+                same = False
             self.close_peek_panel()
             if same:
                 return
@@ -10079,18 +10082,45 @@ class StealthReader(QWidget):
                 self.peek_panel = dlg
                 self.peek_panel_open = True
 
+    def _panel_alive(self, dlg):
+        """窗口还活着、并且露着吗。
+
+        PyQt 里 close() + deleteLater() 之后 C++ 那边可能已经真删了，再碰它就抛
+        RuntimeError: wrapped C/C++ object ... has been deleted。以前这里只看
+        `dlg.isVisible()`，于是"偷瞄里按过 e、面板收掉以后，回到阅读页再按 e 就没反应"
+        ——真人 2026-11-12 报的「e 唤出有时候失效」就是这个。
+        """
+        if dlg is None:
+            return False
+        try:
+            return bool(dlg.isVisible())
+        except RuntimeError:
+            return False
+
+    def _drop_dialog(self, dlg):
+        """把窗口收掉，并把**所有**指着它的引用清干净。
+
+        统计 / 目录窗和偷瞄面板共用同一条引用（open_reading_stats 会写 stats_dialog，
+        toggle_peek_panel 再写 peek_panel），只清一个就会剩下一个死引用，下次按键就炸。
+        """
+        if dlg is None:
+            return
+        for step in ("close", "deleteLater"):
+            try:
+                getattr(dlg, step)()
+            except Exception:           # 已经被删了：跳过，接着清引用
+                pass
+        for name in ("stats_dialog", "marks_dialog", "peek_panel"):
+            if getattr(self, name, None) is dlg:
+                setattr(self, name, None)
+        if getattr(self, "peek_panel", None) is None:
+            self.peek_panel_open = False
+
     def close_peek_panel(self):
         """收掉偷瞄里浮着的面板：只关面板，不动偷瞄本身。"""
-        cur = getattr(self, "peek_panel", None)
+        self._drop_dialog(getattr(self, "peek_panel", None))
         self.peek_panel = None
         self.peek_panel_open = False
-        if cur is None:
-            return
-        try:
-            cur.close()
-            cur.deleteLater()
-        except Exception:
-            pass
 
     def on_peek_panel_close(self):
         """偷瞄里按 Esc 且面板开着（钩子发回主线程）：只收面板，不退偷瞄。"""
@@ -10113,36 +10143,31 @@ class StealthReader(QWidget):
     def toggle_stats_panel_window(self):
         """e：统计窗口开关。开着就收，没开就唤起（看当前打开这本）。"""
         dlg = getattr(self, "stats_dialog", None)
-        if dlg is not None and dlg.isVisible():
-            dlg.close()
-            dlg.deleteLater()
-            self.stats_dialog = None
+        if self._panel_alive(dlg):
+            self._drop_dialog(dlg)
             return
+        self.stats_dialog = None            # 死引用先清掉，免得 open 里再撞一次
         self.open_reading_stats()
 
     def toggle_marks_panel_window(self):
         """t：目录/书签/划线窗口开关（非模态，能边看书边翻目录）。"""
         dlg = getattr(self, "marks_dialog", None)
-        if dlg is not None and dlg.isVisible():
-            dlg.close()
-            self.marks_dialog = None
+        if self._panel_alive(dlg):
+            self._drop_dialog(dlg)
             return
+        self.marks_dialog = None
         self.open_reading_marks(0, modal=False)
 
     def close_stats_or_marks_panel(self):
         """Esc：统计/目录窗口开着就收掉；一个都没开就返回 False（让给原逻辑）。"""
         closed = False
-        dlg = getattr(self, "stats_dialog", None)
-        if dlg is not None and dlg.isVisible():
-            dlg.close()
-            dlg.deleteLater()
-            self.stats_dialog = None
-            closed = True
-        dlg = getattr(self, "marks_dialog", None)
-        if dlg is not None and dlg.isVisible():
-            dlg.close()
-            self.marks_dialog = None
-            closed = True
+        for name in ("stats_dialog", "marks_dialog"):
+            dlg = getattr(self, name, None)
+            if self._panel_alive(dlg):
+                self._drop_dialog(dlg)
+                closed = True
+            elif dlg is not None:
+                setattr(self, name, None)       # 死引用：清掉，别留着下次炸
         return closed
 
     def on_review_key(self, name):
@@ -11036,12 +11061,7 @@ class StealthReader(QWidget):
         return dialog
 
     def _forget_marks_dialog(self):
-        old = getattr(self, "marks_dialog", None)
-        if old is not None:
-            try:
-                old.deleteLater()
-            except Exception:
-                pass
+        self._drop_dialog(getattr(self, "marks_dialog", None))
         self.marks_dialog = None
 
     def _on_marks_finished(self, code):
@@ -11548,11 +11568,8 @@ class StealthReader(QWidget):
                         "pos": int(self.local_start_index or 0),
                         "total": len(self.local_full_text or "")}
         old = getattr(self, "stats_dialog", None)
-        if old is not None and not old.isVisible():
-            try:
-                old.deleteLater()      # 关掉后残留的旧统计窗，别攒着
-            except Exception:
-                pass
+        if old is not None and not self._panel_alive(old):
+            self._drop_dialog(old)      # 关掉后残留 / 已经删掉的旧统计窗，别攒着
         dlg = ReadingStatsDialog(self, book=book)
         self.stats_dialog = dlg        # 留个引用，别让 Python 把它回收了
         if not activate:

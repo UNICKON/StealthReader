@@ -4519,6 +4519,116 @@ try:
           all(_dlg38b.book_table.item(i, 2).text() != "不足 1 分"
               for i in range(_dlg38b.book_table.rowCount())), None)
 
+    # ---- e / t 唤出：面板收掉之后不许留死引用 ----
+    # 真人 2026-11-12：「e 唤出有时候失效」。本机日志 20:12:53 起连报 9 次
+    #   RuntimeError: wrapped C/C++ object of type ReadingStatsDialog has been deleted
+    #   （on_peek_book_key → toggle_peek_panel → open_reading_stats，以及 toggle 那条路）
+    # 路径：偷瞄里按 e 开面板 → 面板收掉（再按 e / 退出偷瞄 / Esc 都算）→ 再按 e 就炸。
+    # 原因：close_peek_panel 只 close+deleteLater，stats_dialog / marks_dialog 还指着
+    # 那个已经被 C++ 删掉的对象，之后任何一次 isVisible() 都抛。
+    from PyQt5.QtCore import QEvent as _QEvent38
+
+    def _reap38(obj):
+        """只把**这一个**对象排的 deleteLater 执行掉。
+
+        不能 sendPostedEvents(None, ...)：那会把别处排队的删除一起做掉，
+        探针后面的用例正是这么把主窗口删掉、整段崩掉的。
+        """
+        qapp.processEvents()
+        try:
+            qapp.sendPostedEvents(obj, _QEvent38.DeferredDelete)
+        except RuntimeError:
+            pass              # 已经删过了：本来就是想要的终态
+        qapp.processEvents()
+
+    def _alive38(dlg):
+        try:
+            return dlg is not None and dlg.isVisible()
+        except RuntimeError:
+            return False
+
+    def _dead38(dlg):
+        try:
+            dlg.isVisible()
+            return False      # 还能碰：C++ 对象没被删
+        except RuntimeError:
+            return True       # 已经删了：老代码就是死在这一下
+
+    # 1) 阅读页 e：开 → 收（并真让 C++ 删掉那个对象）→ 还能再开
+    w.peek_mode = False
+    w.toggle_stats_panel_window()
+    check("阅读页按 e 开出统计窗", _alive38(w.stats_dialog), None)
+    _dlg38 = w.stats_dialog
+    w.toggle_stats_panel_window()
+    _reap38(_dlg38)
+    check("再按 e 收掉，引用同时清空", w.stats_dialog is None, None)
+    check("收掉的那个真被 C++ 删了（老代码就死在这一下）", _dead38(_dlg38), None)
+    w.toggle_stats_panel_window()
+    check("对象删掉之后按 e 照样能开（修复点）", _alive38(w.stats_dialog), None)
+    _dlg38 = w.stats_dialog
+    w.toggle_stats_panel_window()
+    _reap38(_dlg38)
+
+    # 2) 偷瞄里 e → 收面板 → 回阅读页 e（真人那条路径）
+    w.peek_mode = True
+    w.on_peek_book_key("e")
+    check("偷瞄里 e 开出面板（和阅读页共用同一个对象）",
+          _alive38(w.peek_panel) and w.peek_panel is w.stats_dialog, None)
+    _dlg38 = w.peek_panel
+    w.close_peek_panel()
+    _reap38(_dlg38)
+    check("面板收掉后 stats_dialog 不再指着死对象", w.stats_dialog is None, None)
+    check("共用的那个对象确实被删了", _dead38(_dlg38), None)
+    w.peek_mode = False
+    w.toggle_stats_panel_window()
+    check("回到阅读页按 e 照样能唤出（真人报的那条）", _alive38(w.stats_dialog), None)
+    _dlg38 = w.stats_dialog
+    w.toggle_stats_panel_window()
+    _reap38(_dlg38)
+
+    # 3) 偷瞄里连按两次 e = 开关，不该抛；收掉之后还能再开
+    w.peek_mode = True
+    w.on_peek_book_key("e")
+    _dlg38 = w.peek_panel
+    w.on_peek_book_key("e")
+    check("偷瞄里再按一次 e 就收掉、不抛", w.peek_panel is None, None)
+    _reap38(_dlg38)
+    w.on_peek_book_key("e")
+    check("收掉之后偷瞄里还能再开", _alive38(w.peek_panel), None)
+    _dlg38 = w.peek_panel
+    w._drop_peek_state()          # 退出偷瞄时收面板就这一句
+    _reap38(_dlg38)
+    check("退出偷瞄把面板收了、引用也清干净",
+          w.peek_panel is None and w.stats_dialog is None and not w.peek_panel_open, None)
+    w.peek_mode = False
+    w.toggle_stats_panel_window()
+    check("退出偷瞄之后按 e 仍能唤出", _alive38(w.stats_dialog), None)
+    _dlg38 = w.stats_dialog
+    w.toggle_stats_panel_window()
+    _reap38(_dlg38)
+
+    # 4) 目录窗 t 同一条路
+    w.peek_mode = False
+    w.toggle_marks_panel_window()
+    check("t 开出目录窗", _alive38(w.marks_dialog), None)
+    _dlg38 = w.marks_dialog
+    w.peek_mode = True
+    w.toggle_peek_panel("marks")
+    check("偷瞄里 t 开出目录面板", _alive38(w.peek_panel), None)
+    w.close_peek_panel()
+    _reap38(_dlg38)
+    check("收掉后 marks_dialog 清了、对象也删了",
+          w.marks_dialog is None and _dead38(_dlg38), None)
+    w.peek_mode = False
+    w.toggle_marks_panel_window()
+    check("回到阅读页按 t 照样能开", _alive38(w.marks_dialog), None)
+    w.close_stats_or_marks_panel()
+    qapp.processEvents()
+    w.toggle_stats_panel_window()
+    check("Esc 收面板之后 e 还能开", _alive38(w.stats_dialog), None)
+    w.close_stats_or_marks_panel()
+    qapp.processEvents()
+
     # ---- 空账也要像样 ----
     _dlg38c = app_mod.ReadingStatsDialog(w, book=None)
     _empty_stats = _rs38.blank()
