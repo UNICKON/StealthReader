@@ -17,6 +17,7 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 & $py -X utf8 tests\probe_web_stats.py    # 网页端到底记不记阅读统计：真读 70 秒，看账本多没多一场
 & $py -X utf8 tests\probe_web_upload_stats.py  # 网页四件事：沉浸底栏、断网也能回书架、统计页、网页传书
 & $py -X utf8 tests\check_web_assets.py  # 线上前端文件是否就是本地这份（只读，要已部署）
+& $py -X utf8 tests\check_live_blob.py    # 线上问一句"这本书有了吗"（只读，不传字节）
 
 & $py -X utf8 tests\check_auth.py        # 凭据自检：我贴的 Cookie 到底管不管用（联网）
 & $py -X utf8 tests\check_auth.py --all  # 连没配 Cookie 的也查一遍（看基线是什么样）

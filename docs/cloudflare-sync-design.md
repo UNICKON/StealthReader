@@ -1039,6 +1039,11 @@ pdf.js，传上去只是书架上一行打不开的书。
 
 线上版本：`ab810165`（三个文件）。
 
+线上实跑（只读）：`tests/check_live_blob.py` 4/4——`POST /v1/blob/check` 认 Bearer、本机那本
+`雨` 线上已有（sha 对得上、大小 366,222 字节一致）、不带 token 是 401；再拿真 token 在真站点走
+一遍（`/r/` 登录 → 11 本书 → 统计页 59 分钟 / 22,315 字 / 4 天 / 3 本书 → 打开一本 21%
+（74,851 / 357,534 字）→ 3.6 秒后底栏收起、鼠标到底部又浮出来）10/10。
+
 假后端为了这几条也加了东西（`tests/reader_mock_server.py`）：`BLOBS`/`LITE` 两个内存表、
 `POST /v1/blob/check`、`PUT /v1/blob/<sha>`、`PUT /v1/lite/<uid>/index.json`、书架按 `BLOBS`
 列书、未知书的章节表返回 404（否则"网页自己数总字数"这条路根本走不到）、`DROP_PROGRESS_PUT`
