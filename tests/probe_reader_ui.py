@@ -105,6 +105,12 @@ def main():
               float(str(info.get("lh", "0")).replace("px", "") or 0) > float(str(info.get("fs", "0")).replace("px", "") or 0),
               style)
 
+        def progress_now():
+            raw = cdp.js("fetch('/v1/state/progress').then(r=>r.json()).then(j=>JSON.stringify(j))", True)
+            return json.loads(raw or "{}")
+
+        # ---- 同步节奏：不做实时；翻页后 3 秒内不许动云端，关页面（pagehide）才推 ----
+        pre_books = progress_now().get("books") or {}
         pos_before = cdp.js("document.querySelector('#pos').textContent")
         cdp.js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); 1")
         time.sleep(0.8)
@@ -112,12 +118,21 @@ def main():
         check("按右箭头能翻页（%s → %s）" % (pos_before, pos1), pos1 != pos_before,
               "%s vs %s" % (pos_before, pos1))
 
-        time.sleep(3.4)      # 等防抖（2.5 秒）
-        prog = cdp.js("fetch('/v1/state/progress').then(r=>r.json()).then(j=>JSON.stringify(j))", True)
-        doc = json.loads(prog or "{}")
-        books = doc.get("books") or {}
+        time.sleep(3.2)      # 老版本 2.5 秒就推了；现在这个时间点云端应该一点没动
+        mid_books = progress_now().get("books") or {}
+        check("翻页后不实时同步（3 秒内云端没动）", mid_books == pre_books, mid_books)
+
+        want_pos = cdp.js("""(() => {
+            const m = /([\\d,]+)\\s*\\//.exec(document.querySelector('#pos').textContent);
+            return m ? Number(m[1].replace(/,/g,'')) : -1;
+        })()""")
+        cdp.js("window.dispatchEvent(new Event('pagehide')); 1")
+        time.sleep(1.6)
+        books = progress_now().get("books") or {}
         row = list(books.values())[0] if books else {}
-        check("翻页后把位置写回云端", bool(row) and row.get("pos", 0) > 0, row)
+        check("关页面（pagehide）时把位置推上去", bool(row) and row.get("pos", 0) > 0, row)
+        check("推的就是关页面那一刻读到的字位（%s）" % want_pos, row.get("pos") == want_pos,
+              "%s vs %s" % (row.get("pos"), want_pos))
         check("写回的是字符坐标（pos/total 都有）",
               bool(row.get("total")) and isinstance(row.get("pos"), int), row)
         check("写回的行带 device 标记", str(row.get("dev", "")).startswith("web-"), row.get("dev"))
@@ -144,12 +159,78 @@ def main():
         check("字号写回设置对象", int(values.get("font_size") or 0) == size1, values.get("font_size"))
         check("设置带时间戳（多端靠它判新旧）", float(clock.get("font_size") or 0) > 0, clock.get("font_size"))
 
+        # ---- 目录：能开，也必须能关（.toc 的 display:flex 会把 [hidden] 顶掉，这里守回归）----
         cdp.js("document.querySelector('#toc').click(); 1")
+        time.sleep(0.3)
         n_toc = cdp.js("document.querySelectorAll('.toc-item').length")
         check("目录能列出来（%d 条）" % (n_toc or 0), (n_toc or 0) >= 1, n_toc)
+        check("目录打开时看得见", cdp.js("getComputedStyle(document.querySelector('#toc-panel')).display") != "none")
+        cdp.js("document.querySelector('#toc-close').click(); 1")
+        time.sleep(0.3)
+        disp = cdp.js("getComputedStyle(document.querySelector('#toc-panel')).display")
+        check("点 × 能把目录关掉（display=%s）" % disp, disp == "none", disp)
+        cdp.js("document.querySelector('#toc').click(); 1")
+        time.sleep(0.2)
+        cdp.js("document.querySelector('#toc').click(); 1")
+        time.sleep(0.3)
+        disp2 = cdp.js("getComputedStyle(document.querySelector('#toc-panel')).display")
+        check("再点一次目录按钮也能关（display=%s）" % disp2, disp2 == "none", disp2)
 
-        errs = cdp.js("JSON.stringify(window.__errs||[])") or "[]"
-        check("整轮没有 JS 报错", json.loads(errs) == [], errs)
+        # ---- 版式：单栏 / 双栏 ----
+        def attr(name):
+            return cdp.js("document.querySelector('#view').renderer.getAttribute('%s')" % name)
+
+        cdp.js("document.querySelector('[data-act=\"cols-2\"]').click(); 1")
+        time.sleep(0.8)
+        check("切双栏：max-column-count=2", attr("max-column-count") == "2", attr("max-column-count"))
+        cdp.js("document.querySelector('[data-act=\"cols-1\"]').click(); 1")
+        time.sleep(0.6)
+        check("切回单栏：max-column-count=1", attr("max-column-count") == "1", attr("max-column-count"))
+        saved = cdp.js("localStorage.getItem('sr.layout.v1')") or ""
+        check("版式记在本机（%s）" % saved, "cols" in saved and "flow" in saved, saved)
+
+        # ---- 版式：上下滚动 / 左右翻页 ----
+        cdp.js("document.querySelector('[data-act=\"flow-scroll\"]').click(); 1")
+        time.sleep(1.0)
+        check("切滚动：renderer flow=scrolled", attr("flow") == "scrolled", attr("flow"))
+        rolled = cdp.js("""(async () => {
+            const v = document.querySelector('#view');
+            const r = v.renderer;
+            const before = r.start;
+            const arr = r.getContents() || [];
+            const d = arr.length && arr[0].doc;
+            if (d) d.dispatchEvent(new WheelEvent('wheel', {deltaY: 500, bubbles: true, cancelable: true}));
+            await new Promise(r2 => setTimeout(r2, 400));
+            return JSON.stringify({before, after: r.start, view: r.viewSize, scrolled: !!r.scrolled});
+        })()""", True)
+        roll = json.loads(rolled or "{}")
+        check("滚动模式下滚轮能滚（start %s → %s）" % (roll.get("before"), roll.get("after")),
+              (roll.get("after") or 0) > (roll.get("before") or 0), rolled)
+        check("滚动模式下 renderer.scrolled=true", roll.get("scrolled") is True, rolled)
+
+        cdp.js("document.querySelector('[data-act=\"flow-page\"]').click(); 1")
+        time.sleep(1.2)
+        check("切回翻页：renderer flow=paginated", attr("flow") == "paginated", attr("flow"))
+        pos_c = cdp.js("document.querySelector('#pos').textContent")
+        cdp.js("""(() => {
+            const v = document.querySelector('#view');
+            const arr = v.renderer.getContents() || [];
+            const d = arr.length && arr[0].doc;
+            if (d) d.dispatchEvent(new WheelEvent('wheel', {deltaY: 120, bubbles: true, cancelable: true}));
+            return 1;
+        })()""")
+        time.sleep(0.9)
+        pos_d = cdp.js("document.querySelector('#pos').textContent")
+        check("翻页模式下滚轮能翻页（%s → %s）" % (pos_c, pos_d), pos_d != pos_c, "%s vs %s" % (pos_c, pos_d))
+
+        errs_raw = json.loads(cdp.js("JSON.stringify(window.__errs||[])") or "[]")
+        # 切版式（翻页↔滚动/单栏↔双栏）时浏览器会抱怨 ResizeObserver 通知没送完，
+        # 这是浏览器自己的提示，不是我们代码的错；其余一律算错。
+        noisy = [e for e in errs_raw if "ResizeObserver loop" in str(e)]
+        real = [e for e in errs_raw if "ResizeObserver loop" not in str(e)]
+        check("整轮没有 JS 报错", real == [], real)
+        if noisy:
+            print("  （忽略 %d 条浏览器自身的 ResizeObserver 提示）" % len(noisy))
     except Exception as e:
         check("整轮不中途崩", False, "%s" % e)
         traceback.print_exc()

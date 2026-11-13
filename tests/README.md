@@ -10,6 +10,12 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 & $py -X utf8 tests\probe_ui.py          # 界面集成（零网络，离屏 Qt 走完整窗）
 & $py -X utf8 tests\probe_live.py        # 真机联网冒烟（会真的发请求，跑完自清缓存）
 
+& $py -X utf8 tests\probe_stats.py       # 阅读字数账本（零网络）
+& $py -X utf8 tests\probe_sync.py        # 云端同步（本地假服务器，不连线上）
+& $py -X utf8 tests\probe_sync_ui.py     # 同步对话框点击路径 + 同步节奏（零网络）
+& $py -X utf8 tests\probe_reader_ui.py   # 网页阅读页：真浏览器（无头 Edge + CDP）+ 假后端
+& $py -X utf8 tests\check_web_assets.py  # 线上前端文件是否就是本地这份（只读，要已部署）
+
 & $py -X utf8 tests\check_auth.py        # 凭据自检：我贴的 Cookie 到底管不管用（联网）
 & $py -X utf8 tests\check_auth.py --all  # 连没配 Cookie 的也查一遍（看基线是什么样）
 

@@ -296,7 +296,8 @@ def sync_state_path():
     return os.path.join(APP_DIR, "sync_state.json")
 
 
-SYNC_MIN_GAP_SEC = 60          # 两轮自动同步至少隔这么久（手动点"立即同步"不受限）
+SYNC_MIN_GAP_SEC = 15 * 60     # 自动同步最快每 15 分钟一轮（手动点"立即同步"不受限）
+SYNC_PULL_EVERY_SEC = 15 * 60  # 没人改东西也每 15 分钟问一次远端：网页端读的进度靠这个收
 
 
 # 行距（字号行高的百分比）、段间距（同样以行高为基准）、页边距（逻辑像素）
@@ -4515,6 +4516,9 @@ class StealthReader(QWidget):
         self._sync_timer = QTimer(self)  # 防抖：改完等一会儿再同步
         self._sync_timer.setSingleShot(True)
         self._sync_timer.timeout.connect(self._sync_fire)
+        self._sync_pull = QTimer(self)   # 周期闹钟：没改动也每 15 分钟问一次远端
+        self._sync_pull.setInterval(SYNC_PULL_EVERY_SEC * 1000)
+        self._sync_pull.timeout.connect(self._sync_periodic)
         self._sync_ready = False        # 起来这一路存盘不算"改动"，别触发同步
         self._sync_applying = False     # 正在把远端结果写回，期间的 save_config 不再触发同步
         self._sync_last_fire = 0.0      # 上一轮真跑的时间（限速用）
@@ -11845,6 +11849,10 @@ class StealthReader(QWidget):
             return
         self._sync_ready = True
         self.sync_now(reason="启动")
+        try:
+            self._sync_pull.start()
+        except Exception:
+            pass
 
     def sync_now(self, reason="手动"):
         """立刻同步一轮（托盘里点、对话框里点、启动时）。"""
@@ -11863,6 +11871,20 @@ class StealthReader(QWidget):
             return False
         self.sync_status_signal.emit({"ok": True, "pending": True, "at": time.time()})
         return True
+
+    def _sync_periodic(self):
+        """每 15 分钟一轮：没改动也要问，网页端刚推上来的进度得靠这个收进来。
+
+        一轮里远端 rev 没变就只发一个 manifest；本地没变就不会 PUT（见 sync_engine._sync_kind），
+        所以闲着的时候这一轮几乎不花流量。
+        """
+        if not self.sync_configured() or getattr(self, "_sync_applying", False):
+            return
+        if not self.sync_conf().get("auto", True):
+            return
+        if getattr(self, "_sync_timer", None) is not None and self._sync_timer.isActive():
+            return                      # 已经排着一轮了，别插队
+        self._sync_fire()
 
     def _sync_fire(self):
         """防抖计时到了：真跑一轮。"""
@@ -11978,6 +12000,8 @@ class StealthReader(QWidget):
         try:
             if getattr(self, "_sync_timer", None) is not None:
                 self._sync_timer.stop()
+            if getattr(self, "_sync_pull", None) is not None:
+                self._sync_pull.stop()
         except Exception:
             pass
         worker = getattr(self, "_sync_worker", None)

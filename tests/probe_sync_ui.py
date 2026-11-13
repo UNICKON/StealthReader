@@ -142,6 +142,28 @@ def main():
         status = " ".join(seen.get("status") or [])
         check("状态行说了云端几本、补了几本", ("云端" in status and "补下 1 本" in status), status)
         check("没有真的连网（SyncClient 替身只被建了一次）", len(CALLS["clients"]) == 1, CALLS["clients"])
+
+        # ---- 同步节奏：不做实时，改动后等 15 分钟；另外每 15 分钟问一次远端 ----
+        check("自动同步最小间隔 = 15 分钟", app_mod.SYNC_MIN_GAP_SEC == 900, app_mod.SYNC_MIN_GAP_SEC)
+        check("周期闹钟 = 15 分钟", app_mod.SYNC_PULL_EVERY_SEC == 900, app_mod.SYNC_PULL_EVERY_SEC)
+        pull_timer = getattr(w, "_sync_pull", None)
+        check("周期闹钟按 15 分钟挂着（%s 毫秒）" % (pull_timer.interval() if pull_timer else None),
+              pull_timer is not None and pull_timer.interval() == 900000,
+              pull_timer.interval() if pull_timer else None)
+        check("周期闹钟连到 _sync_periodic", callable(getattr(w, "_sync_periodic", None)))
+
+        w._sync_ready = True
+        w._sync_last_fire = time.time() - 30       # 上一轮是 30 秒前跑的
+        _hold2 = os.environ.pop("STEALTHREADER_SYNC", None)
+        try:
+            w.sync_kick("config")
+        finally:
+            if _hold2 is not None:
+                os.environ["STEALTHREADER_SYNC"] = _hold2
+        left = w._sync_timer.remainingTime()
+        check("改动后要等约 15 分钟才推（还差 %s 秒）" % (round(left / 1000.0) if left > 0 else left),
+              840_000 <= left <= 900_000, left)
+        w._sync_timer.stop()
     finally:
         try:
             w.stop_sync()

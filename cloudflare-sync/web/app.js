@@ -24,6 +24,9 @@ const THEMES = {
 const S = {
   books: [], values: {}, clock: {}, book: null, view: null,
   total: 0, pos: 0, timer: 0, dirty: false, applying: false, entered: false,
+  flow: 'paginated', cols: 1,          // 版式：翻页/滚动、单栏/双栏（存在本机，不进云端设置）
+  progressEtag: '', progressBooks: {}, // 关页面那一下只发一个 PUT，得先记着上次的 rev 和其他书
+  syncEveryMs: 15 * 60 * 1000,         // 开着页面时每 15 分钟同步一次；关页面再同步一次
 }
 
 /* ── 网络 ─────────────────────────────────────────────── */
@@ -153,6 +156,17 @@ async function openBook(book) {
     return
   }
   applyStyles()
+  applyLayout()
+
+  // 记一下进度文档的 rev 和别的书：关页面时只发一个 PUT，没工夫再 GET
+  try {
+    const got = await getJSON('/v1/state/progress')
+    if (got) {
+      S.progressEtag = got.etag || ''
+      S.progressBooks = (got.body && got.body.books && typeof got.body.books === 'object')
+        ? { ...got.body.books } : {}
+    }
+  } catch (e) { /* 拿不到就退回"先 GET 再 PUT"的老路 */ }
 
   if (S.pos > 0 && S.total > 0) {
     const frac = clamp(S.pos / S.total, 0, 1)
@@ -172,8 +186,7 @@ function onRelocate(e) {
   $('#pos').textContent = S.total
     ? `${Math.round(frac * 100)}%  ·  ${fmt(S.pos)} / ${fmt(S.total)} 字`
     : `${Math.round(frac * 100)}%`
-  clearTimeout(S.timer)
-  S.timer = setTimeout(() => { pushProgress() }, 2500)
+  // 不做实时同步：这里只记"有改动"，等 15 分钟的定时器或者关页面时再推
 }
 
 function progressBody() {
@@ -195,11 +208,33 @@ function rowFor(pos, total, old = {}) {
 
 // 只改"我正在读的这一行"，其他行原样带回去；If-Match 冲突就重来（最多 3 次）。
 // 桌面端的合并规则是 at 最新的一行赢，所以这样写和它合并出来的结果等价。
-async function pushProgress(force = false) {
-  if (!S.book || !(force || S.dirty)) return
-  S.dirty = false
+// opt.keepalive：关页面/切后台那一下用。只发一个 PUT（GET 多半来不及），rev 用打开书时记的。
+async function pushProgress(force = false, opt = {}) {
+  if (!S.book || !(force || S.dirty)) return false
   const pos = S.pos
   const total = S.total
+
+  if (opt.keepalive && S.progressEtag) {
+    S.dirty = false
+    const books = { ...(S.progressBooks || {}) }
+    books[S.book.uid] = rowFor(pos, total, books[S.book.uid] || {})
+    const body = { v: 1, schema: 1, updated_at: ts(), device: DEVICE, books }
+    const put = await req('/v1/state/progress', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'if-match': S.progressEtag },
+      body: JSON.stringify(body),
+      keepalive: true,
+    }).catch(() => null)
+    if (put && put.ok) {
+      S.progressBooks = books
+      S.progressEtag = put.headers.get('etag') || S.progressEtag
+      return true
+    }
+    S.dirty = true            // 没成：本地书架里还留着 pos，下次打开再推
+    return false
+  }
+
+  S.dirty = false
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const got = await getJSON('/v1/state/progress').catch(() => null)
     if (!got) {                        // 远端还没有这个对象：新建
@@ -210,10 +245,15 @@ async function pushProgress(force = false) {
         headers: { 'content-type': 'application/json', 'x-create': '1' },
         body: JSON.stringify(body),
       })
-      if (put.ok) return true
+      if (put.ok) {
+        S.progressBooks = { ...body.books }
+        S.progressEtag = put.headers.get('etag') || S.progressEtag
+        return true
+      }
       continue
     }
     const remote = got.body || {}
+    S.progressEtag = got.etag || ''
     const books = (remote.books && typeof remote.books === 'object') ? remote.books : {}
     books[S.book.uid] = rowFor(pos, total, books[S.book.uid] || {})
     const body = {
@@ -228,7 +268,11 @@ async function pushProgress(force = false) {
       headers: { 'content-type': 'application/json', 'if-match': got.etag },
       body: JSON.stringify(body),
     })
-    if (put.ok) return true
+    if (put.ok) {
+      S.progressBooks = { ...books }
+      S.progressEtag = put.headers.get('etag') || S.progressEtag
+      return true
+    }
     if (put.status !== 412 && put.status !== 428) return false
   }
   return false
@@ -348,6 +392,60 @@ function paintValues() {
   $('#tools-note').textContent = `字号/行距/段距/边距/缩进/字体/配色都会同步给桌面端（${DEVICE}）`
 }
 
+/* ── 版式：左右翻页 / 上下滚动、单栏 / 双栏 ─────────────── */
+
+const LAYOUT_KEY = 'sr.layout.v1'
+
+function loadLayout() {
+  let saved = null
+  try { saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null') } catch (e) { saved = null }
+  if (saved && typeof saved === 'object') {
+    S.flow = saved.flow === 'scrolled' ? 'scrolled' : 'paginated'
+    S.cols = Number(saved.cols) === 2 ? 2 : 1
+  }
+}
+
+function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ flow: S.flow, cols: S.cols }))
+  } catch (e) { /* 隐私模式下存不了，就这次会话内有效 */ }
+}
+
+/** 滚动模式滚 dy 像素：走 foliate 自己的 scrollToAnchor
+    （它的滚动盒子挂在 closed shadow root 里，外部拿不到；start/viewSize 是公开的 getter） */
+function scrollStep(dy) {
+  const r = S.view && S.view.renderer
+  if (!r || typeof r.scrollToAnchor !== 'function') return false
+  const size = Number(r.viewSize) || 0
+  if (!size) return false
+  r.scrollToAnchor(clamp((Number(r.start) + dy) / size, 0, 1))
+  return true
+}
+
+function applyLayout() {
+  const r = S.view && S.view.renderer
+  if (r) {
+    r.setAttribute('flow', S.flow)
+    r.setAttribute('max-column-count', String(S.cols))
+  }
+  const wrap = $('#view-wrap')
+  if (wrap) wrap.dataset.flow = S.flow
+  for (const b of document.querySelectorAll('#tools [data-act]')) {
+    const a = b.dataset.act
+    if (a === 'flow-page') b.classList.toggle('on', S.flow === 'paginated')
+    else if (a === 'flow-scroll') b.classList.toggle('on', S.flow === 'scrolled')
+    else if (a === 'cols-1') b.classList.toggle('on', S.cols === 1)
+    else if (a === 'cols-2') b.classList.toggle('on', S.cols === 2)
+  }
+}
+
+function setLayout(flow, cols) {
+  if (flow) S.flow = flow
+  if (cols) S.cols = cols
+  saveLayout()
+  applyLayout()
+}
+
 /* ── 设置面板 ─────────────────────────────────────────── */
 
 const STEP = {
@@ -370,7 +468,13 @@ const STEP = {
 
 $('#tools').addEventListener('click', (e) => {
   const act = e.target && e.target.dataset && e.target.dataset.act
-  if (!act || !STEP[act]) return
+  if (!act) return
+  // 版式是本机偏好，不进云端设置（桌面端的阅读窗有自己的一套）
+  if (act === 'flow-page') return setLayout('paginated')
+  if (act === 'flow-scroll') return setLayout('scrolled')
+  if (act === 'cols-1') return setLayout(null, 1)
+  if (act === 'cols-2') return setLayout(null, 2)
+  if (!STEP[act]) return
   const patch = STEP[act]()
   saveSettings(patch)
 })
@@ -420,7 +524,7 @@ function renderTOC() {
 $('#toc').addEventListener('click', () => { $('#toc-panel').hidden = !$('#toc-panel').hidden })
 $('#toc-close').addEventListener('click', () => { $('#toc-panel').hidden = true })
 
-/* ── 翻页与快捷键 ─────────────────────────────────────── */
+/* ── 翻页、滚动与快捷键 ───────────────────────────────── */
 
 function turn(dir) {
   if (!S.view) return
@@ -428,38 +532,83 @@ function turn(dir) {
   else S.view.prev()
 }
 
-document.addEventListener('keydown', (e) => {
-  if (document.body.dataset.pane !== 'reader-pane') return
-  if (e.target && /input|textarea/i.test(e.target.tagName)) return
-  const k = e.key
-  if (k === 'ArrowRight' || k === 'PageDown' || k === ' ' || k === 'j') { e.preventDefault(); turn(1) }
-  else if (k === 'ArrowLeft' || k === 'PageUp' || k === 'k') { e.preventDefault(); turn(-1) }
-  else if (k === 'Escape') { $('#tools').hidden = true; $('#toc-panel').hidden = true }
-})
+/** 滚轮：翻页模式下一页一动；滚动模式往下滚 */
+function onWheel(e) {
+  if (S.flow === 'scrolled') {
+    const px = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1
+    if (!scrollStep(e.deltaY * px)) return
+    e.preventDefault()
+    return
+  }
+  if (!e.deltaY && !e.deltaX) return
+  e.preventDefault()
+  const now = Date.now()
+  if (now - (onWheel.last || 0) < 240) return   // 触控板滑一下会连发几十个事件
+  onWheel.last = now
+  const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX
+  if (Math.abs(d) < 4) return
+  turn(d > 0 ? 1 : -1)
+}
 
-$('#view-wrap').addEventListener('click', (e) => {
+/** 点左三分之一往回、点右三分之一往前（滚动模式下点哪儿都不翻页） */
+function onTapTurn(e) {
   if (document.body.dataset.pane !== 'reader-pane') return
+  if (S.flow === 'scrolled') return
+  if (e.target && e.target.closest && e.target.closest('a[href]')) return
   const w = window.innerWidth
   const x = e.clientX
   if (x < w * 0.3) return turn(-1)
   if (x > w * 0.7) return turn(1)
+}
+
+// 书的内容在 iframe 里，滚轮/点击到不了外层：挂到每一篇加载出来的 doc 上
+const hookedDocs = new WeakSet()
+function hookDoc(doc) {
+  if (!doc || hookedDocs.has(doc)) return
+  hookedDocs.add(doc)
+  doc.addEventListener('wheel', onWheel, { passive: false })
+  doc.addEventListener('click', onTapTurn)
+}
+$('#view').addEventListener('load', (e) => hookDoc(e.detail && e.detail.doc))
+
+document.addEventListener('keydown', (e) => {
+  if (document.body.dataset.pane !== 'reader-pane') return
+  if (e.target && /input|textarea/i.test(e.target.tagName)) return
+  const k = e.key
+  const screen = () => window.innerHeight * 0.9
+  const scrollOnly = (dy) => (S.flow === 'scrolled' ? scrollStep(dy) : false)
+  if (k === 'ArrowRight' || k === 'j') { e.preventDefault(); turn(1) }
+  else if (k === 'ArrowLeft' || k === 'k') { e.preventDefault(); turn(-1) }
+  else if (k === 'ArrowDown') { e.preventDefault(); if (!scrollOnly(screen() * 0.3)) turn(1) }
+  else if (k === 'ArrowUp') { e.preventDefault(); if (!scrollOnly(-screen() * 0.3)) turn(-1) }
+  else if (k === 'PageDown' || k === ' ') { e.preventDefault(); if (!scrollOnly(screen())) turn(1) }
+  else if (k === 'PageUp') { e.preventDefault(); if (!scrollOnly(-screen())) turn(-1) }
+  else if (k === 'Escape') { $('#tools').hidden = true; $('#toc-panel').hidden = true }
 })
 
-// 手机上的左右滑
-let touchX = null
-$('#view-wrap').addEventListener('touchstart', (e) => { touchX = e.touches[0]?.clientX ?? null }, { passive: true })
-$('#view-wrap').addEventListener('touchend', (e) => {
-  if (touchX == null) return
-  const dx = (e.changedTouches[0]?.clientX ?? touchX) - touchX
-  touchX = null
-  if (Math.abs(dx) < 40) return
-  turn(dx < 0 ? 1 : -1)
-}, { passive: true })
+$('#view-wrap').addEventListener('click', onTapTurn)
+$('#view-wrap').addEventListener('wheel', onWheel, { passive: false })
 
-document.addEventListener('visibilitychange', () => { if (document.hidden) pushProgress(true) })
-window.addEventListener('pagehide', () => { pushProgress(true) })
+/* ── 同步节奏：不做实时 ───────────────────────────────────
+   开着页面：每 15 分钟一次，只有翻动过才发。
+   关页面 / 切到后台：立刻推一次（只发一个 PUT，带 keepalive，不然页面一关请求就没了）。 */
+
+function flushProgress() {
+  if (!S.book || !S.dirty) return
+  pushProgress(true, { keepalive: true }).catch(() => { /* 关页面了，失败也没处提示 */ })
+}
+
+setInterval(() => {
+  if (S.dirty) pushProgress(false).catch(() => {})
+}, S.syncEveryMs)
+
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushProgress() })
+window.addEventListener('pagehide', flushProgress)
+window.addEventListener('beforeunload', flushProgress)
 
 /* ── 起 ─────────────────────────────────────────────── */
+
+loadLayout()
 
 boot().catch((e) => {
   console.error(e)

@@ -725,7 +725,7 @@ Worker 加 Range 支持时，第一版写成"`obj.range` 存在就回 206"。本
 | 首屏（未登录） | 1 个 HTML（约 4 KB）+ `style.css` + `app.js` + `view.js` 及其依赖，约 **110 KB** |
 | 书架 | 1 个 `GET /v1/shelf`（11 本，约 2 KB） |
 | 打开一本书 | 1 个 `GET /v1/lite/<uid>/index.json` + N 个 `GET /v1/blob/<sha>`（Range 分块，3 MB 的书约 6～10 块） |
-| 翻一页 | 0 个请求；停 2.5 秒后 1 个 GET + 1 个 PUT（约 3 KB） |
+| 翻一页 | 0 个请求；**不做实时同步**——开着页面每 15 分钟、或者关页面那一秒才发（见第 25 节） |
 | 章节表上传 | 9 本书首次 9 个 PUT，之后 0 |
 | 桌面端重启后第一轮 | 11 个请求（GET 1 / PUT 10：9 张章节表 + 1 条进度），第二轮 0 |
 
@@ -735,7 +735,8 @@ Worker 加 Range 支持时，第一版写成"`obj.range` 存在就回 206"。本
 | --- | --- | --- |
 | `cloudflare-sync/tests/worker_selftest.mjs` | Worker 全路由（内存 R2）：鉴权、状态对象、书文件、登录 Cookie、书架、章节表、Range 206、CSP | **60 / 60** |
 | `tests/check_web_live2.py`-式线上验收（临时脚本） | 线上真机：`/` 是 HTML 且带 CSP、`/r/*` 静态资源、书架、Range、章节表 | **16 / 16** |
-| `tests/probe_reader_ui.py` | **真浏览器**（无头 Edge + 自己写的 120 行 CDP 客户端）：登录 → 书架 → 打开一本 → 连翻 6 页读到 5075 字 → 排版注进正文（19px/25.65px/缩进 38px）→ 按键翻页 → 位置写回 → 改字号写回设置 → 目录 23 条 → 无 JS 报错 | **20 / 20** |
+| `tests/probe_reader_ui.py` | **真浏览器**（无头 Edge + 自己写的 120 行 CDP 客户端）：登录 → 书架 → 打开一本 → 连翻 6 页读到 5075 字 → 排版注进正文（19px/25.65px/缩进 38px）→ 按键翻页 → 翻页后 3 秒云端不动 → `pagehide` 才推 → 改字号写回设置 → 目录能开能关 → 单栏/双栏、翻页/滚动切换 → 两种模式下滚轮都有效 → 无 JS 报错 | **33 / 33** |
+| `tests/probe_sync_ui.py` | 桌面端同步对话框接线 + 同步节奏（15 分钟最小间隔、周期闹钟 900 秒、改动后等 870 秒才排上） | **11 / 11** |
 | `tests/probe_sync.py` | 桌面端同步（含章节表上传、状态文件写盘重试） | **90 / 90** |
 
 浏览器那条探针是这台机器上唯一能跑的"真浏览器"验证方式：没有 Chrome、没有 playwright/selenium，
@@ -748,8 +749,10 @@ Worker 加 Range 支持时，第一版写成"`obj.range` 存在就回 206"。本
 1. 电脑或手机浏览器打开 `https://sync.noteklip.org/r/`（手机可以"添加到主屏幕"当 App 用）。
 2. 输一次 token（桌面端「设置 → 云端同步」里那个，跟 `config.json` 的 `sync.token` 是同一个）。
    Cookie 存一年，之后不用再输。
-3. 书架点一本就开始读。左右箭头 / 点屏幕左三分之一 / 手机上左右滑翻页；右下角 `Aa` 是排版和目录。
-4. 位置和排版都会自动回到桌面端；反过来桌面端改字号，网页再打开也是新的。
+3. 书架点一本就开始读。翻页、点屏幕左右两侧、手机上左右滑都能翻；`Aa` 里可以改成**上下滚动**、
+   **单栏/双栏**，也可以调字号行距和打开目录（版式记在本机，换设备不互相影响）。
+4. 位置和排版会回到桌面端；但**不是实时**：网页开着每 15 分钟同步一次、关页面时再同步一次，
+   桌面端同样每 15 分钟一轮（没改动就不发 PUT）。
 
 > 注意：`GET /` 现在回的是**阅读页**，不再是以前那行 `{"ok":true,...}` JSON。任何把它当探活接口的脚本
 > 都得改到 `/v1/ping`（探针里已经改过）。
@@ -757,3 +760,66 @@ Worker 加 Range 支持时，第一版写成"`obj.range` 存在就回 206"。本
 > 另一个小坑：`[assets]` 默认的 `html_handling` 会把 `/index.html` 307 到 `/`，于是用户敲 `/r/` 会被弹成 `/`
 > （能用，但地址栏莫名其妙）。现在 `html_handling = "none"`，由 Worker 自己把 `/`、`/r`、`/r/` 都映射到
 > `/index.html`，三个地址都直接 200，不再跳。
+
+## 25. 阅读页第二轮：目录关不掉、翻页/滚动与分栏、同步节奏
+
+这一轮全是"真用起来才暴露"的问题，四个都修了。
+
+### 25.1 目录关不掉：`display:flex` 把 `[hidden]` 顶掉了
+
+- **症状**：点「目录」能打开，点 ×、再点一次「目录」，都关不掉，只能刷新页面。
+- **根因**：`.toc { display: flex }` 是类选择器，`.pane[hidden] { display: none }` 只对 `.pane` 生效；
+  浏览器自带的 `[hidden] { display: none }` 优先级更低，被 `.toc` 的 `display:flex` 直接盖掉。
+  JS 里 `$('#toc-panel').hidden = true` 其实一直在执行，只是渲染上没反应。
+- **修法**：`style.css` 里加一条 `[hidden] { display: none !important; }`，一次把这类问题堵死
+  （不再逐个元素补 `[hidden]` 规则）。
+- **回归**：`probe_reader_ui` 里两条——点 × 之后 `getComputedStyle(...).display === 'none'`，再点一次按钮同样。
+
+### 25.2 滚轮/滑动没反应：事件根本到不了外层
+
+foliate 把正文放在 iframe 里（sandbox 允许同源脚本），**iframe 内的滚轮和点击不会冒泡到外层
+`#view-wrap`**，所以原来的 `#view-wrap` 监听器只在页面留白处有效；而 foliate 自己只处理了触摸滑动
+和键盘，没处理鼠标滚轮。
+
+- 改成在 `foliate-view` 的 `load` 事件里拿 `e.detail.doc`，把 `wheel` / `click` 挂到**每一篇的文档**上
+  （`WeakSet` 去重；每换一篇都会重新挂）。
+- 翻页模式下滚轮阈值 240 ms 去抖（触控板一次滑动会连发几十个事件，不去抖会连翻十几页）。
+- 滚动模式下滚轮的落点：folio 的滚动容器挂在 **closed shadow root** 里，`renderer.shadowRoot` 是
+  `null`，拿不到 `#container`；改用它的公开 API `renderer.scrollToAnchor(fraction)`，
+  `fraction = (renderer.start + dy) / renderer.viewSize`（`start`/`viewSize` 都是公开 getter）。
+- 手机上的左右滑直接交给 foliate（它自己绑了 touchstart/move/end 并做 `snap`），**删掉了我们自己那份**
+  ——之前两份都在，一次滑动会翻两页。
+
+### 25.3 版式：单栏/双栏、翻页/滚动
+
+| 选项 | 实现 | 说明 |
+| --- | --- | --- |
+| 左右翻 / 上下滚 | `renderer.setAttribute('flow', 'paginated' \| 'scrolled')` | foliate 原生支持，切换会重排并保持当前章节 |
+| 单栏 / 双栏 | `renderer.setAttribute('max-column-count', 1 \| 2)` | 双栏只在窗口够宽时才有意义，foliate 会自己算列宽 |
+
+- UI 放在 `Aa` 面板顶部两行，选中的按钮高亮（`.row button.on`）。
+- **存在本机 `localStorage['sr.layout.v1']`，不进云端设置**：桌面端阅读窗有自己的分栏逻辑，
+  把"网页双栏"塞进共用的 12 个排版键里只会让两边打架。代价是换设备要重选一次，可接受。
+- 滚动模式下点屏幕不再翻页（点了就滚一下会更自然，但容易误触，索性不翻），方向键改成一屏一屏滚。
+
+### 25.4 同步节奏：不做实时，15 分钟一次 + 关页面一次
+
+原来是"停 2.5 秒就推"，读一小时会推几百次，手机流量和 Worker 请求都在那儿烧。
+
+| 端 | 现在 |
+| --- | --- |
+| 网页 | 开着页面：`setInterval` 每 **15 分钟**一次，只有翻动过（`S.dirty`）才发；关页面 / 切后台：`pagehide` / `visibilitychange` 立刻推一次 |
+| 网页（关页面那一下） | 只发**一个 PUT**，带 `keepalive: true`，`If-Match` 用打开书时记下的 ETag——这时候再 `GET` 多半来不及 |
+| 桌面端 | `SYNC_MIN_GAP_SEC` 60 → **900**：改动后最快 15 分钟推一轮（连读时每一轮都落在"上一轮 + 15 分钟"，不会无限推迟）；另加 `SYNC_PULL_EVERY_SEC = 900` 的周期闹钟，没人改也每 15 分钟问一次远端 |
+| 桌面端（没改动） | 一轮里远端 rev 没变就只发 1 个 manifest；本地内容指纹没变就不 PUT（`_sync_kind` 原有逻辑） |
+
+关页面丢最后几页的风险说清楚：`keepalive` 只保证请求发出，不保证一定送达；真丢了也不影响
+——桌面端下一轮的 `merge_progress` 会按 `at` 最新的赢，位置差几页不会让书读丢。
+
+### 25.5 这一轮的探针
+
+| 探针 | 结果 |
+| --- | --- |
+| `tests/probe_reader_ui.py` | **33 / 33**（新增目录开关、单栏/双栏、翻页/滚动、两种模式下的滚轮、以及"翻页后 3 秒云端不动、`pagehide` 才推"） |
+| `tests/probe_sync_ui.py` | **11 / 11**（新增 15 分钟间隔、周期闹钟 900 秒、改动后等 870 秒才排上） |
+| 其它 | `probe_stats` 31/31、`probe_ui` 528/529（既有基线）、`probe_sync` 90/90、`probe_sources` 616/616 |
