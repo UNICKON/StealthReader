@@ -1,0 +1,21 @@
+name = "stealthreader-sync"
+main = "src/worker.js"
+compatibility_date = "2026-11-01"
+
+# 域名：noteklip.org 已经挂在 Cloudflare 上，这里给它加一条自定义域名
+# （wrangler deploy 会自动建 DNS 记录和证书；不用 *.workers.dev，见设计文档 §14）
+routes = [
+  { pattern = "sync.noteklip.org", custom_domain = true }
+]
+
+# 书文件、四个状态对象全放这一个桶里。桶不公开：r2.dev 关掉，只能过 Worker。
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "stealthreader-sync"
+
+[vars]
+# token 不放这里（会被提交）：用 `npx wrangler secret put SYNC_TOKEN`
+TOKEN_TTL_DAYS = "365"
+
+[observability]
+enabled = true

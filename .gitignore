@@ -39,3 +39,9 @@ fonts/*.ttf
 fonts/*.otf
 fonts/*.ttc
 fonts/*.otc
+
+# 同步的运行时状态（远端 rev / 书 UID 缓存 / 设置时钟 / 墓碑）：每台机器自己的，不进仓库
+sync_state.json
+sync_state.json.bak
+sync_state.json.bak2
+sync_state.json.lock

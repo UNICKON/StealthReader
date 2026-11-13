@@ -1,0 +1,15 @@
+{
+  "name": "stealthreader-sync",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "StealthReader 同步后端（Cloudflare Worker + R2）",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
