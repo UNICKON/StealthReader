@@ -1,6 +1,6 @@
 # StealthReader
 
-![version](https://img.shields.io/badge/version-1.0.0-blue)
+![version](https://img.shields.io/badge/version-1.1.0-blue)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-lightgrey)
 
 StealthReader 是一个 Windows 桌面阅读器。窗口呈无边框、置顶、半透明的浮层，不占任务栏，正文区域是一个只读文本视图。同一窗口可以承载三类内容：本地书籍、社区帖子与 Anki 卡片，它们共用同一套渲染与显示控制。
@@ -272,7 +272,7 @@ StealthReader 是一个 Windows 桌面阅读器。窗口呈无边框、置顶、
 
 ### 预编译版本
 
-从 Releases 下载 `StealthReader-1.0.0-win64.zip`，解压到任意目录后运行 `StealthReader.exe`。不需要安装 Python 或额外依赖。
+从 Releases 下载 `StealthReader-1.1.0-win64.zip`，解压到任意目录后运行 `StealthReader.exe`。不需要安装 Python 或额外依赖。
 
 程序将配置、缓存与日志写入自身所在目录，整个文件夹可直接复制或删除。
 
