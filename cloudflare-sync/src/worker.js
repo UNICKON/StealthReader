@@ -370,6 +370,16 @@ async function handleBlobGet(request, sha, env) {
     "cache-control": "private, max-age=86400",
     "x-file-name": encodeURIComponent(safeName(obj.customMetadata && obj.customMetadata.name)),
   };
+  // 24 小时新鲜期过了浏览器会拿 If-None-Match 回来问一句。以前这里不看这个头，直接整本再给一遍
+  // （一本 1.2 MB 的书每次重开都要重下）；书是内容寻址的，内容永不变，所以能直接 304 空手回去。
+  const inm = (request.headers.get("if-none-match") || "").trim();
+  if (!range && inm && obj.etag
+      && inm.replace(/^W\//, "").replace(/"/g, "") === obj.etag) {
+    return new Response(null, {
+      status: 304,
+      headers: { etag: obj.etag, "cache-control": headers["cache-control"] },
+    });
+  }
   let status = 200;
   const partial = range && obj.range && typeof obj.range === "object";
   if (partial) {

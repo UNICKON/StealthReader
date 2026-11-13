@@ -1133,3 +1133,54 @@ npx wrangler secret put SYNC_TOKEN     # 粘贴新 token，回车
 | 线上只读诊断 | 三份 Cookie 并存 3/3、`http:// → 308`、错 token 401、无 Cookie 401 |
 
 线上版本：`23242a55`（http→https）→ `74e7308f`（「显示」按钮、登录报错）。
+
+### 27.8 网页打开一本书，到底下不下第二次
+
+**一句话：第一次一定整本下一次；24 小时内再开同一本，一个字节都不下；超 24 小时只问一句 etag
+（304），也不再整本重下。** 但我们没有自己做离线缓存——靠的是浏览器自己的 HTTP 缓存。
+
+先说清现在的实现（`vendor/foliate-js/view.js: fetchFile`）：
+
+```js
+const fetchFile = async url => {
+    const res = await fetch(url)                  // 一次 GET，不发 Range
+    return new File([await res.blob()], ...)      // 整本进内存，再交给 zip.js 按需解
+}
+```
+
+所以：**没有任何 Cache API / IndexedDB / Service Worker**，每次 `openBook` 都会发一次
+`GET /v1/blob/<sha>`；整本书（不是按章）一次拿完，解压后留在内存里。
+
+能省下流量的是 Worker 给这个响应打的两个头（`handleBlobGet`）：
+
+```
+cache-control: private, max-age=86400     ← 24 小时内浏览器直接用磁盘缓存，不问服务器
+etag: <R2 的 etag>                        ← 过了 24 小时拿它来问"变了吗"
+```
+
+书是**内容寻址**的（文件名就是 sha256），内容永不变，所以"缓存 24 小时""etag 不变就 304"
+在这里是安全的，不需要任何失效逻辑。
+
+实测（真站点、真书、headless Edge，读 Resource Timing 的 `transferSize`）：
+
+| 动作 | 走网络 | 耗时 |
+| --- | --- | --- |
+| 第一次打开《动物农场》（1,250,479 字节） | **1,250,779 字节**（含响应头） | 8.9 秒 |
+| 刷新页面、再打开同一本 | **0 字节** | 2 毫秒（磁盘缓存） |
+
+**这一轮补的那一半**：以前过了 24 小时，浏览器带着 `If-None-Match` 来问，Worker 压根不看这个
+头，照样把整本再塞一遍（一本 1.2 MB 的书每次白下）。现在对上了就回 `304` + 空 body：
+
+| 请求 | 结果 |
+| --- | --- |
+| `GET /v1/blob/<sha>` | 200，8,485,601 字节 |
+| 同上 + `If-None-Match: <etag>` | **304，0 字节** |
+| 同上 + `If-None-Match: "<etag>"`（浏览器会加引号） | 304 |
+| 同上 + `Range: bytes=0-9` + `If-None-Match` | 206，10 字节（要部分就给部分，不走 304） |
+
+什么时候真的会重下：清掉站点数据 / 无痕窗口 / 换浏览器或换设备 / 手机系统回收了 Safari 的磁盘
+缓存。**没有离线能力**（断网打不开书），要离线得加 Service Worker，那是计划里的二期。
+桌面端是另一套：它把书拉到本地磁盘长期留着，断网照样读。
+
+`worker_selftest.mjs` 因此从 60 项变成 **65 / 65**（etag/缓存头、304 空 body、引号 etag、
+etag 不符仍是 200、带 Range 不走 304）。

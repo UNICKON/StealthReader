@@ -201,6 +201,22 @@ const payload = (n) => JSON.stringify({ v: 1, schema: 1, n, books: {} });
   check("取回来的字节一致", bytes.equals(data), bytes.toString());
   check("坏 sha 的路径直接 404（不匹配路由，生不出 key）", (await call(e, "/v1/blob/zzz", { headers: H() })).status === 404);
   check("没传过的 sha → 404", (await call(e, "/v1/blob/" + "1".repeat(64), { headers: H() })).status === 404);
+
+  // 缓存：24 小时私有缓存 + 过期后靠 etag 回 304（不然每次重开一本 1 MB 的书都要重下）
+  const cc = back.headers.get("cache-control") || "";
+  const et = back.headers.get("etag") || "";
+  check("书的 GET 带 etag 和 24 小时私有缓存", !!et && cc.includes("private") && cc.includes("max-age=86400"), cc + " / " + et);
+  const re = await call(e, "/v1/blob/" + sha, { headers: H({ "If-None-Match": et }) });
+  check("同一个 If-None-Match → 304，一个字节都不给",
+    re.status === 304 && (await re.arrayBuffer()).byteLength === 0, re.status);
+  const reQuote = await call(e, "/v1/blob/" + sha, { headers: H({ "If-None-Match": '"' + et + '"' }) });
+  check("etag 被浏览器加了引号也认（304）", reQuote.status === 304, reQuote.status);
+  const reBad = await call(e, "/v1/blob/" + sha, { headers: H({ "If-None-Match": "nope" }) });
+  check("etag 对不上 → 还是 200 整本", reBad.status === 200, reBad.status);
+  const reRange = await call(e, "/v1/blob/" + sha, { headers: H({ Range: "bytes=0-9", "If-None-Match": et }) });
+  const rangeBytes = Buffer.from(await reRange.arrayBuffer());
+  check("带 Range 时不走 304（要什么给什么）",
+    reRange.status === 206 && rangeBytes.length === 10, reRange.status + "/" + rangeBytes.length);
 }
 
 // ------------------------------------------------------------ 4. 别的桶里不该有垃圾
