@@ -12037,8 +12037,13 @@ class StealthReader(QWidget):
             def work():
                 try:
                     client = syncer.SyncClient(address, token)
+                    # "本机已有"要把书架目录和进度表里记着的书都算上：
+                    # 书平常放在下载目录，只数书架子目录会把 19 MB 全部重下一遍。
+                    paths = list_book_files(dest_dir)
+                    paths += [p for p in (self.config.get("local_book_positions") or {})
+                              if os.path.isfile(p)]
                     local = set()
-                    for path in list_book_files(dest_dir):
+                    for path in paths:
                         try:
                             local.add(syncer._hash_file(path))
                         except OSError:
