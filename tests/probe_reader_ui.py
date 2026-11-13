@@ -223,6 +223,25 @@ def main():
         pos_d = cdp.js("document.querySelector('#pos').textContent")
         check("翻页模式下滚轮能翻页（%s → %s）" % (pos_c, pos_d), pos_d != pos_c, "%s vs %s" % (pos_c, pos_d))
 
+        # ---- 版式要能跨刷新记住：存好 → 真的刷新页面 → 再打开一本 ----
+        cdp.js("localStorage.setItem('sr.layout.v1', JSON.stringify({flow:'scrolled', cols:2})); 1")
+        cdp.call("Page.reload", {"ignoreCache": False})
+        time.sleep(2.5)
+        if cdp.js("(document.querySelector('#login') && !document.querySelector('#login').hidden) ? 1 : 0"):
+            cdp.js("document.querySelector('#token').value='demo-token';"
+                   "document.querySelector('#login-form').requestSubmit(); 1")
+        cdp.wait_js("document.querySelectorAll('.book').length>0", 30, "刷新后书架（带 Cookie）")
+        check("刷新后不用再输 token（Cookie 还在）",
+              cdp.js("document.querySelectorAll('.book').length") >= 1)
+        cdp.js("document.querySelector('.book').click(); 1")
+        cdp.wait_js("/\\d+%/.test(document.querySelector('#pos').textContent)", 40, "刷新后打开书")
+        time.sleep(1.2)
+        check("刷新后版式自动回到上次选的（flow=%s）" % attr("flow"), attr("flow") == "scrolled", attr("flow"))
+        check("刷新后栏数也记住了（cols=%s）" % attr("max-column-count"),
+              attr("max-column-count") == "2", attr("max-column-count"))
+        check("刷新后正文照样渲染得出来（%s 个文档）" % cdp.js("document.querySelector('#view').renderer.getContents().length"),
+              cdp.js("document.querySelector('#view').renderer.getContents().length") >= 1)
+
         errs_raw = json.loads(cdp.js("JSON.stringify(window.__errs||[])") or "[]")
         # 切版式（翻页↔滚动/单栏↔双栏）时浏览器会抱怨 ResizeObserver 通知没送完，
         # 这是浏览器自己的提示，不是我们代码的错；其余一律算错。
