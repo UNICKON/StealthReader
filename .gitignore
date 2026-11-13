@@ -47,3 +47,6 @@ sync_state.json
 sync_state.json.bak
 sync_state.json.bak2
 sync_state.json.lock
+
+# 任何备份文件（含带时间戳的 *.before-xxx-*.bak）：只是保险，不进仓库
+*.bak
