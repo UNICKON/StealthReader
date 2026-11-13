@@ -79,6 +79,12 @@ def main():
             check("线上 app.js 网页端会记阅读统计（pushStats → /v1/state/stats）",
                   b"function pushStats" in live and b"'/v1/state/stats'" in live
                   and b"MAX_CHARS_PER_SEC = 20" in live)
+            check("线上 app.js 待推队列落盘（sr.pendingstats.v1，推不上也不丢）",
+                  b"sr.pendingstats.v1" in live and b"function savePending" in live)
+            check("线上 app.js 管两种后台情形（visibilitychange 收场 / pageshow 从缓存回来重开）",
+                  b"visibilitychange" in live and b"pageshow" in live and b"e.persisted" in live)
+            check("线上 app.js 同一浏览器多标签只让一个记账（sr.statowner.v1）",
+                  b"sr.statowner.v1" in live and b"function isOwner" in live)
         elif name == "style.css":
             check("线上 style.css 有 [hidden] 兜底规则（目录关不掉那个坑）",
                   b"[hidden] { display: none !important; }" in live)

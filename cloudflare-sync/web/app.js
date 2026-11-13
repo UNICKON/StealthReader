@@ -83,10 +83,12 @@ async function boot() {
 }
 
 async function enterApp() {
-  await loadSettings()
+  loadSettings()
   await loadShelf()
   S.entered = true
   show('shelf-pane')
+  // 上次没推上去的统计（断网 / 关页面被掐）：进来先补推一次
+  if (STAT.pending.length) flushStats(false).catch(() => {})
 }
 
 $('#login-form').addEventListener('submit', async (e) => {
@@ -176,6 +178,7 @@ async function openBook(book) {
   applyStyles()
   applyLayout()
   statOpen(book, S.pos)               // 从这一本开始记阅读统计
+  claimTab()                          // 这一页在读了，别让别的标签也记
 
   // 记一下进度文档的 rev 和别的书：关页面时只发一个 PUT，没工夫再 GET
   try {
@@ -627,6 +630,40 @@ const STAT = {
   pending: [],                 // 还没推上去的会话
 }
 
+// 待推队列落在本机：推不上去（断网 / 412 / 关页面被掐）也不会丢，下次打开接着推。
+// 会话身份是 (书, 开始时刻)，重复推同一个身份不会记两遍 —— 所以"重试"是安全的。
+const PEND_KEY = 'sr.pendingstats.v1'
+const OWNER_KEY = 'sr.statowner.v1'      // 同一浏览器开两个标签时，只让一个记账
+const TAB_ID = Math.random().toString(36).slice(2, 10)
+
+function loadPending() {
+  let raw = null
+  try { raw = JSON.parse(localStorage.getItem(PEND_KEY) || 'null') } catch (e) { raw = null }
+  if (Array.isArray(raw)) {
+    STAT.pending = raw.filter((s) => s && s.k && Number(s.start) > 0).slice(-60)
+  }
+}
+
+function savePending() {
+  try {
+    if (STAT.pending.length) localStorage.setItem(PEND_KEY, JSON.stringify(STAT.pending.slice(-60)))
+    else localStorage.removeItem(PEND_KEY)
+  } catch (e) { /* 隐私模式：这次会话内先攒着 */ }
+}
+
+function claimTab() {
+  try { localStorage.setItem(OWNER_KEY, JSON.stringify({ id: TAB_ID, at: ts() })) } catch (e) { /* 忽略 */ }
+}
+
+/** 该不该由这个标签记账：别人刚活动过就不记，免得同一个浏览器开两个标签算两遍 */
+function isOwner() {
+  try {
+    const o = JSON.parse(localStorage.getItem(OWNER_KEY) || 'null')
+    if (!o || !o.id || o.id === TAB_ID) return true
+    return (ts() - Number(o.at || 0)) > 90
+  } catch (e) { return true }
+}
+
 function statOpen(book, pos) {
   statCommit()                 // 上一本先收场
   STAT.uid = String(book.uid || '')
@@ -663,6 +700,7 @@ function statMove(pos) {
 setInterval(() => {
   if (!STAT.uid || !STAT.start) return
   if (document.visibilityState !== 'visible') return
+  if (!isOwner()) return                                // 另一个标签正在记，别重复记
   const now = ts()
   if (now - STAT.lastMove > IDLE_SEC) return            // 三分钟没动，先不计时
   STAT.sec += TICK_SEC
@@ -696,6 +734,7 @@ function statCommit() {
   STAT.chars = 0
   STAT.lastPos = 0
   STAT.lastMove = 0
+  savePending()                 // 一收场就落盘：这时候关掉标签页也不会丢
 }
 
 function dayKey(d) {
@@ -706,38 +745,47 @@ function dayKey(d) {
 
 const sessKey = (s) => `${s.k}|${Math.round(Number(s.start) * 1000) / 1000}`
 
-/** 把待推的会话并进云端账本：先 GET、按身份去重、再整份 PUT（带 if-match） */
+/** 把待推的会话并进云端账本：先 GET、按身份去重、再整份 PUT（带 if-match）。
+    推成功才从队列里删；推不上就留在本机（已落盘），下一轮或下次打开接着推——
+    同样的会话身份重复推不会记两遍（合并端也按身份取并集）。 */
 async function pushStats(keepalive) {
   if (!STAT.pending.length) return false
+  if (pushStats.busy) return false
+  pushStats.busy = true
   const mine = STAT.pending.slice()
-  const got = await getJSON('/v1/state/stats').catch(() => null)
-  const remote = (got && got.body) || {}
-  const sessions = Array.isArray(remote.sessions) ? remote.sessions.slice() : []
-  const seen = new Set(sessions.map(sessKey))
-  for (const s of mine) {
-    const id = sessKey(s)
-    if (seen.has(id)) continue
-    sessions.push(s)
-    seen.add(id)
+  try {
+    const got = await getJSON('/v1/state/stats').catch(() => null)
+    const remote = (got && got.body) || {}
+    const sessions = Array.isArray(remote.sessions) ? remote.sessions.slice() : []
+    const seen = new Set(sessions.map(sessKey))
+    for (const s of mine) {
+      const id = sessKey(s)
+      if (seen.has(id)) continue
+      sessions.push(s)
+      seen.add(id)
+    }
+    const body = {
+      v: Math.max(Number(remote.v) || 1, 1),
+      updated_at: ts(),
+      device: DEVICE,
+      sessions,
+      days: (remote.days && typeof remote.days === 'object') ? remote.days : {},
+      books: (remote.books && typeof remote.books === 'object') ? remote.books : {},
+    }
+    const headers = { 'content-type': 'application/json' }
+    if (got && got.etag) headers['if-match'] = got.etag
+    else headers['x-create'] = '1'
+    const opt = { method: 'PUT', headers, body: JSON.stringify(body) }
+    if (keepalive) opt.keepalive = true
+    const put = await req('/v1/state/stats', opt).catch(() => null)
+    if (!put || !put.ok) return false
+    const done = new Set(mine.map(sessKey))
+    STAT.pending = STAT.pending.filter((s) => !done.has(sessKey(s)))
+    savePending()
+    return true
+  } finally {
+    pushStats.busy = false
   }
-  const body = {
-    v: Math.max(Number(remote.v) || 1, 1),
-    updated_at: ts(),
-    device: DEVICE,
-    sessions,
-    days: (remote.days && typeof remote.days === 'object') ? remote.days : {},
-    books: (remote.books && typeof remote.books === 'object') ? remote.books : {},
-  }
-  const headers = { 'content-type': 'application/json' }
-  if (got && got.etag) headers['if-match'] = got.etag
-  else headers['x-create'] = '1'
-  const opt = { method: 'PUT', headers, body: JSON.stringify(body) }
-  if (keepalive) opt.keepalive = true
-  const put = await req('/v1/state/stats', opt).catch(() => null)
-  if (!put || !put.ok) return false
-  const done = new Set(mine.map(sessKey))
-  STAT.pending = STAT.pending.filter((s) => !done.has(sessKey(s)))
-  return true
 }
 
 /** 收场 + 推上去；restart 时（15 分钟那一轮）如果还开着书就接着记下一场 */
@@ -781,9 +829,19 @@ setInterval(() => {
 }, S.syncEveryMs)
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) return flushProgress()
+  if (document.hidden) return flushProgress()          // 收场 + 推上去（队列已落盘，推不上也不丢）
   // 切回来接着记：刚才那一推已经把这一场收场了，不重开就再也不计数
+  claimTab()
   if (!STAT.uid && S.book && document.body.dataset.pane === 'reader-pane') statOpen(S.book, S.pos)
+  if (STAT.pending.length) flushStats(false).catch(() => {})
+})
+
+// 从"往返缓存"里回来（手机上切应用再回来常见）：定时器停过，重新开一场，别把中途那段算进去
+window.addEventListener('pageshow', (e) => {
+  if (!e.persisted) return
+  claimTab()
+  if (!STAT.uid && S.book && document.body.dataset.pane === 'reader-pane') statOpen(S.book, S.pos)
+  if (STAT.pending.length) flushStats(false).catch(() => {})
 })
 window.addEventListener('pagehide', flushProgress)
 window.addEventListener('beforeunload', flushProgress)
@@ -791,6 +849,7 @@ window.addEventListener('beforeunload', flushProgress)
 /* ── 起 ─────────────────────────────────────────────── */
 
 loadLayout()
+loadPending()      // 上次没推上去的会话，先把队列捞回来（进书架后补推）
 
 boot().catch((e) => {
   console.error(e)

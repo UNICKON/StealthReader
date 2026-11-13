@@ -18,6 +18,7 @@ WEB = os.path.join(SR, "cloudflare-sync", "web")
 
 COOKIE = "srtoken=demo-token"
 STATE = {}
+FAIL_STATS_PUT = False        # 探针用：把账本的 PUT 打成 500，看前端会不会丢数据
 BOOK = {"sha": "", "name": "测试书.epub", "bytes": b"", "uid": "", "total": 60000}
 REQUESTS = []
 
@@ -209,6 +210,8 @@ class H(BaseHTTPRequestHandler):
             return self.js(401, {"ok": False})
         if path.startswith("/v1/state/"):
             kind = path.rsplit("/", 1)[-1]
+            if kind == "stats" and FAIL_STATS_PUT:
+                return self.js(500, {"ok": False, "err": "探针在假装推送失败"})
             try:
                 doc = json.loads(raw.decode("utf-8"))
             except Exception:
