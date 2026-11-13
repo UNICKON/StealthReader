@@ -12,19 +12,36 @@ const fmt = (n) => (Number(n) || 0).toLocaleString('zh-CN')
 const DEVICE = ('web-' + String(navigator.platform || 'browser').toLowerCase().replace(/[^a-z0-9]+/g, ''))
   .slice(0, 24)
 
-const SERIF = `'Songti SC','SimSun','Noto Serif CJK SC','Source Han Serif SC',serif`
-const SANS = `'PingFang SC','Microsoft YaHei','Noto Sans CJK SC','Helvetica Neue',sans-serif`
+// 字体：都是系统里就有的，按 苹果 / Windows / Android 的顺序挑到一个算一个
+const FACES = {
+  serif: `'Songti SC','SimSun','Noto Serif CJK SC','Source Han Serif SC',serif`,
+  sans: `'PingFang SC','Microsoft YaHei','Noto Sans CJK SC','Helvetica Neue',sans-serif`,
+  kai: `'Kaiti SC','KaiTi','STKaiti','Noto Serif CJK SC',serif`,
+  round: `'Yuanti SC','YouYuan','Hiragino Maru Gothic ProN','Microsoft YaHei',sans-serif`,
+}
 
-const THEMES = {
-  light: { text_color: 'rgba(27, 27, 27, 255)', bg_color: 'rgba(251, 248, 242, 255)' },
-  sepia: { text_color: 'rgba(75, 63, 47, 255)', bg_color: 'rgba(244, 236, 216, 255)' },
-  dark: { text_color: 'rgba(201, 201, 201, 255)', bg_color: 'rgba(20, 22, 26, 255)' },
+// 配色：纸色 + 墨色成对给，别让正文和底色分家
+const PAPERS = {
+  white: { bg: '#fbf8f2', ink: '#1b1b1b' },
+  sepia: { bg: '#f4ecd8', ink: '#4b3f2f' },
+  green: { bg: '#e6efd8', ink: '#22301d' },
+  grey: { bg: '#eef0f2', ink: '#23262b' },
+  blue: { bg: '#1b2430', ink: '#c9d4e2' },
+  night: { bg: '#14161a', ink: '#c9c9c9' },
+  black: { bg: '#000000', ink: '#a6a6a6' },
+}
+
+const SET_KEY = 'sr.settings.v1'
+const DEFAULT_SET = {
+  font_size: 19, line_spacing: 100, paragraph_spacing: 0,
+  page_margin_chars: 1, first_line_indent: 2,
+  face: 'sans', paper: 'white',
 }
 
 const S = {
-  books: [], values: {}, clock: {}, book: null, view: null,
+  books: [], values: {}, book: null, view: null,
   total: 0, pos: 0, timer: 0, dirty: false, applying: false, entered: false,
-  flow: 'paginated', cols: 1,          // 版式：翻页/滚动、单栏/双栏（存在本机，不进云端设置）
+  flow: 'paginated', cols: 1,          // 版式：翻页/滚动、单栏/双栏（存在本机）
   progressEtag: '', progressBooks: {}, // 关页面那一下只发一个 PUT，得先记着上次的 rev 和其他书
   syncEveryMs: 15 * 60 * 1000,         // 开着页面时每 15 分钟同步一次；关页面再同步一次
 }
@@ -122,6 +139,7 @@ async function loadShelf() {
     li.addEventListener('click', () => openBook(b))
     list.appendChild(li)
   }
+  await loadStatsLine()
 }
 
 /* ── 打开一本书（只拉这一本） ──────────────────────────── */
@@ -157,6 +175,7 @@ async function openBook(book) {
   }
   applyStyles()
   applyLayout()
+  statOpen(book, S.pos)               // 从这一本开始记阅读统计
 
   // 记一下进度文档的 rev 和别的书：关页面时只发一个 PUT，没工夫再 GET
   try {
@@ -183,6 +202,7 @@ function onRelocate(e) {
   const frac = Number(loc.fraction) || 0
   S.pos = Math.round(frac * (S.total || 0))
   S.dirty = true
+  statMove(S.pos)                     // 统计只在本机攒着，跟"推不推"没关系
   $('#pos').textContent = S.total
     ? `${Math.round(frac * 100)}%  ·  ${fmt(S.pos)} / ${fmt(S.total)} 字`
     : `${Math.round(frac * 100)}%`
@@ -278,36 +298,28 @@ async function pushProgress(force = false, opt = {}) {
   return false
 }
 
-/* ── 排版设置（和桌面端同一批键） ───────────────────────── */
+/* ── 排版设置：只在本机（localStorage），不进云端 ──────────
+   桌面端那套设置是它自己的（阅读窗有独立的分栏/字体逻辑），网页改了去覆盖它只会互相打架。
+   这里存的东西跟书无关，换机器就是默认值——手机和电脑各调各的反而顺手。 */
 
-async function loadSettings() {
-  const got = await getJSON('/v1/state/settings').catch(() => null)
-  const remote = (got && got.body) || {}
-  S.values = { ...(remote.values || {}) }
-  S.clock = { ...(remote.clock || {}) }
+function loadSettings() {
+  let saved = null
+  try { saved = JSON.parse(localStorage.getItem(SET_KEY) || 'null') } catch (e) { saved = null }
+  const set = (saved && typeof saved === 'object') ? saved : {}
+  S.values = { ...DEFAULT_SET }
+  for (const k of Object.keys(DEFAULT_SET)) {
+    if (set[k] !== undefined && set[k] !== null) S.values[k] = set[k]
+  }
+  if (!FACES[S.values.face]) S.values.face = DEFAULT_SET.face
+  if (!PAPERS[S.values.paper]) S.values.paper = DEFAULT_SET.paper
   paintValues()
 }
 
-async function saveSettings(patch) {
+function saveSettings(patch) {
   Object.assign(S.values, patch)
+  try { localStorage.setItem(SET_KEY, JSON.stringify(S.values)) } catch (e) { /* 隐私模式：这次会话内有效 */ }
   paintValues()
   applyStyles()
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const got = await getJSON('/v1/state/settings').catch(() => null)
-    const remote = (got && got.body) || {}
-    const values = { ...(remote.values || {}), ...patch }
-    const clock = { ...(remote.clock || {}) }
-    for (const k of Object.keys(patch)) clock[k] = ts()
-    const body = { v: remote.v || 1, updated_at: ts(), device: DEVICE, values, clock }
-    const headers = { 'content-type': 'application/json' }
-    if (got) headers['if-match'] = got.etag
-    else headers['x-create'] = '1'
-    const put = await req('/v1/state/settings', { method: 'PUT', headers, body: JSON.stringify(body) })
-    if (put.ok) { S.clock = clock; return true }
-    if (put.status !== 412 && put.status !== 428) break
-  }
-  $('#tools-note').textContent = '设置没存上（下次改再试）'
-  return false
 }
 
 /* ── 样式 ─────────────────────────────────────────────── */
@@ -317,9 +329,11 @@ function num(v, fallback) {
   return Number.isFinite(n) ? n : fallback
 }
 
-/** 桌面端存的是 Qt 的 rgba(r, g, b, 0-255)，CSS 要 0-1 的 alpha。 */
+/** 桌面端存的是 Qt 的 rgba(r, g, b, 0-255)；老版本设置里可能是这个形状，认出来就转一下。 */
 function cssColor(v, fallback) {
-  const m = /^rgba?\(([^)]+)\)$/i.exec(String(v || '').trim())
+  const s = String(v || '').trim()
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(s)) return s
+  const m = /^rgba?\(([^)]+)\)$/i.exec(s)
   if (!m) return fallback
   const parts = m[1].split(',').map((x) => x.trim())
   if (parts.length < 3) return fallback
@@ -337,13 +351,12 @@ function current() {
   const ps = clamp(num(v.paragraph_spacing, 0), 0, 40)
   const mg = clamp(num(v.page_margin_chars, 1), 0, 8)
   const ind = clamp(num(v.first_line_indent, 2), 0, 6)
-  const family = String(v.font_family || '')
-  const serif = /simsun|song|serif|宋/i.test(family) && !/yahei|hei|sans|黑/i.test(family)
+  const paper = PAPERS[v.paper] || PAPERS.white
   return {
     size, lh, ps, mg, ind,
-    serif,
-    ink: cssColor(v.text_color, '#1b1b1b'),
-    paper: cssColor(v.bg_color, '#fbf8f2'),
+    face: FACES[v.face] || FACES.sans,
+    ink: cssColor(v.text_color, paper.ink),
+    paper: cssColor(v.bg_color, paper.bg),
   }
 }
 
@@ -351,7 +364,7 @@ function bookCSS(c) {
   return `
     html, body { background: ${c.paper} !important; color: ${c.ink} !important; }
     body {
-      font-family: ${c.serif ? SERIF : SANS} !important;
+      font-family: ${c.face} !important;
       font-size: ${c.size}px !important;
       line-height: ${c.lh} !important;
       margin: 0 !important; padding: 0 !important;
@@ -384,12 +397,17 @@ function applyStyles() {
 
 function paintValues() {
   const c = current()
-  $('#v-font').textContent = String(Math.round(c.size))
-  $('#v-lh').textContent = c.lh.toFixed(2)
-  $('#v-ps').textContent = String(Math.round(c.ps))
-  $('#v-mg').textContent = c.mg.toFixed(1)
-  $('#v-ind').textContent = c.ind.toFixed(1)
-  $('#tools-note').textContent = `字号/行距/段距/边距/缩进/字体/配色都会同步给桌面端（${DEVICE}）`
+  const put = (sel, text) => { const el = $(sel); if (el) el.textContent = text }
+  put('#v-font', String(Math.round(c.size)))
+  put('#v-lh', c.lh.toFixed(2))
+  put('#v-ps', String(Math.round(c.ps)))
+  put('#v-mg', c.mg.toFixed(1))
+  put('#v-ind', c.ind.toFixed(1))
+  for (const b of document.querySelectorAll('#tools [data-act]')) {
+    const a = b.dataset.act || ''
+    if (a.startsWith('face-')) b.classList.toggle('on', a.slice(5) === S.values.face)
+    else if (a.startsWith('paper-')) b.classList.toggle('on', a.slice(6) === S.values.paper)
+  }
 }
 
 /* ── 版式：左右翻页 / 上下滚动、单栏 / 双栏 ─────────────── */
@@ -459,29 +477,26 @@ const STEP = {
   'mg+': () => ({ page_margin_chars: clamp(Math.round(num(S.values.page_margin_chars, 1) * 10 + 2) / 10, 0, 8) }),
   'ind-': () => ({ first_line_indent: clamp(Math.round(num(S.values.first_line_indent, 2) * 10 - 2) / 10, 0, 6) }),
   'ind+': () => ({ first_line_indent: clamp(Math.round(num(S.values.first_line_indent, 2) * 10 + 2) / 10, 0, 6) }),
-  'font-serif': () => ({ font_family: 'SimSun' }),
-  'font-sans': () => ({ font_family: 'Microsoft YaHei' }),
-  'theme-light': () => THEMES.light,
-  'theme-sepia': () => THEMES.sepia,
-  'theme-dark': () => THEMES.dark,
 }
 
 $('#tools').addEventListener('click', (e) => {
   const act = e.target && e.target.dataset && e.target.dataset.act
   if (!act) return
-  // 版式是本机偏好，不进云端设置（桌面端的阅读窗有自己的一套）
+  // 版式是本机偏好（桌面端的阅读窗有自己的一套）
   if (act === 'flow-page') return setLayout('paginated')
   if (act === 'flow-scroll') return setLayout('scrolled')
   if (act === 'cols-1') return setLayout(null, 1)
   if (act === 'cols-2') return setLayout(null, 2)
+  if (act.startsWith('face-')) return saveSettings({ face: act.slice(5) })
+  if (act.startsWith('paper-')) return saveSettings({ paper: act.slice(6) })
   if (!STEP[act]) return
-  const patch = STEP[act]()
-  saveSettings(patch)
+  saveSettings(STEP[act]())
 })
 
 $('#open-tools').addEventListener('click', () => { $('#tools').hidden = !$('#tools').hidden })
 $('#back').addEventListener('click', async () => {
   await pushProgress(true)
+  await flushStats(false).catch(() => {})
   $('#tools').hidden = true
   $('#toc-panel').hidden = true
   await loadShelf()
@@ -589,20 +604,187 @@ document.addEventListener('keydown', (e) => {
 $('#view-wrap').addEventListener('click', onTapTurn)
 $('#view-wrap').addEventListener('wheel', onWheel, { passive: false })
 
+/* ── 阅读统计：本机算，跟着同步那一轮推上去 ─────────────────
+   口径跟桌面端 reading_stats 对齐，别让两边的账对不上：
+   · 5 秒一拍记时长，3 分钟没有任何翻动就先不计（可能人走了）；
+   · 一次翻动往前挪超过"一页半"就当成跳转（点目录/点脚注），那一拍不算字；
+     一页多少字不在网页这边硬算，用自己最近的翻页量取中位数当"一页"；
+   · 一场不到 1 分钟不记；一场平均速度不超过 1200 字/分（20 字/秒）。
+   推上去的是"会话"，身份是 (书 uid, 会话开始时刻)：桌面端 merge_stats 按这个身份
+   取并集再重算日账/书账，所以两边读的字数会加在一起，而不是互相覆盖。 */
+
+const TICK_SEC = 5
+const IDLE_SEC = 180
+const MIN_SESSION_SEC = 60
+const MAX_CHARS_PER_SEC = 20
+const JUMP_PAGE_FACTOR = 1.6
+const MIN_JUMP_CHARS = 400
+
+const STAT = {
+  uid: '', title: '', start: 0, end: 0, sec: 0, chars: 0,
+  lastPos: 0, lastMove: 0,
+  pages: [], page: 800,        // 一页大概多少字：自己翻出来的中位数，先按 800 起
+  pending: [],                 // 还没推上去的会话
+}
+
+function statOpen(book, pos) {
+  statCommit()                 // 上一本先收场
+  STAT.uid = String(book.uid || '')
+  STAT.title = book.title || book.name || STAT.uid
+  STAT.start = ts()
+  STAT.end = STAT.start
+  STAT.sec = 0
+  STAT.chars = 0
+  STAT.lastPos = Math.max(0, Math.round(pos || 0))
+  STAT.lastMove = STAT.start
+}
+
+/** 挪了一次位置：判断这算不算"读过去了一页" */
+function statMove(pos) {
+  if (!STAT.uid || !STAT.start) return
+  const now = ts()
+  const at = Math.max(0, Math.round(pos || 0))
+  const delta = at - STAT.lastPos
+  STAT.lastMove = now
+  STAT.end = Math.max(STAT.end, now)
+  if (delta <= 0) { STAT.lastPos = at; return }         // 往回翻，不算新读
+  const limit = Math.max(MIN_JUMP_CHARS, Math.round(STAT.page * JUMP_PAGE_FACTOR))
+  if (delta > limit) { STAT.lastPos = at; return }      // 跳转：眼睛没扫过，不算
+  if (delta <= 6000 && delta >= 80) {                   // 顺手校准"一页多少字"
+    STAT.pages.push(delta)
+    if (STAT.pages.length > 24) STAT.pages.shift()
+    const sorted = STAT.pages.slice().sort((a, b) => a - b)
+    STAT.page = sorted[Math.floor(sorted.length / 2)] || STAT.page
+  }
+  STAT.chars += delta
+  STAT.lastPos = at
+}
+
+setInterval(() => {
+  if (!STAT.uid || !STAT.start) return
+  if (document.visibilityState !== 'visible') return
+  const now = ts()
+  if (now - STAT.lastMove > IDLE_SEC) return            // 三分钟没动，先不计时
+  STAT.sec += TICK_SEC
+  STAT.end = now
+}, TICK_SEC * 1000)
+
+/** 收场：把这一场（够 1 分钟才算）放进待推队列 */
+function statCommit() {
+  if (!STAT.uid || !STAT.start) { STAT.uid = ''; return }
+  const sec = Math.round(STAT.sec)
+  let chars = Math.round(STAT.chars)
+  const cap = Math.round(sec * MAX_CHARS_PER_SEC)
+  if (chars > cap) chars = cap
+  if (sec >= MIN_SESSION_SEC) {
+    STAT.pending.push({
+      k: STAT.uid,
+      title: STAT.title,
+      start: Math.round(STAT.start * 1000) / 1000,
+      end: Math.round(Math.max(STAT.end, STAT.start) * 1000) / 1000,
+      sec,
+      chars,
+      gaps: [],
+    })
+    STAT.pending = STAT.pending.slice(-40)
+  }
+  STAT.uid = ''
+  STAT.title = ''
+  STAT.start = 0
+  STAT.end = 0
+  STAT.sec = 0
+  STAT.chars = 0
+  STAT.lastPos = 0
+  STAT.lastMove = 0
+}
+
+function dayKey(d) {
+  const t = d || new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`
+}
+
+const sessKey = (s) => `${s.k}|${Math.round(Number(s.start) * 1000) / 1000}`
+
+/** 把待推的会话并进云端账本：先 GET、按身份去重、再整份 PUT（带 if-match） */
+async function pushStats(keepalive) {
+  if (!STAT.pending.length) return false
+  const mine = STAT.pending.slice()
+  const got = await getJSON('/v1/state/stats').catch(() => null)
+  const remote = (got && got.body) || {}
+  const sessions = Array.isArray(remote.sessions) ? remote.sessions.slice() : []
+  const seen = new Set(sessions.map(sessKey))
+  for (const s of mine) {
+    const id = sessKey(s)
+    if (seen.has(id)) continue
+    sessions.push(s)
+    seen.add(id)
+  }
+  const body = {
+    v: Math.max(Number(remote.v) || 1, 1),
+    updated_at: ts(),
+    device: DEVICE,
+    sessions,
+    days: (remote.days && typeof remote.days === 'object') ? remote.days : {},
+    books: (remote.books && typeof remote.books === 'object') ? remote.books : {},
+  }
+  const headers = { 'content-type': 'application/json' }
+  if (got && got.etag) headers['if-match'] = got.etag
+  else headers['x-create'] = '1'
+  const opt = { method: 'PUT', headers, body: JSON.stringify(body) }
+  if (keepalive) opt.keepalive = true
+  const put = await req('/v1/state/stats', opt).catch(() => null)
+  if (!put || !put.ok) return false
+  const done = new Set(mine.map(sessKey))
+  STAT.pending = STAT.pending.filter((s) => !done.has(sessKey(s)))
+  return true
+}
+
+/** 收场 + 推上去；restart 时（15 分钟那一轮）如果还开着书就接着记下一场 */
+async function flushStats(keepalive, opt = {}) {
+  const book = S.book
+  statCommit()
+  const ok = await pushStats(keepalive).catch(() => false)
+  if (opt.restart && book && document.visibilityState === 'visible'
+      && document.body.dataset.pane === 'reader-pane') {
+    statOpen(book, S.pos)
+  }
+  return ok
+}
+
+async function loadStatsLine() {
+  const el = $('#shelf-stats')
+  if (!el) return
+  const got = await getJSON('/v1/state/stats').catch(() => null)
+  const days = (got && got.body && got.body.days) || {}
+  const cell = days[dayKey()] || {}
+  const sec = Number(cell.sec) || 0
+  if (sec <= 0) { el.textContent = ''; return }
+  const min = Math.max(1, Math.round(sec / 60))
+  el.textContent = `今天 ${min} 分钟 · ${fmt(cell.chars)} 字`
+}
+
 /* ── 同步节奏：不做实时 ───────────────────────────────────
-   开着页面：每 15 分钟一次，只有翻动过才发。
-   关页面 / 切到后台：立刻推一次（只发一个 PUT，带 keepalive，不然页面一关请求就没了）。 */
+   开着页面：每 15 分钟一次（进度有变动才发、统计有会话才发）。
+   关页面 / 切到后台：立刻推一次（带 keepalive，不然页面一关请求就没了）。 */
 
 function flushProgress() {
-  if (!S.book || !S.dirty) return
-  pushProgress(true, { keepalive: true }).catch(() => { /* 关页面了，失败也没处提示 */ })
+  if (S.book && S.dirty) pushProgress(true, { keepalive: true }).catch(() => { /* 关页面了，失败也没处提示 */ })
+  flushStats(true).catch(() => {})
 }
 
 setInterval(() => {
   if (S.dirty) pushProgress(false).catch(() => {})
+  if (STAT.pending.length || (STAT.uid && STAT.sec >= MIN_SESSION_SEC)) {
+    flushStats(false, { restart: true }).catch(() => {})
+  }
 }, S.syncEveryMs)
 
-document.addEventListener('visibilitychange', () => { if (document.hidden) flushProgress() })
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return flushProgress()
+  // 切回来接着记：刚才那一推已经把这一场收场了，不重开就再也不计数
+  if (!STAT.uid && S.book && document.body.dataset.pane === 'reader-pane') statOpen(S.book, S.pos)
+})
 window.addEventListener('pagehide', flushProgress)
 window.addEventListener('beforeunload', flushProgress)
 

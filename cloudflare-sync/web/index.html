@@ -26,6 +26,7 @@
     <span id="shelf-meta" class="meta"></span>
     <button id="logout" class="ghost" type="button">退出</button>
   </header>
+  <p id="shelf-stats" class="meta stats"></p>
   <ul id="books" class="books"></ul>
   <p id="shelf-note" class="meta note"></p>
 </section>
@@ -46,9 +47,16 @@
     <div class="row"><span>首行缩进</span><button data-act="ind-" type="button">−</button><b id="v-ind">2.0</b><button data-act="ind+" type="button">+</button></div>
     <div class="row"><span>翻页</span><button data-act="flow-page" type="button">左右翻</button><button data-act="flow-scroll" type="button">上下滚</button></div>
     <div class="row"><span>分栏</span><button data-act="cols-1" type="button">单栏</button><button data-act="cols-2" type="button">双栏</button></div>
-    <div class="row"><span>字体</span><button data-act="font-serif" type="button">宋体</button><button data-act="font-sans" type="button">黑体</button></div>
-    <div class="row"><span>配色</span><button data-act="theme-light" type="button">白</button><button data-act="theme-sepia" type="button">米</button><button data-act="theme-dark" type="button">夜</button></div>
-    <p id="tools-note" class="meta note"></p>
+    <div class="row"><span>字体</span><button data-act="face-serif" type="button">宋</button><button data-act="face-sans" type="button">黑</button><button data-act="face-kai" type="button">楷</button><button data-act="face-round" type="button">圆</button></div>
+    <div class="row wrap"><span>配色</span>
+      <button class="sw s-white" data-act="paper-white" type="button" title="白"></button>
+      <button class="sw s-sepia" data-act="paper-sepia" type="button" title="米黄"></button>
+      <button class="sw s-green" data-act="paper-green" type="button" title="护眼绿"></button>
+      <button class="sw s-grey" data-act="paper-grey" type="button" title="浅灰"></button>
+      <button class="sw s-blue" data-act="paper-blue" type="button" title="蓝灰"></button>
+      <button class="sw s-night" data-act="paper-night" type="button" title="夜"></button>
+      <button class="sw s-black" data-act="paper-black" type="button" title="黑"></button>
+    </div>
   </aside>
 
   <div id="hud" class="hud">

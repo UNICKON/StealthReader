@@ -56,6 +56,10 @@ def main():
         check("登录后看到书架（%d 本）" % n_books, n_books == 1, n_books)
         title = cdp.js("document.querySelector('.b-title').textContent")
         check("书架上显示书名", bool(title and title.strip()), repr(title))
+        time.sleep(0.8)
+        stat_line = cdp.js("(document.querySelector('#shelf-stats')||{}).textContent||''")
+        check("书架顶上显示今天的阅读统计（%s）" % stat_line,
+              "分钟" in stat_line and "字" in stat_line, stat_line)
 
         cdp.js("document.querySelector('.book').click(); 1")
         cdp.wait_js("/\\d+%/.test(document.querySelector('#pos').textContent)", 40, "正文渲染完")
@@ -153,11 +157,37 @@ def main():
         })()""")
         check("改完字号正文跟着变（%s）" % css2, css2.startswith(str(size1)), css2)
 
-        sett = json.loads(cdp.js("fetch('/v1/state/settings').then(r=>r.json()).then(j=>JSON.stringify(j))", True) or "{}")
-        values = sett.get("values") or {}
-        clock = sett.get("clock") or {}
-        check("字号写回设置对象", int(values.get("font_size") or 0) == size1, values.get("font_size"))
-        check("设置带时间戳（多端靠它判新旧）", float(clock.get("font_size") or 0) > 0, clock.get("font_size"))
+        # ---- 设置只在本机：字号、字体、配色都进 localStorage，不进云端设置文档 ----
+        n_sw = cdp.js("document.querySelectorAll('#tools .sw').length")
+        check("配色有 7 个色块（%s 个）" % n_sw, n_sw == 7, n_sw)
+        n_face = cdp.js("document.querySelectorAll('#tools [data-act^=\"face-\"]').length")
+        check("字体有 4 种（%s 个）" % n_face, n_face == 4, n_face)
+        check("字号那一栏下面不再有说明文字（#tools-note 已去掉）",
+              not cdp.js("!!document.querySelector('#tools-note')"))
+        paper0 = cdp.js("getComputedStyle(document.documentElement).getPropertyValue('--paper').trim()")
+        cdp.js("document.querySelector('[data-act=\"paper-sepia\"]').click(); 1")
+        cdp.js("document.querySelector('[data-act=\"face-kai\"]').click(); 1")
+        time.sleep(1.0)
+        paper1 = cdp.js("getComputedStyle(document.documentElement).getPropertyValue('--paper').trim()")
+        check("点米黄：纸色跟着变（%s → %s）" % (paper0, paper1), paper1 and paper1 != paper0, paper1)
+        face_css = cdp.js("""(() => {
+            const v = document.querySelector('#view');
+            const arr = v.renderer.getContents() || [];
+            const d = arr.length && arr[0].doc;
+            return d ? d.defaultView.getComputedStyle(d.body).fontFamily : '';
+        })()""")
+        check("点楷体：正文换成楷体族（%s）" % face_css, "Kaiti" in face_css or "STKaiti" in face_css, face_css)
+        saved_set = cdp.js("localStorage.getItem('sr.settings.v1')") or ""
+        check("字号/字体/配色记在本机 localStorage（%s）" % saved_set[:70],
+              ('"paper"' in saved_set and '"face"' in saved_set and '"font_size"' in saved_set),
+              saved_set[:120])
+        cloud = json.loads(cdp.js("fetch('/v1/state/settings').then(r=>r.json()).then(j=>JSON.stringify(j))",
+                                  True) or "{}")
+        cvals = cloud.get("values") or {}
+        check("云端设置没被动过（font_size 还是 %s）" % cvals.get("font_size"),
+              int(cvals.get("font_size") or 0) == 19, cvals.get("font_size"))
+        check("云端设置里也没有网页这套键（bg_color/face/paper）",
+              not any(k in cvals for k in ("bg_color", "text_color", "face", "paper")), sorted(cvals))
 
         # ---- 目录：能开，也必须能关（.toc 的 display:flex 会把 [hidden] 顶掉，这里守回归）----
         cdp.js("document.querySelector('#toc').click(); 1")
@@ -241,6 +271,8 @@ def main():
               attr("max-column-count") == "2", attr("max-column-count"))
         check("刷新后正文照样渲染得出来（%s 个文档）" % cdp.js("document.querySelector('#view').renderer.getContents().length"),
               cdp.js("document.querySelector('#view').renderer.getContents().length") >= 1)
+        paper2 = cdp.js("getComputedStyle(document.documentElement).getPropertyValue('--paper').trim()")
+        check("刷新后配色也还记得（--paper=%s）" % paper2, paper2.lower() == "#f4ecd8", paper2)
 
         errs_raw = json.loads(cdp.js("JSON.stringify(window.__errs||[])") or "[]")
         # 切版式（翻页↔滚动/单栏↔双栏）时浏览器会抱怨 ResizeObserver 通知没送完，

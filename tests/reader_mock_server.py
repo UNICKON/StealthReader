@@ -63,6 +63,15 @@ def settings_doc():
                                      "clock": {}}
 
 
+def stats_doc():
+    """账本：今天已经有一场（桌面端记的），网页这边只往里加自己的会话。"""
+    return STATE.get("stats") or {"v": 1, "updated_at": 0, "device": "mock",
+                                  "sessions": [],
+                                  "days": {time.strftime("%Y-%m-%d"):
+                                           {"n": 3, "sec": 2385.0, "chars": 15724.0}},
+                                  "books": {}}
+
+
 class QuietServer(ThreadingHTTPServer):
     """浏览器被 kill 掉时不要往 stderr 吐 ConnectionResetError。"""
     daemon_threads = True
@@ -121,7 +130,8 @@ class H(BaseHTTPRequestHandler):
             kind = path.rsplit("/", 1)[-1]
             if kind not in ("progress", "settings", "annotations", "stats"):
                 return self.js(404, {"ok": False})
-            doc = progress_doc() if kind == "progress" else settings_doc()
+            doc = (progress_doc() if kind == "progress"
+                   else stats_doc() if kind == "stats" else settings_doc())
             raw = json.dumps(doc, ensure_ascii=False).encode("utf-8")
             return self.send(200, raw, extra={"ETag": '"%d"' % len(raw)})
         if path.startswith("/v1/lite/"):

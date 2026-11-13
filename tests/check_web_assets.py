@@ -74,12 +74,25 @@ def main():
                   b"scrollToAnchor" in live)
             check("线上 app.js 每 15 分钟同步一次（syncEveryMs = 900000）",
                   b"syncEveryMs: 15 * 60 * 1000" in live)
+            check("线上 app.js 设置只存本机（sr.settings.v1，完全不碰 /v1/state/settings）",
+                  b"sr.settings.v1" in live and b"/v1/state/settings" not in live)
+            check("线上 app.js 网页端会记阅读统计（pushStats → /v1/state/stats）",
+                  b"function pushStats" in live and b"'/v1/state/stats'" in live
+                  and b"MAX_CHARS_PER_SEC = 20" in live)
         elif name == "style.css":
             check("线上 style.css 有 [hidden] 兜底规则（目录关不掉那个坑）",
                   b"[hidden] { display: none !important; }" in live)
+            check("线上 style.css 有配色色块样式（7 个 .sw 预设）",
+                  live.count(b".tools .s-") == 7)
         elif name == "index.html":
             check("线上 index.html 有翻页/滚动、单栏/双栏按钮",
                   b"flow-scroll" in live and b"cols-2" in live)
+            check("线上 index.html 有 7 个配色色块 + 4 种字体",
+                  live.count(b'class="sw s-') == 7 and live.count(b'data-act="face-') == 4)
+            check("线上 index.html 不再有说明性备注（#tools-note）",
+                  b"tools-note" not in live)
+            check("线上 index.html 书架上有统计那一行（#shelf-stats）",
+                  b'id="shelf-stats"' in live)
 
     try:
         body, _ = get("/v1/ping")
