@@ -54,8 +54,12 @@ input {
 #login { align-items: center; justify-content: center; padding: 24px; }
 #login h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: 0.08em; }
 #login .hint { color: var(--ui-dim); font-size: 13px; margin: 0 0 18px; text-align: center; max-width: 22em; }
-#login form { display: flex; gap: 8px; width: min(420px, 100%); }
+#login form { display: flex; flex-direction: column; gap: 8px; width: min(420px, 100%); }
 #login form button { flex: 0 0 auto; }
+/* token 那行：输入框 + 「显示」——手机上 token 又长又是等宽乱码，看不见就没法查错 */
+.token-row { display: flex; gap: 8px; align-items: stretch; }
+.token-row #token { flex: 1 1 auto; min-width: 0; }
+.token-row .ghost { flex: 0 0 auto; padding: 0 12px; }
 .err { color: #e2725b; min-height: 1.4em; font-size: 13px; }
 
 /* ── 书架 ─────────────────────────────────────────── */

@@ -1048,3 +1048,88 @@ pdf.js，传上去只是书架上一行打不开的书。
 `POST /v1/blob/check`、`PUT /v1/blob/<sha>`、`PUT /v1/lite/<uid>/index.json`、书架按 `BLOBS`
 列书、未知书的章节表返回 404（否则"网页自己数总字数"这条路根本走不到）、`DROP_PROGRESS_PUT`
 用来复现断网、账本里补了一条书账。
+
+
+### 27.6 手机登不上：不是"只能一台"，是 http 把 Cookie 吃了
+
+用户问的三件事，一条条查过：
+
+**① 能同时登几台？没有限制。** Worker 里根本没有会话表：`authed()` 就是拿请求里的 token 跟
+`env.SYNC_TOKEN` 做常量时间比较，Cookie 里存的就是 token 本身
+（`HttpOnly; Secure; SameSite=Lax; Max-Age=31536000`）。实测三台各登一次（iPhone / Android /
+Windows 的 UA），三份 Cookie **同时** `GET /v1/shelf` 都是 200 / 11 本：
+
+```
+iPhone   login → 200  Set-Cookie: 有（Secure, HttpOnly, SameSite=Lax, Path=/）
+Android  login → 200  同上
+Windows  login → 200  同上
+三个 Cookie 同时用：/v1/shelf → 200（11 本）× 3
+```
+
+`POST /v1/logout` 只清本机那个 Cookie，不影响别的设备。
+
+**② 手机为什么登不上——http 是元凶。** 实测 `http://sync.noteklip.org/r/` 之前**直接 200，
+不跳 https**。而登录下发的 Cookie 带 `Secure`，浏览器在 http 页面上会把它丢掉（RFC6265：
+非安全来源的 Secure Cookie 直接忽略）。于是现象正好是"输了 token，页面又弹回登录框"——
+登录 POST 是 200 成功的，只是 Cookie 没落下。手机上很多人就是敲 `sync.noteklip.org/r/`
+（浏览器补的是 http），或者从别处点开一个 http 链接。
+
+两处都堵上：
+
+- Worker 最前面：`url.protocol === "http:"` → **308** 到 https（308 保方法/保 body，表单和
+  PUT 都能穿过去；`localhost`/`127.0.0.1` 除外，探针要跑 http）。实测现在
+  `http:// → 308, location=https://sync.noteklip.org/r/`。
+- 前端也兜一层：非本机地址且协议是 http 就 `location.replace('https://' + host + path)`——
+  万一哪天 Worker 前面又多了个不跳转的入口。
+
+**③ 登录失败以前一声不响。** 老代码 `await fetch('/v1/login')` 外面没有 try，断网/DNS/被拦
+时 Promise 直接 reject，界面**一点反应都没有**（这也解释了"点了没反应"）。现在分四类报：
+
+| 情况 | 提示 |
+| --- | --- |
+| fetch 抛异常 | 连不上同步服务（手机没网 / 网络或 DNS 不通） |
+| 401 | token 不对（复制时多带了空格或换行也算不对） |
+| 其它非 2xx | 服务端出错（HTTP 500），等会儿再试 |
+| 登录成功但 `enterApp` 401 | 登录成功了但浏览器没存下 Cookie：用 https 打开，或关掉无痕/隐私模式 |
+
+顺带：token 是 48 位十六进制，在手机上看不见就是一片圆点，打错一个字符根本没法查——
+输入框旁边加了「显示/隐藏」；`autocomplete="off"`（别让 iOS 密码管理器塞个别的进去）、
+`enterkeyhint="go"`。
+
+**④ 顺手修了 vendor 里的一个真 bug。** 手机探针一开始报 `TypeError: undefined is not
+iterable`，栈指向 `paginator.js:806 Paginator.snap`：
+
+```js
+#onTouchEnd() { ... requestAnimationFrame(() => this.snap(vx, vy)) }   // 分页模式也调
+snap(vx, vy) { const [offset, a, b] = this.#scrollBounds }             // 分页模式下它是 undefined
+```
+
+`#scrollBounds` 只在 `#scrollTo()` 里赋值，分页模式永远走不到那里，所以**手机上每点一下屏幕
+就抛一次异常**。改法（`vendor/foliate-js/paginator.js`，标了"本地补丁"）：`snap()` 开头
+`if (!this.scrolled) return`，并给 `#touchState` 加空判。`check_web_assets` 会把
+`paginator.js` 也逐字节比对，并断言这个补丁在线上。
+
+**⑤ token 能改。** 它就是一个 Worker secret：
+
+```
+cd cloudflare-sync
+npx wrangler secret put SYNC_TOKEN     # 粘贴新 token，回车
+```
+
+改完的代价是**所有设备一起失效**（Cookie 里存的就是 token，桌面端的 Bearer 也是它）：
+每台浏览器重新输一次，桌面端 `config.json` 的 `sync.token` 跟着改（改完不用重启也能生效，
+下轮同步自己就用新值）。要换我建议一次换到位：长度 ≥16 位随机串就够（对比是常量时间、
+又只走 https），不用非得 48 位——手机上少打一半字符。
+
+### 27.7 这一节的探针
+
+| 探针 | 结果 |
+| --- | --- |
+| `tests/probe_web_mobile.py` | **21 / 21**（新文件：390×844 + `mobile=true` + 真触摸 + iPhone UA——登录框放得下 / 「进去」在屏幕里 / 44px 高 / token 默认遮住、点「显示」变 text 再点遮回去；**断网报"连不上"、错 token 报"token 不对"、报完按钮没被禁用卡死**；书架标题栏不溢出（390 ≤ 390）、三个按钮都在屏幕里；统计页不横向溢出且有书；真触摸点右边翻页（0 → 85 字）、点底部把底栏摸出来、点「← 书架」回得去、整轮无 JS 报错） |
+| `tests/probe_reader_ui.py` | 45 / 45（登录标记改了，回归没破） |
+| `tests/probe_web_upload_stats.py` | 28 / 28 |
+| `tests/probe_web_stats.py` | 27 / 27 |
+| `tests/check_web_assets.py` | **32 / 32**（多了 `paginator.js` 的逐字节比对 + 补丁断言） |
+| 线上只读诊断 | 三份 Cookie 并存 3/3、`http:// → 308`、错 token 401、无 Cookie 401 |
+
+线上版本：`23242a55`（http→https）→ `74e7308f`（「显示」按钮、登录报错）。

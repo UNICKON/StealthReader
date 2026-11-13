@@ -47,8 +47,8 @@ def get(path):
 
 
 def main():
-    for name in ("app.js", "style.css", "index.html"):
-        local = io.open(os.path.join(WEB, name), "rb").read()
+    for name in ("app.js", "style.css", "index.html", "vendor/foliate-js/paginator.js"):
+        local = io.open(os.path.join(WEB, name.replace("/", os.sep)), "rb").read()
         try:
             live, _ = get("/r/" + name)
         except Exception as e:
@@ -119,6 +119,9 @@ def main():
                   b'id="stats-pane"' in live and b'id="stats-body"' in live)
             check("线上 index.html 有隐藏的文件选择框（accept epub/mobi…）",
                   b'id="file"' in live and b"application/epub+zip" in live)
+        elif name.endswith("paginator.js"):
+            check("线上 paginator.js 带本地补丁（分页模式下 snap 直接返回）",
+                  b"if (!this.scrolled) return" in live)
 
     try:
         body, _ = get("/v1/ping")

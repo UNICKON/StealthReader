@@ -412,6 +412,15 @@ async function handleBlobList(env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // 只走 https：登录下发的 Cookie 带 Secure，浏览器在 http 页面上会直接丢掉它——
+    // 表现就是"输了 token 又弹回登录框"。手机上很多浏览器/内置 WebView 不会自动升级，
+    // 所以在这里兜一层（308 保留方法和 body，表单/PUT 都能穿过去）。
+    if (url.protocol === "http:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
+      url.protocol = "https:";
+      return new Response(null, { status: 308, headers: { location: url.toString() } });
+    }
+
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     // 阅读页（静态）：公开——页面里没有任何数据，/v1/* 仍然逐个鉴权

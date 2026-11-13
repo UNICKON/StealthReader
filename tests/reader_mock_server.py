@@ -20,6 +20,7 @@ COOKIE = "srtoken=demo-token"
 STATE = {}
 FAIL_STATS_PUT = False        # 探针用：把账本的 PUT 打成 500，看前端会不会丢数据
 DROP_PROGRESS_PUT = False     # 探针用：进度 PUT 直接断连（模拟断网），看"回书架"会不会被卡住
+DROP_LOGIN = False            # 探针用：登录请求直接断连，看登录页会不会把错误显示出来
 BOOK = {"sha": "", "name": "测试书.epub", "bytes": b"", "uid": "", "total": 60000}
 BLOBS = {}                    # sha → {bytes, name}：网页"上传书籍"传上来的都放这儿
 LITE = {}                     # uid → 章节表（网页自己算的那份）
@@ -211,6 +212,9 @@ class H(BaseHTTPRequestHandler):
         raw = self.body()
         REQUESTS.append(("POST", path))
         if path == "/v1/login":
+            if DROP_LOGIN:
+                self.close_connection = True
+                return
             ctype = (self.headers.get("Content-Type") or "").lower()
             token = ""
             if "json" in ctype:

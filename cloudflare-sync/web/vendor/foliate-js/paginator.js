@@ -802,6 +802,10 @@ export class Paginator extends HTMLElement {
             element[scrollProp] + delta))
     }
     snap(vx, vy) {
+        // 本地补丁（StealthReader）：分页模式下 #scrollBounds 从来不会被赋值，
+        // 而 #onTouchEnd 在手机上每次点一下都会调到这里 → 解构 undefined 抛 TypeError。
+        // 分页模式本来就没有"滚到哪一页附近"这回事，直接返回。
+        if (!this.scrolled) return
         const velocity = this.#vertical ? vy : vx
         const [offset, a, b] = this.#scrollBounds
         const { start, end, pages, size } = this
@@ -858,8 +862,10 @@ export class Paginator extends HTMLElement {
         // at this point I'm basically throwing `requestAnimationFrame` at
         // anything that doesn't work
         requestAnimationFrame(() => {
+            const state = this.#touchState          // 本地补丁：没有 touchstart 就没有它
+            if (!state) return
             if (globalThis.visualViewport.scale === 1)
-                this.snap(this.#touchState.vx, this.#touchState.vy)
+                this.snap(state.vx, state.vy)
         })
     }
     // allows one to process rects as if they were LTR and horizontal

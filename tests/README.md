@@ -16,6 +16,7 @@ $py = "$env:APPDATA\WPS 灵犀\python-env\python.exe"     # 就是跑 main.py �
 & $py -X utf8 tests\probe_reader_ui.py   # 网页阅读页：真浏览器（无头 Edge + CDP）+ 假后端
 & $py -X utf8 tests\probe_web_stats.py    # 网页端到底记不记阅读统计：真读 70 秒，看账本多没多一场
 & $py -X utf8 tests\probe_web_upload_stats.py  # 网页四件事：沉浸底栏、断网也能回书架、统计页、网页传书
+& $py -X utf8 tests\probe_web_mobile.py   # 手机那条路：390×844 + 真触摸 + iPhone UA（登录/翻页/底栏）
 & $py -X utf8 tests\check_web_assets.py  # 线上前端文件是否就是本地这份（只读，要已部署）
 & $py -X utf8 tests\check_live_blob.py    # 线上问一句"这本书有了吗"（只读，不传字节）
 

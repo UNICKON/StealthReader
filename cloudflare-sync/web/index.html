@@ -13,9 +13,13 @@
 <section id="login" class="pane center" hidden>
   <h1>StealthReader</h1>
   <p class="hint">粘贴同步 token（桌面端「设置 → 云端同步」里那个）</p>
-  <form id="login-form" autocomplete="on">
-    <input id="token" type="password" placeholder="token" autocapitalize="off" autocorrect="off" spellcheck="false" required>
-    <button type="submit">进去</button>
+  <form id="login-form" autocomplete="off">
+    <div class="token-row">
+      <input id="token" type="password" placeholder="token" autocapitalize="off" autocorrect="off"
+             spellcheck="false" autocomplete="off" enterkeyhint="go" required>
+      <button id="peek" type="button" class="ghost" aria-label="显示 token">显示</button>
+    </div>
+    <button id="login-go" type="submit">进去</button>
   </form>
   <p id="login-err" class="err"></p>
 </section>

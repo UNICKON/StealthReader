@@ -91,20 +91,61 @@ async function enterApp() {
   if (STAT.pending.length) flushStats(false).catch(() => {})
 }
 
+/* 只在 https 下登录：登录下发的 Cookie 带 Secure，浏览器在 http 页面上会直接丢掉它，
+   表现就是"输了 token 又弹回登录框"。手机上很多浏览器不会自动升级到 https。 */
+if (location.protocol === 'http:'
+    && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
+  location.replace('https://' + location.host + location.pathname + location.search)
+}
+
+/* token 又长又是等宽乱码，手机上看不见就没法查错：给个「显示/隐藏」 */
+$('#peek').addEventListener('click', () => {
+  const inp = $('#token')
+  const show = inp.type === 'password'
+  inp.type = show ? 'text' : 'password'
+  $('#peek').textContent = show ? '隐藏' : '显示'
+})
+
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault()
   const err = $('#login-err')
+  const btn = e.target.querySelector('button[type=submit]')
   err.textContent = ''
   const token = $('#token').value.trim()
   if (!token) return
-  const res = await fetch('/v1/login', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ token }),
-  })
-  if (!res.ok) { err.textContent = 'token 不对，或者服务端没配'; return }
-  $('#token').value = ''
-  try { await enterApp() } catch (e2) { err.textContent = String(e2.message || e2) }
+  btn.disabled = true
+  btn.textContent = '登录中…'
+  try {
+    let res
+    try {
+      res = await fetch('/v1/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token }),
+      })
+    } catch (e2) {
+      // fetch 抛异常 = 根本没连上（断网/DNS/被拦），以前这里一声不响，看着像"点了没反应"
+      err.textContent = '连不上同步服务（' + (navigator.onLine === false ? '手机没网' : '网络或 DNS 不通') + '）'
+      return
+    }
+    if (res.status === 401) {
+      err.textContent = 'token 不对（复制时多带了空格或换行也算不对）'
+      return
+    }
+    if (!res.ok) { err.textContent = '服务端出错（HTTP ' + res.status + '），等会儿再试'; return }
+    $('#token').value = ''
+    try {
+      await enterApp()
+    } catch (e2) {
+      const msg = String((e2 && e2.message) || e2)
+      err.textContent = msg === 'unauthorized'
+        ? '登录成功了但浏览器没存下 Cookie：用 https 打开，或关掉无痕/隐私模式再试'
+        : msg
+    }
+  } finally {
+    btn.disabled = false
+    btn.textContent = '进去'
+  }
 })
 
 $('#logout').addEventListener('click', async () => {
