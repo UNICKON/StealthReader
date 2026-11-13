@@ -11875,12 +11875,11 @@ class StealthReader(QWidget):
     def _sync_periodic(self):
         """每 15 分钟一轮：没改动也要问，网页端刚推上来的进度得靠这个收进来。
 
-        一轮里远端 rev 没变就只发一个 manifest；本地没变就不会 PUT（见 sync_engine._sync_kind），
-        所以闲着的时候这一轮几乎不花流量。
+        这一轮**不受「改了就自动同步」开关影响**（那个开关管的是"一改动就催一轮"的即时同步）：
+        它只按固定节拍跑，一轮里远端 rev 没变就只发一个 manifest，本地没变就不会 PUT
+        （见 sync_engine._sync_kind），闲着的时候几乎不花流量。
         """
         if not self.sync_configured() or getattr(self, "_sync_applying", False):
-            return
-        if not self.sync_conf().get("auto", True):
             return
         if getattr(self, "_sync_timer", None) is not None and self._sync_timer.isActive():
             return                      # 已经排着一轮了，别插队

@@ -164,6 +164,22 @@ def main():
         check("改动后要等约 15 分钟才推（还差 %s 秒）" % (round(left / 1000.0) if left > 0 else left),
               840_000 <= left <= 900_000, left)
         w._sync_timer.stop()
+
+        # 周期那一轮不该被「改了就自动同步」挡住：真关掉它，网页上读的进度就永远收不进来
+        w.sync_conf()["auto"] = False
+        fired = {"n": 0}
+        real_fire = w._sync_fire
+        w._sync_fire = lambda: fired.__setitem__("n", fired["n"] + 1)
+        _hold3 = os.environ.pop("STEALTHREADER_SYNC", None)
+        try:
+            w._sync_timer.stop()
+            w._sync_periodic()
+        finally:
+            w._sync_fire = real_fire
+            if _hold3 is not None:
+                os.environ["STEALTHREADER_SYNC"] = _hold3
+            w.sync_conf()["auto"] = True
+        check("关了「改了就自动同步」，每 15 分钟那一轮照样跑", fired["n"] == 1, fired["n"])
     finally:
         try:
             w.stop_sync()

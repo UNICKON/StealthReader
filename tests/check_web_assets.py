@@ -72,6 +72,8 @@ def main():
                   b"setTimeout(() => { pushProgress() }, 2500)" not in live)
             check("线上 app.js 滚动走 scrollToAnchor（closed shadow 拿不到 #container）",
                   b"scrollToAnchor" in live)
+            check("线上 app.js 每 15 分钟同步一次（syncEveryMs = 900000）",
+                  b"syncEveryMs: 15 * 60 * 1000" in live)
         elif name == "style.css":
             check("线上 style.css 有 [hidden] 兜底规则（目录关不掉那个坑）",
                   b"[hidden] { display: none !important; }" in live)
