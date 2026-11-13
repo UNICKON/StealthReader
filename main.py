@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import os
 
 # 开发态：PyQt5 / keyboard 解包在 libs/，不依赖启动器设置 PYTHONPATH，
@@ -11830,7 +11830,11 @@ class StealthReader(QWidget):
         if not info.get("ok"):
             log_event("同步失败：%s" % (info.get("error") or "?"))
             return
-        log_event("同步完成：%s" % (", ".join(info.get("kinds") or []) or "无变化"))
+        calls = info.get("calls") or {}
+        used = sum(int(calls.get(k) or 0) for k in ("GET", "PUT", "POST"))
+        log_event("同步完成：%s（%d 个请求：GET %d / PUT %d）" % (
+            ", ".join(info.get("kinds") or []) or "无变化", used,
+            int(calls.get("GET") or 0), int(calls.get("PUT") or 0)))
 
     def _on_sync_applied(self, payload):
         """后台线程并完的结果 → 主线程写回内存 + 存盘（绝不在别的线程里改这些对象）。"""
@@ -11888,7 +11892,9 @@ class StealthReader(QWidget):
             log_event("同步：%s" % note)
         self.sync_status_signal.emit({"ok": True, "at": time.time(),
                                       "kinds": sorted(kinds.keys()),
-                                      "notes": notes})
+                                      "notes": notes,
+                                      "calls": payload.get("calls") or {},
+                                      "skipped": payload.get("skipped")})
 
     def sync_status_text(self):
         """给界面/托盘看的一句话状态。"""

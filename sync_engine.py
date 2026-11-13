@@ -43,6 +43,7 @@ MIN_SESSION_SEC = 60            # 和 reading_stats 一致
 SEC_SLACK = 5.0                 # 一拍的长度：sec 比 end-start 天然多一拍，截断时要留出来
 HTTP_TIMEOUT = 45.0             # 单次请求最长 45 秒（8 MB 的书在慢链路上要十几秒，留足余量）
 MAX_CONFLICT_RETRY = 3
+SYNC_DEBUG = os.environ.get("STEALTHREADER_SYNC_DEBUG") == "1"   # 逐 kind 的细节日志
 KEEP_VERSIONS = 5
 
 SYNC_KINDS = ("progress", "annotations", "stats", "settings")
@@ -338,6 +339,50 @@ def _later(a, b):
     da = json.dumps(a, ensure_ascii=False, sort_keys=True)
     db = json.dumps(b, ensure_ascii=False, sort_keys=True)
     return a if da >= db else b
+
+
+def _view_hash(view):
+    """内容指纹：只看"内容"，不算 updated_at / device / rev 这些每轮都变的字段。
+
+    用来回答"这次合并的结果跟远端那份是不是一模一样"——一样就别写（R2 每次写都换 rev，
+    另一台机器看见 rev 变了又会白跑一轮）。
+    """
+    if not isinstance(view, dict):
+        return ""
+    clean = {k: v for k, v in view.items() if k not in ("updated_at", "device", "rev")}
+    blob = json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _diff_brief(a, b, limit=8):
+    """两份视图差在哪（只给调试日志用）：顶层键，dict 再下钻一层，最多列 limit 条。"""
+    out = []
+
+    def walk(x, y, path):
+        if len(out) >= limit:
+            return
+        if isinstance(x, dict) and isinstance(y, dict):
+            for k in sorted(set(x) | set(y)):
+                if len(out) >= limit:
+                    return
+                p = "%s.%s" % (path, k) if path else str(k)
+                if k not in x:
+                    out.append(p + " 只在远端")
+                elif k not in y:
+                    out.append(p + " 只在本机")
+                elif x[k] != y[k]:
+                    if isinstance(x[k], dict) and isinstance(y[k], dict):
+                        walk(x[k], y[k], p)
+                    else:
+                        out.append("%s：%r ≠ %r" % (p, _short(x[k]), _short(y[k])))
+    if isinstance(a, dict) and isinstance(b, dict):
+        walk(a, b, "")
+    return out
+
+
+def _short(v):
+    s = json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v
+    return s if len(s) <= 60 else s[:57] + "…"
 
 
 def merge_progress(local, remote):
@@ -785,6 +830,7 @@ class SyncClient:
         self.port = u.port or (443 if self.scheme == "https" else 80)
         self.prefix = (u.path or "").rstrip("/")
         self._conn = None
+        self.calls = {"GET": 0, "PUT": 0, "POST": 0}      # 每轮清零：用来量"这一轮到底发了几个请求"
 
     # --- 连接 ---
     def close(self):
@@ -818,6 +864,7 @@ class SyncClient:
     def _request(self, method, path, body=None, headers=None, retry=True):
         """返回 (状态码, 小写键的响应头 dict, 响应体 bytes)。网络层失败抛 SyncError。"""
         h = self._headers(headers)
+        self.calls[method] = self.calls.get(method, 0) + 1
         if body is not None:
             h["Content-Length"] = str(len(body))
         last = None
@@ -1015,6 +1062,7 @@ class SyncWorker(threading.Thread):
             self.log("另一个进程在同步，这轮跳过")
             return
         payload = None
+        self.client.calls = {"GET": 0, "PUT": 0, "POST": 0}     # 这一轮发了几个请求
         try:
             payload = self._merge_all(snapshot, reason)
             if payload.get("kinds"):
@@ -1053,65 +1101,111 @@ class SyncWorker(threading.Thread):
         }
 
         for kind in self.kinds:
-            if kind not in builders:
+            builder = builders.get(kind)
+            if builder is None:
                 continue
-            local_view = builders[kind]()
-            remote_view, rev = self.client.get_state(kind) if kind in manifest else (None, "")
-            if remote_view is None:
-                merged = local_view
-                new_rev = self.client.put_state(kind, merged, create=True)
-            else:
-                for attempt in range(MAX_CONFLICT_RETRY):
-                    merged = mergers[kind](local_view, remote_view)
-                    notes = []
-                    if isinstance(merged, tuple):
-                        merged, notes = merged
-                        out["notes"].extend(notes)
-                    merged["updated_at"] = _now()
-                    try:
-                        new_rev = self.client.put_state(kind, merged, rev=rev)
-                        break
-                    except Conflict as c:
-                        self.log("%s 冲突（第 %d 次），重新拉一遍再并" % (kind, attempt + 1))
-                        remote_view, rev = self.client.get_state(kind)
-                        if remote_view is None:
-                            new_rev = self.client.put_state(kind, merged, create=True)
-                            break
-                else:
-                    self.log("%s 连着 3 次冲突，这轮先放下" % kind)
-                    continue
-            self.state.setdefault("kinds", {})[kind] = {"rev": new_rev, "at": _now()}
-
-            # 本地形状（主线程拿这个写回）
-            if kind == "progress":
-                out["kinds"]["progress"] = progress_to_local(merged, uidmap, paths_by_uid, config)
-                out["kinds"]["progress"]["_schema_ok"] = int(_num(merged.get("schema"))) == EXTRACT_SCHEMA
-            elif kind == "annotations":
-                out["kinds"]["annotations"] = annotations_to_local(
-                    merged, uidmap, paths_by_uid, annotations,
-                    schema_ok=int(_num(merged.get("schema"))) == EXTRACT_SCHEMA)
-                self.state["tombstones"] = {uid: {t["id"]: t["at"] for t in (row.get("tombstones") or [])}
-                                            for uid, row in (merged.get("books") or {}).items()}
-                # 记住"合并之后"有哪些条目：下一轮拿本地跟它比，少掉的才算本地删的
-                self.state["annotation_ids"] = {
-                    uid: {kind2: sorted(str(it.get("id")) for it in (row.get(kind2) or []) if it.get("id"))
-                          for kind2 in ("highlights", "bookmarks")}
-                    for uid, row in (merged.get("books") or {}).items()}
-            elif kind == "stats":
-                out["kinds"]["stats"] = stats_to_local(merged, uidmap, paths_by_uid)
-            elif kind == "settings":
-                out["kinds"]["settings"] = settings_to_local(merged, config)
-                self.state["settings_clock"] = dict(merged.get("clock") or {}) if isinstance(merged, dict) else {}
+            try:
+                self._sync_kind(kind, builder(), mergers[kind], manifest,
+                                uidmap, paths_by_uid, out, annotations, config)
+            except Unauthorized:
+                raise
+            except SyncError as e:
+                # 一类没成不拖累其他三类：离线时最容易在第一个 kind 上就炸，后面全白等
+                self.log("%s 这轮没成：%s" % (kind, e))
+                out["notes"].append("%s 失败：%s" % (kind, e))
 
         if self.books:
             out["books"] = self._sync_books(snapshot)
 
+        out["calls"] = dict(self.client.calls)
+        out["skipped"] = int(self.state.get("skipped") or 0)
         self.state["last_ok_at"] = _now()
         self.state["last_error"] = ""
         self.save_state()
         self.last_result = {"ok": True, "kinds": list(out["kinds"]), "notes": out["notes"],
-                            "at": self.state["last_ok_at"]}
+                            "at": self.state["last_ok_at"], "calls": dict(self.client.calls),
+                            "skipped": int(self.state.get("skipped") or 0)}
         return out
+
+    def _sync_kind(self, kind, local_view, merger, manifest, uidmap, paths_by_uid,
+                   out, annotations, config):
+        """一个 kind 跑一轮，尽量少发请求：
+
+        - 远端 rev 跟上一轮记下的一样 → 远端内容就是缓存里那份，**不发 GET**
+        - 合并结果跟缓存里那份内容相同 → **不发 PUT**（不换 rev，不给别的机器制造无用功）
+
+        缓存在 `state["remote"][kind]` 里：rev + 上次的内容 + 内容指纹。四个 kind 一共十几 KB，
+        塞进 sync_state.json 完全无感。
+        """
+        cached = (self.state.get("remote") or {}).get(kind) or {}
+        mrev = str(((manifest.get(kind) or {}).get("rev")) or "")
+        remote_view, rev = None, ""
+        if mrev and cached.get("rev") == mrev and isinstance(cached.get("view"), dict):
+            remote_view, rev = cached["view"], mrev              # 远端没动：白拿一份
+        elif kind in manifest:
+            remote_view, rev = self.client.get_state(kind)
+            if remote_view is not None and rev:
+                self.state.setdefault("kinds", {}).setdefault(kind, {})["rev"] = rev
+
+        if remote_view is None:
+            merged = local_view
+            merged["updated_at"] = _now()
+            new_rev = self.client.put_state(kind, merged, create=True)
+        else:
+            for attempt in range(MAX_CONFLICT_RETRY):
+                merged = merger(local_view, remote_view)
+                notes = []
+                if isinstance(merged, tuple):
+                    merged, notes = merged
+                    out["notes"].extend(notes)
+                merged["updated_at"] = _now()
+                # 跟**远端那份**比内容（不是跟上一轮的缓存比）：远端刚被别的机器改过、
+                # 我们只是拉下来，合并结果就等于远端，这时写回去纯属白写一次、白换一个 rev。
+                if _view_hash(merged) == _view_hash(remote_view):
+                    new_rev = rev                               # 内容没变：不写
+                    self.state["skipped"] = int(self.state.get("skipped") or 0) + 1
+                    if SYNC_DEBUG:
+                        self.log("  %s：跳过（内容与远端一致）" % kind)
+                    break
+                if SYNC_DEBUG:
+                    self.log("  %s：要写，差在 %s" % (kind, _diff_brief(remote_view, merged)))
+                try:
+                    new_rev = self.client.put_state(kind, merged, rev=rev)
+                    break
+                except Conflict:
+                    self.log("%s 冲突（第 %d 次），重新拉一遍再并" % (kind, attempt + 1))
+                    remote_view, rev = self.client.get_state(kind)
+                    if remote_view is None:
+                        new_rev = self.client.put_state(kind, merged, create=True)
+                        break
+            else:
+                self.log("%s 连着 %d 次冲突，这轮先放下" % (kind, MAX_CONFLICT_RETRY))
+                return
+
+        self.state.setdefault("kinds", {})[kind] = {"rev": new_rev, "at": _now()}
+        self.state.setdefault("remote", {})[kind] = {
+            "rev": new_rev, "view": merged, "hash": _view_hash(merged), "at": _now()}
+
+        # 本地形状（主线程拿这个写回）
+        if kind == "progress":
+            out["kinds"]["progress"] = progress_to_local(merged, uidmap, paths_by_uid, config)
+            out["kinds"]["progress"]["_schema_ok"] = int(_num(merged.get("schema"))) == EXTRACT_SCHEMA
+        elif kind == "annotations":
+            out["kinds"]["annotations"] = annotations_to_local(
+                merged, uidmap, paths_by_uid, annotations,
+                schema_ok=int(_num(merged.get("schema"))) == EXTRACT_SCHEMA)
+            self.state["tombstones"] = {uid: {t["id"]: t["at"] for t in (row.get("tombstones") or [])}
+                                        for uid, row in (merged.get("books") or {}).items()}
+            # 记住"合并之后"有哪些条目：下一轮拿本地跟它比，少掉的才算本地删的
+            self.state["annotation_ids"] = {
+                uid: {kind2: sorted(str(it.get("id")) for it in (row.get(kind2) or []) if it.get("id"))
+                      for kind2 in ("highlights", "bookmarks")}
+                for uid, row in (merged.get("books") or {}).items()}
+        elif kind == "stats":
+            out["kinds"]["stats"] = stats_to_local(merged, uidmap, paths_by_uid)
+        elif kind == "settings":
+            out["kinds"]["settings"] = settings_to_local(merged, config)
+            self.state["settings_clock"] = dict(merged.get("clock") or {}) if isinstance(merged, dict) else {}
 
     # --- 两件"记账"的活：墓碑、设置时钟 ---
     def _collect_tombstones(self, annotations, uidmap, cache=None):
@@ -1162,38 +1256,70 @@ class SyncWorker(threading.Thread):
         return clock
 
     def _sync_books(self, snapshot):
-        """书文件：内容寻址，先问远端有哪些，只传缺的，顺带补上老对象缺的原名。永不删除远端。"""
-        result = {"checked": 0, "uploaded": 0, "renamed": 0, "failed": []}
+        """书文件：内容寻址，只传"本机有、远端没记过"的，顺带给老对象补原名。永不删除远端。
+
+        两个缓存让它在"书没变"时**一个请求都不发**：
+        - `book_hash`：路径 -> (大小, mtime, sha)。19 MB 的书不能每轮重算一遍 sha。
+        - `book_uploaded`：sha -> 远端记着的原名。有这个就不用再问 `/v1/blobs`。
+        改名也算变化（原名要跟着更新），但只在真改名时才重传那一本。
+        """
+        result = {"checked": 0, "uploaded": 0, "renamed": 0, "hashed": 0, "failed": []}
         paths = [p for p in (snapshot.get("book_paths") or []) if os.path.isfile(p)]
         if not paths:
             return result
+        cache = self.state.setdefault("book_hash", {})
+        uploaded = self.state.setdefault("book_uploaded", {})
         sha_by_path = {}
         for path in paths:
+            key = os.path.normcase(os.path.abspath(path))
             try:
-                sha_by_path[path] = _hash_file(path)
+                st = os.stat(path)
             except OSError:
                 continue
+            row = cache.get(key) or {}
+            if (row.get("sha") and row.get("size") == st.st_size
+                    and row.get("mtime") == int(st.st_mtime)):
+                sha_by_path[path] = row["sha"]             # 没动过：不重算
+                continue
+            try:
+                sha = _hash_file(path)
+            except OSError:
+                continue
+            cache[key] = {"size": st.st_size, "mtime": int(st.st_mtime), "sha": sha}
+            result["hashed"] += 1
+            sha_by_path[path] = sha
         result["checked"] = len(sha_by_path)
+
+        todo = []
+        for path, sha in sha_by_path.items():
+            name = os.path.basename(path)
+            if uploaded.get(sha) == name:
+                continue                                   # 传过、名字也一样
+            todo.append((path, sha, name))
+        if not todo:
+            return result                                  # 一个字节都没变：不问远端
+
         try:
             known = {str(r.get("sha") or ""): r for r in self.client.blob_list()}
         except SyncError as e:
             result["failed"].append(str(e))
             return result
-        for path, sha in sha_by_path.items():
-            name = os.path.basename(path)
+        for path, sha, name in todo:
             row = known.get(sha)
-            if row is not None and str(row.get("name") or ""):
-                continue                                   # 远端已有，名字也在
+            if row is not None and str(row.get("name") or "") == name:
+                uploaded[sha] = name                       # 远端已经有，且名字对得上
+                continue
             try:
                 self.client.blob_put(sha, path, name=name, fix_name=row is not None)
+                uploaded[sha] = name
                 if row is None:
                     result["uploaded"] += 1
                 else:
                     result["renamed"] += 1
             except SyncError as e:
                 result["failed"].append("%s: %s" % (name, e))
-        self.log("书文件：查 %d 本，新传 %d 本，补名 %d 本" % (
-            result["checked"], result["uploaded"], result["renamed"]))
+        self.log("书文件：查 %d 本（重算 %d 本），新传 %d 本，补名 %d 本" % (
+            result["checked"], result["hashed"], result["uploaded"], result["renamed"]))
         return result
 
 

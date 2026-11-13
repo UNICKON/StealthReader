@@ -418,6 +418,55 @@ def run_e2e():
         bad_client.close()
         client.close()
 
+        section("增量：没变化就别发请求")
+        A.round("settle")
+        B.round("settle")
+        A.round("settle")            # B 刚写过，A 这一轮必须拉一次才算收敛（下面才开始量）
+        n0 = len(srv.requests)
+        A.round("noop")
+        tail = srv.requests[n0:]
+        gets = [(m, p) for m, p, s in tail if m == "GET"]
+        puts = [p for m, p, s in tail if m == "PUT"]
+        check("空闲一轮只问一次 manifest（4 个 kind 都不下载）",
+              len(gets) == 1 and "/v1/manifest" in gets[0][1], tail)
+        check("空闲一轮一个字节都不写", not puts, puts)
+        check("本地形状还是照样写回（界面能拿到）", bool(A.worker.last_result.get("kinds")), A.worker.last_result)
+
+        section("增量：只有变了的 kind 才写")
+        A.read(60, 300, 1762960000.0)          # 只动了账本，进度/划线/设置都没动
+        n1 = len(srv.requests)
+        A.round("read a bit")
+        tail = srv.requests[n1:]
+        puts = [p for m, p, s in tail if m == "PUT"]
+        check("只写了 stats 一个对象", len(puts) == 1 and "stats" in puts[0], puts)
+
+        section("增量：远端变了才下载那个 kind")
+        remote_ann = dict(srv.state("annotations") or {})
+        books = dict(remote_ann.get("books") or {})
+        first_uid = list(books.keys())[0]
+        row = dict(books[first_uid])
+        row["highlights"] = list(row.get("highlights") or []) + [
+            {"id": "h-other-machine", "text": "另一台机器划的", "at": 1762960000.0}]
+        books[first_uid] = row
+        remote_ann["books"] = books
+        srv.put_state_directly("annotations", remote_ann)
+        n2 = len(srv.requests)
+        A.round("remote changed")
+        tail = srv.requests[n2:]
+        state_gets = [p for m, p, s in tail if m == "GET" and "/v1/state/" in p]
+        check("只下了 annotations 这一个 kind", state_gets == ["/v1/state/annotations"], state_gets)
+        check("另一台机器的划线进了本机",
+              any(h.get("id") == "h-other-machine"
+                  for h in (A.annotations.get(book) or {}).get("highlights") or []),
+              A.annotations.get(book))
+
+        section("增量：书没变就不问 /v1/blobs")
+        A.round("books settle")
+        n3 = len(srv.requests)
+        A.round("books noop")
+        tail = [p for m, p, s in srv.requests[n3:]]
+        check("书没变的一轮不问 /v1/blobs", not any("/v1/blobs" in p for p in tail), tail)
+
         section("幂等：没改动也能跑")
         ok = True
         for _ in range(2):

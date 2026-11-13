@@ -44,6 +44,7 @@ class FakeSyncServer:
                 pass
 
             def _send(self, code, body=b"", extra=None):
+                outer.requests.append((self.command, self.path, code))   # 每个请求都记一笔
                 self.send_response(code)
                 headers = {"Content-Length": str(len(body)), "Connection": "close"}
                 for k, v in (extra or {}).items():
@@ -76,8 +77,7 @@ class FakeSyncServer:
                     return True
                 if outer.fail_times > 0:
                     outer.fail_times -= 1
-                    self._json(500, {"ok": False, "err": "boom"})
-                    outer.requests.append((self.command, self.path, 500))
+                    self._json(500, {"ok": False, "err": "boom"})        # _send 里已经记过
                     return True
                 return False
 
