@@ -11594,6 +11594,10 @@ class StealthReader(QWidget):
         copy_action.triggered.connect(self.copy_selection)
         copy_action.setEnabled(bool(self.text_edit.textCursor().hasSelection()))
         cmenu.addSeparator()
+        # 托盘图标在 Windows 会缩进"隐藏的图标"里，光靠托盘不好找；书页右键这条是熟路。
+        sync_action = cmenu.addAction("☁️ 云端同步…")
+        sync_action.triggered.connect(self.open_sync_dialog)
+        sync_action.setEnabled(bool(SYNC_OK))
         cmenu.addAction("⚙️ 设置").triggered.connect(self.open_settings)
         cmenu.addSeparator()
         cmenu.addAction("❌ 退出").triggered.connect(self.quit_app)

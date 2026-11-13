@@ -217,6 +217,36 @@ def run_pure():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+    section("账本写回本机键")
+    tmp2 = tempfile.mkdtemp(prefix="sr_stl_")
+    try:
+        p2 = os.path.join(tmp2, "跨越边界的社区.epub")
+        with open(p2, "wb") as f:
+            f.write(b"z")
+        cache2 = {}
+        uid2, _ = se.uid_for(p2, cache2)
+        cfg2 = {"local_book_positions": {p2: 10}}
+        uidmap2 = se.uid_map_for(cfg2, cache2)
+        paths2 = se.uid_to_paths(uidmap2)
+        view2 = {"v": 1, "device": "A", "updated_at": 1.0,
+                 "sessions": [{"k": uid2, "sec": 100, "start": 1.0}],
+                 "days": {"2026-11-10": {"n": 1, "sec": 100, "chars": 5}},
+                 "books": {uid2: {"k": uid2, "title": "跨越边界的社区", "sec": 100}}}
+        loc = se.stats_to_local(view2, uidmap2, paths2)
+        check("会话 k 换回本机路径", (loc["sessions"][0]["k"] == p2), loc["sessions"][0]["k"])
+        check("书账 k 也换回本机路径", list(loc["books"].keys()) == [p2], list(loc["books"].keys()))
+        check("本机文件字段没丢（version / days）",
+              loc.get("version") == 1 and "2026-11-10" in (loc.get("days") or {}), list(loc.keys()))
+        check("同步专用字段没混进本机文件",
+              not ({"v", "device", "updated_at"} & set(loc.keys())), list(loc.keys()))
+        ghost = {"v": 1, "sessions": [{"k": "deadbeefdeadbeef", "sec": 5}], "books": {}, "days": {}}
+        loc2 = se.stats_to_local(ghost, uidmap2, paths2)
+        check("别的机器上的书保留 UID（不丢、不瞎编路径）",
+              loc2["sessions"][0]["k"] == "deadbeefdeadbeef", loc2["sessions"][0]["k"])
+    finally:
+        shutil.rmtree(tmp2, ignore_errors=True)
+
+
 def json_eq(a, b):
     import json
     return json.dumps(a, ensure_ascii=False, sort_keys=True) == json.dumps(b, ensure_ascii=False, sort_keys=True)
@@ -260,6 +290,10 @@ def run_e2e():
         check("B 拿到了字号 18", B.config.get("font_size") == 18, B.config.get("font_size"))
         check("B 的账本也到了（1800 秒）", abs(sum(s["sec"] for s in B.stats["sessions"]) - 1800) < 1,
               [s["sec"] for s in B.stats["sessions"]])
+        got_stats = [p["kinds"]["stats"] for p in A.applied if (p.get("kinds") or {}).get("stats")]
+        keys = [s.get("k") for s in (got_stats[-1]["sessions"] if got_stats else [])]
+        check("写回本机的账本 k 是本机路径（不是 16 位 UID）",
+              bool(keys) and all(os.path.normcase(k) == os.path.normcase(book) for k in keys), keys)
 
         section("两台各读一段（不同起点）→ 相加")
         B.read(600, 3000, 1762955000.0)

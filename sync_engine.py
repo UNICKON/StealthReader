@@ -640,6 +640,48 @@ def annotations_to_local(view, uidmap, paths_by_uid, annotations, schema_ok=True
     return out
 
 
+def stats_to_local(view, uidmap, paths_by_uid):
+    """把 UID 形状的账本翻回本机路径。
+
+    账本里会话的身份是 `k`（原本是书的路径）。云端存的是 UID 形状，写回本机时必须换回路径，
+    否则界面按路径分组就一条都对不上——**这一条真踩过**：一次同步之后 9 场会话的 k 全变成了
+    16 位 UID，账本秒数一条没少，但"浙江村"名下一条会话都看不见了。
+
+    本机没有这本书（只存在于别的机器上）时保留 UID：宁可显示得难看，也不能丢数据、不能瞎编路径。
+    """
+    if not isinstance(view, dict):
+        return {}
+
+    def local_key(uid):
+        paths = [p for p in (paths_by_uid.get(uid) or []) if p]
+        for p in paths:
+            if os.path.isfile(p):
+                return p
+        return paths[0] if paths else uid
+
+    sessions = []
+    for s in view.get("sessions") or []:
+        if not isinstance(s, dict):
+            continue
+        row = dict(s)
+        row["k"] = local_key(str(row.get("k") or ""))
+        sessions.append(row)
+    books = {}
+    for key, book in (view.get("books") or {}).items():
+        if not isinstance(book, dict):
+            continue
+        row = dict(book)
+        row["k"] = local_key(str(key or ""))
+        books[row["k"]] = row
+    out = {k: v for k, v in view.items()
+           if k not in ("v", "schema", "device", "updated_at", "rev")}
+    out["sessions"] = sessions
+    out["books"] = books
+    out["days"] = dict(view.get("days") or {})
+    out.setdefault("version", 1)                            # 本机文件有 version，同步形状没有
+    return out
+
+
 def settings_to_local(view, config):
     out = {}
     for key, val in (view.get("values") or {}).items():
@@ -1056,7 +1098,7 @@ class SyncWorker(threading.Thread):
                           for kind2 in ("highlights", "bookmarks")}
                     for uid, row in (merged.get("books") or {}).items()}
             elif kind == "stats":
-                out["kinds"]["stats"] = merged
+                out["kinds"]["stats"] = stats_to_local(merged, uidmap, paths_by_uid)
             elif kind == "settings":
                 out["kinds"]["settings"] = settings_to_local(merged, config)
                 self.state["settings_clock"] = dict(merged.get("clock") or {}) if isinstance(merged, dict) else {}
