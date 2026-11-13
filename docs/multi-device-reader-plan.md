@@ -143,7 +143,9 @@ POST /v1/login                     token → Set-Cookie（HttpOnly, Secure, Same
 **三期（划线 + PWA + 手机传书）**
 1. overlayer 划线与书签（只增不删的定点修改 + 现有墓碑语义）；
 2. Service Worker 缓存壳和最近 3 本；
-3. 网页端直接传书（Worker 转 R2）。
+3. ~~网页端直接传书（Worker 转 R2）~~ → **已做**（设计 §27.4）：书架「上传书籍」，
+   `POST /v1/blob/check` + `PUT /v1/blob/<sha256>`，第一次打开时网页自己数总字数并补
+   `/v1/lite/<uid>/index.json`。
 
 ## 10. 风险与要先验的
 
@@ -162,3 +164,12 @@ POST /v1/login                     token → Set-Cookie（HttpOnly, Secure, Same
 3. **入口**：同域 `sync.noteklip.org/r/`（省 CORS 和证书）。
 
 三件都按默认走的话，一期可以直接开工。
+
+## 12. 用下来补的四件事（以设计 §27 为准）
+
+1. **回书架点不动**——`#back` 里 `await` 网络推送，一断网就抛异常、界面不切。改成 `goShelf()`
+   先切界面、推送 `.catch()` 后台跑。
+2. **沉浸**——底栏从占位改成浮层（正文上下边距一样，显隐不重排），进书 3.2 秒自动收起，
+   鼠标到底部/按键/点屏幕底部 84px 叫回来。
+3. **统计入口**——书架右上角「统计」，读 `/v1/state/stats` 展示今天/累计/最近 7 天/每本书。
+4. **网页传书**——见上面三期第 3 条。

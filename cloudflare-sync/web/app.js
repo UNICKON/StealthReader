@@ -125,7 +125,8 @@ async function loadShelf() {
   const list = $('#books')
   list.textContent = ''
   $('#shelf-meta').textContent = `${S.books.length} 本`
-  $('#shelf-note').textContent = S.books.length ? '' : '云端还没有书：桌面端「设置 → 云端同步」里传一本上来'
+  $('#shelf-note').textContent = S.books.length ? ''
+    : '云端还没有书：点右上角「上传书籍」，或者从桌面端「设置 → 云端同步」传一本上来'
   for (const b of S.books) {
     const li = document.createElement('li')
     li.className = 'book'
@@ -177,6 +178,7 @@ async function openBook(book) {
   }
   applyStyles()
   applyLayout()
+  barsShow(3200)                      // 刚打开时让人看见底栏，之后自己收起来
   statOpen(book, S.pos)               // 从这一本开始记阅读统计
   claimTab()                          // 这一页在读了，别让别的标签也记
 
@@ -196,6 +198,7 @@ async function openBook(book) {
   }
   renderTOC()
   $('#pos').textContent = S.total ? `0%  ·  0 / ${fmt(S.total)} 字` : '—'
+  if (!S.total) ensureTotal(book).catch(() => {})   // 网页自己传上来的书：没人给它算总字数
 }
 
 /* ── 位置：字符偏移 ↔ 进度 ─────────────────────────────── */
@@ -497,14 +500,21 @@ $('#tools').addEventListener('click', (e) => {
 })
 
 $('#open-tools').addEventListener('click', () => { $('#tools').hidden = !$('#tools').hidden })
-$('#back').addEventListener('click', async () => {
-  await pushProgress(true)
-  await flushStats(false).catch(() => {})
+
+/** 回书架：先把界面切过去，再去推网络。
+ *  以前是"await 推完才切"，网一抖（401/超时/412）就什么都不发生，看着像按钮坏了。 */
+function goShelf() {
   $('#tools').hidden = true
   $('#toc-panel').hidden = true
-  await loadShelf()
+  document.body.classList.remove('bare')
+  try { statCommit() } catch (e) { /* 统计收不了场也不该拦着人走 */ }
   show('shelf-pane')
-})
+  loadShelf().catch(() => {})
+  pushProgress(true).catch(() => {})
+  flushStats(false).catch(() => {})
+}
+
+$('#back').addEventListener('click', goShelf)
 
 /* ── 目录 ─────────────────────────────────────────────── */
 
@@ -568,9 +578,11 @@ function onWheel(e) {
   turn(d > 0 ? 1 : -1)
 }
 
-/** 点左三分之一往回、点右三分之一往前（滚动模式下点哪儿都不翻页） */
+/** 点左三分之一往回、点右三分之一往前（滚动模式下点哪儿都不翻页）。
+ *  最底下那一条留给"叫出底栏"，不拿来翻页——否则想点「书架」先翻过去一页。 */
 function onTapTurn(e) {
   if (document.body.dataset.pane !== 'reader-pane') return
+  if (e.clientY > window.innerHeight - 84) { barsShow(); return }
   if (S.flow === 'scrolled') return
   if (e.target && e.target.closest && e.target.closest('a[href]')) return
   const w = window.innerWidth
@@ -578,6 +590,36 @@ function onTapTurn(e) {
   if (x < w * 0.3) return turn(-1)
   if (x > w * 0.7) return turn(1)
 }
+
+/* ── 沉浸：底栏平时收起来 ───────────────────────────────
+   鼠标挪到底部、按任意键、点屏幕最下面一条，底栏浮出来，2.6 秒没动静再收回去。
+   栏是浮层、不占正文高度，所以叫出来和收回去都不会让正文重排（重排会跳页）。 */
+
+let barsTimer = 0
+function barsShow(ms = 2600) {
+  document.body.classList.remove('bare')
+  clearTimeout(barsTimer)
+  barsTimer = setTimeout(() => {
+    if (document.body.dataset.pane === 'reader-pane') document.body.classList.add('bare')
+  }, ms)
+}
+function barsHide() {
+  clearTimeout(barsTimer)
+  document.body.classList.add('bare')
+}
+function barsToggle() {
+  if (document.body.classList.contains('bare')) barsShow()
+  else barsHide()
+}
+document.addEventListener('mousemove', (e) => {
+  if (document.body.dataset.pane !== 'reader-pane') return
+  if (e.clientY > window.innerHeight - 110) barsShow()
+})
+document.addEventListener('touchstart', (e) => {
+  if (document.body.dataset.pane !== 'reader-pane') return
+  const t = (e.touches && e.touches[0]) || null
+  if (t && t.clientY > window.innerHeight - 110) barsShow()
+}, { passive: true })
 
 // 书的内容在 iframe 里，滚轮/点击到不了外层：挂到每一篇加载出来的 doc 上
 const hookedDocs = new WeakSet()
@@ -601,7 +643,13 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'ArrowUp') { e.preventDefault(); if (!scrollOnly(-screen() * 0.3)) turn(-1) }
   else if (k === 'PageDown' || k === ' ') { e.preventDefault(); if (!scrollOnly(screen())) turn(1) }
   else if (k === 'PageUp') { e.preventDefault(); if (!scrollOnly(-screen())) turn(-1) }
-  else if (k === 'Escape') { $('#tools').hidden = true; $('#toc-panel').hidden = true }
+  else if (k === 'Escape') {
+    const open = !$('#tools').hidden || !$('#toc-panel').hidden
+    if (open) { $('#tools').hidden = true; $('#toc-panel').hidden = true }
+    else barsToggle()                 // 没开面板时：叫出/收起底栏
+    return
+  }
+  if (document.body.classList.contains('bare')) barsShow(2000)
 })
 
 $('#view-wrap').addEventListener('click', onTapTurn)
@@ -765,6 +813,7 @@ async function pushStats(keepalive) {
       seen.add(id)
     }
     const body = {
+      ...remote,                     // 云端还有别的键（version/schema…）原样带回去，别一推就掉
       v: Math.max(Number(remote.v) || 1, 1),
       updated_at: ts(),
       device: DEVICE,
@@ -845,6 +894,223 @@ window.addEventListener('pageshow', (e) => {
 })
 window.addEventListener('pagehide', flushProgress)
 window.addEventListener('beforeunload', flushProgress)
+
+/* ── 网页自己传上来的书：把总字数补上 ─────────────────────
+   桌面端传书时顺手算好了章节表和总字数（/v1/lite/<uid>/index.json）；
+   从网页传的书没人算过，第一次打开时自己数一遍：按 spine 逐篇取 textContent 的长度，
+   加起来就是 total，同时把每一章的字偏移记下来（和桌面端那份 index 同一个形状）。 */
+
+async function ensureTotal(book) {
+  const sections = (S.view && S.view.book && S.view.book.sections) || []
+  if (!sections.length) return
+  // 几千篇的书（连载合集）逐篇解析太慢：只按压缩前的字节数粗估，够用了
+  const many = sections.length > 400
+  let total = 0
+  const out = []
+  for (let i = 0; i < sections.length; i += 1) {
+    const s = sections[i]
+    let n = 0
+    if (many) {
+      n = Math.round((Number(s.size) || 0) / 3)
+    } else {
+      try {
+        const doc = await s.createDocument()
+        n = String((doc && doc.body && doc.body.textContent) || '').replace(/\s+/g, '').length
+      } catch (e) {
+        n = Math.round((Number(s.size) || 0) / 3)      // 解不开就按"一个汉字三字节"粗估
+      }
+    }
+    out.push({ title: '', start: total, level: 1 })
+    total += n
+  }
+  if (!(total > 0)) return
+  S.total = total
+  S.dirty = true
+
+  const payload = { schema: 1, v: 1, uid: book.uid, total, sections: out, generated_at: ts() }
+  await req(`/v1/lite/${book.uid}/index.json`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch(() => null)
+  pushProgress(true).catch(() => {})                // 顺手把 total/书名写进进度文档
+  if (document.body.dataset.pane === 'reader-pane' && S.book && S.book.uid === book.uid) {
+    $('#pos').textContent = `${Math.round(clamp(S.pos / total, 0, 1) * 100)}%  ·  `
+      + `${fmt(S.pos)} / ${fmt(total)} 字`
+  }
+}
+
+/* ── 阅读统计页：能看到数就行，不做花活 ────────────────────
+   数据就是云端账本（/v1/state/stats）：days 是每日小计，books 是每本书的累计。
+   网页只往里加会话，日账/书账是桌面端合并时重算的，所以这里显示的是"所有设备合起来"。 */
+
+function statRow(name, sec, chars, max) {
+  const row = document.createElement('div')
+  row.className = 's-row'
+  const a = document.createElement('span')
+  a.className = 's-name'
+  a.textContent = name
+  const bar = document.createElement('span')
+  bar.className = 's-bar'
+  const fill = document.createElement('i')
+  fill.style.width = (max > 0 ? Math.max(2, Math.round((sec / max) * 100)) : 0) + '%'
+  bar.appendChild(fill)
+  const val = document.createElement('span')
+  val.className = 's-val'
+  val.textContent = `${Math.max(1, Math.round(sec / 60))} 分 · ${fmt(chars)} 字`
+  row.append(a, bar, val)
+  return row
+}
+
+async function openStats() {
+  $('#stats-body').textContent = ''
+  $('#stats-note').textContent = '读取中…'
+  $('#shelf-pane').hidden = true
+  $('#stats-pane').hidden = false
+  document.body.dataset.pane = 'stats-pane'
+  const got = await getJSON('/v1/state/stats').catch(() => null)
+  const doc = (got && got.body) || {}
+  const days = (doc.days && typeof doc.days === 'object') ? doc.days : {}
+  const books = (doc.books && typeof doc.books === 'object') ? doc.books : {}
+  const body = $('#stats-body')
+  body.textContent = ''
+
+  // 今天 / 累计
+  const today = days[dayKey()] || {}
+  const totalSec = Object.values(days).reduce((a, d) => a + (Number(d && d.sec) || 0), 0)
+  const totalChars = Object.values(days).reduce((a, d) => a + (Number(d && d.chars) || 0), 0)
+  const big = document.createElement('div')
+  big.className = 's-big'
+  const b1 = document.createElement('b')
+  b1.textContent = `${Math.max(0, Math.round((Number(today.sec) || 0) / 60))} 分钟`
+  const s1 = document.createElement('span')
+  s1.textContent = `今天 · ${fmt(today.chars)} 字`
+  big.append(b1, s1)
+  body.appendChild(big)
+
+  const sum = document.createElement('div')
+  sum.className = 's-empty'
+  const dayN = Object.keys(days).length
+  sum.textContent = dayN
+    ? `一共读了 ${dayN} 天 · ${Math.round(totalSec / 60)} 分钟 · ${fmt(totalChars)} 字`
+    : '账本还是空的：读满一分钟就会记上'
+  body.appendChild(sum)
+
+  // 最近 7 天
+  const keys = Object.keys(days).sort().slice(-7)
+  if (keys.length) {
+    const h = document.createElement('div')
+    h.className = 's-sec'
+    h.textContent = '最近几天'
+    body.appendChild(h)
+    const maxSec = keys.reduce((a, k) => Math.max(a, Number((days[k] || {}).sec) || 0), 0)
+    for (const k of keys.slice().reverse()) {
+      const d = days[k] || {}
+      body.appendChild(statRow(k.slice(5), Number(d.sec) || 0, Number(d.chars) || 0, maxSec))
+    }
+  }
+
+  // 每本书（按时间排，只列前 12 本）
+  const rows = Object.entries(books)
+    .map(([uid, b]) => ({ uid, ...(b || {}) }))
+    .filter((b) => Number(b.sec) > 0)
+    .sort((a, b) => (Number(b.sec) || 0) - (Number(a.sec) || 0))
+  if (rows.length) {
+    const h = document.createElement('div')
+    h.className = 's-sec'
+    h.textContent = '每本书'
+    body.appendChild(h)
+    const maxSec = Number(rows[0].sec) || 0
+    for (const r of rows.slice(0, 12)) {
+      const row = document.createElement('div')
+      row.className = 's-book'
+      const t = document.createElement('span')
+      t.className = 's-title'
+      const titles = S.books.find((x) => x.uid === r.uid)
+      t.textContent = r.title || (titles && titles.title) || r.uid
+      const v = document.createElement('span')
+      v.className = 's-val'
+      v.textContent = `${Math.round((Number(r.sec) || 0) / 60)} 分 · ${fmt(r.chars)} 字`
+      const bar = document.createElement('span')
+      bar.className = 's-bar'
+      const fill = document.createElement('i')
+      fill.style.width = (maxSec > 0 ? Math.max(2, Math.round((Number(r.sec) / maxSec) * 100)) : 0) + '%'
+      bar.appendChild(fill)
+      row.append(t, v, bar)
+      body.appendChild(row)
+    }
+  }
+  $('#stats-note').textContent = doc.updated_at
+    ? '更新于 ' + new Date(Number(doc.updated_at) * 1000).toLocaleString('zh-CN')
+    : ''
+}
+
+$('#stats-btn').addEventListener('click', () => { openStats().catch(() => {}) })
+$('#stats-close').addEventListener('click', () => {
+  $('#stats-pane').hidden = true
+  show('shelf-pane')
+  loadShelf().catch(() => {})
+})
+
+/* ── 上传书籍：内容寻址，服务器上有就跳过 ────────────────
+   和桌面端走同一套接口：POST /v1/blob/check 问缺哪些 → PUT /v1/blob/<sha256> 传字节。
+   文件名放 X-File-Name（百分号编码，Worker 会解），书架上就显示原名。
+   传完刷新书架；第一次打开时 ensureTotal 再补总字数。 */
+
+const BLOB_CT = {
+  '.epub': 'application/epub+zip', '.mobi': 'application/x-mobipocket-ebook',
+  '.azw3': 'application/vnd.amazon.ebook', '.fb2': 'application/x-fictionbook+xml',
+  '.cbz': 'application/vnd.comicbook+zip',
+}
+
+async function sha256Hex(buf) {
+  const dig = await crypto.subtle.digest('SHA-256', buf)
+  return Array.from(new Uint8Array(dig)).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function uploadOne(file) {
+  const buf = await file.arrayBuffer()
+  const sha = await sha256Hex(buf)
+  const ext = (file.name.match(/\.[^.]+$/) || [''])[0].toLowerCase()
+  const ct = BLOB_CT[ext] || 'application/octet-stream'
+  const check = await req('/v1/blob/check', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sha256: [sha] }),
+  })
+  const info = check.ok ? await check.json().catch(() => ({})) : {}
+  if (Array.isArray(info.missing) && info.missing.includes(sha)) {
+    const put = await req(`/v1/blob/${sha}`, {
+      method: 'PUT',
+      headers: { 'content-type': ct, 'x-file-name': encodeURIComponent(file.name) },
+      body: buf,
+    })
+    if (!put.ok) throw new Error(`上传失败（${put.status}）`)
+  }
+  return sha
+}
+
+$('#upload-btn').addEventListener('click', () => $('#file').click())
+$('#file').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || [])
+  e.target.value = ''
+  if (!files.length) return
+  let ok = 0
+  const failed = []
+  for (let i = 0; i < files.length; i += 1) {
+    try {
+      toast(`正在上传 ${i + 1}/${files.length}：${files[i].name}`, 20000)
+      await uploadOne(files[i])
+      ok += 1
+    } catch (err) {
+      failed.push(`${files[i].name}（${err.message || err}）`)
+    }
+    toast(`正在上传 ${i + 1}/${files.length}：${files[i].name}`, 20000)
+  }
+  await loadShelf().catch(() => {})
+  if (failed.length) toast(`传了 ${ok} 本，失败：${failed.join('；')}`, 6000)
+  else toast(`传上去了 ${ok} 本`, 4000)
+})
 
 /* ── 起 ─────────────────────────────────────────────── */
 

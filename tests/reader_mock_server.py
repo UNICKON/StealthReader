@@ -19,7 +19,10 @@ WEB = os.path.join(SR, "cloudflare-sync", "web")
 COOKIE = "srtoken=demo-token"
 STATE = {}
 FAIL_STATS_PUT = False        # 探针用：把账本的 PUT 打成 500，看前端会不会丢数据
+DROP_PROGRESS_PUT = False     # 探针用：进度 PUT 直接断连（模拟断网），看"回书架"会不会被卡住
 BOOK = {"sha": "", "name": "测试书.epub", "bytes": b"", "uid": "", "total": 60000}
+BLOBS = {}                    # sha → {bytes, name}：网页"上传书籍"传上来的都放这儿
+LITE = {}                     # uid → 章节表（网页自己算的那份）
 REQUESTS = []
 
 
@@ -49,6 +52,11 @@ def load_book():
     BOOK["sha"] = hashlib.sha256(data).hexdigest()
     BOOK["uid"] = BOOK["sha"][:16]
     BOOK["name"] = os.path.basename(best[1])
+    BLOBS[BOOK["sha"]] = {"bytes": data, "name": BOOK["name"]}
+    # 桌面端给这本书算过的章节表：网页打开时读它（没有的书要 404，才会走"自己数一遍"）
+    LITE[BOOK["uid"]] = {"schema": 1, "uid": BOOK["uid"], "total": BOOK["total"],
+                         "sections": [{"title": "第一章", "start": 0, "level": 1},
+                                      {"title": "第二章", "start": BOOK["total"] // 2, "level": 1}]}
     print("素材：%s（%.1f MB, uid=%s）" % (BOOK["name"], len(data) / 1048576.0, BOOK["uid"]))
 
 
@@ -66,11 +74,15 @@ def settings_doc():
 
 def stats_doc():
     """账本：今天已经有一场（桌面端记的），网页这边只往里加自己的会话。"""
-    return STATE.get("stats") or {"v": 1, "updated_at": 0, "device": "mock",
-                                  "sessions": [],
-                                  "days": {time.strftime("%Y-%m-%d"):
-                                           {"n": 3, "sec": 2385.0, "chars": 15724.0}},
-                                  "books": {}}
+    today = time.strftime("%Y-%m-%d")
+    return STATE.get("stats") or {
+        "v": 1, "updated_at": 0, "device": "mock", "sessions": [],
+        "days": {today: {"n": 3, "sec": 2385.0, "chars": 15724.0}},
+        # 书账：桌面端合并时按会话重算出来的，网页只读
+        "books": {BOOK["uid"]: {"title": BOOK["name"], "sec": 1800.0, "chars": 12000.0, "n": 2,
+                                "first": 0, "last": 0,
+                                "days": {today: {"sec": 1800.0, "chars": 12000.0, "n": 2}}}},
+    }
 
 
 class QuietServer(ThreadingHTTPServer):
@@ -121,12 +133,20 @@ class H(BaseHTTPRequestHandler):
         if not self.authed():
             return self.js(401, {"ok": False})
         if path == "/v1/shelf":
-            row = {k: BOOK[k] for k in ("sha", "name", "uid", "total")}
-            pos = ((progress_doc().get("books") or {}).get(BOOK["uid"]) or {})
-            row.update({"size": len(BOOK["bytes"]), "title": pos.get("title") or BOOK["name"],
-                        "pos": pos.get("pos") or 0, "total": pos.get("total") or BOOK["total"],
-                        "at": pos.get("at") or 0, "dev": pos.get("dev") or "", "hidden": False})
-            return self.js(200, {"ok": True, "books": [row]})
+            rows = (progress_doc().get("books") or {})
+            books = []
+            for sha, blob in sorted(BLOBS.items()):
+                uid = sha[:16]
+                pos = rows.get(uid) or {}
+                books.append({
+                    "sha": sha, "uid": uid, "name": blob.get("name") or "",
+                    "size": len(blob.get("bytes") or b""),
+                    "title": pos.get("title") or blob.get("name") or uid,
+                    "pos": pos.get("pos") or 0,
+                    "total": pos.get("total") or (BOOK["total"] if sha == BOOK["sha"] else 0),
+                    "at": pos.get("at") or 0, "dev": pos.get("dev") or "", "hidden": False,
+                })
+            return self.js(200, {"ok": True, "books": books})
         if path.startswith("/v1/state/"):
             kind = path.rsplit("/", 1)[-1]
             if kind not in ("progress", "settings", "annotations", "stats"):
@@ -136,9 +156,11 @@ class H(BaseHTTPRequestHandler):
             raw = json.dumps(doc, ensure_ascii=False).encode("utf-8")
             return self.send(200, raw, extra={"ETag": '"%d"' % len(raw)})
         if path.startswith("/v1/lite/"):
-            return self.js(200, {"schema": 1, "total": BOOK["total"], "uid": BOOK["uid"],
-                                 "sections": [{"title": "第一章", "start": 0, "level": 1},
-                                              {"title": "第二章", "start": BOOK["total"] // 2, "level": 1}]})
+            uid = path.split("/")[3] if len(path.split("/")) > 3 else BOOK["uid"]
+            if uid in LITE:
+                raw = json.dumps(LITE[uid], ensure_ascii=False).encode("utf-8")
+                return self.send(200, raw, extra={"ETag": '"%d"' % len(raw)})
+            return self.js(404, {"ok": False, "err": "not found"})
         if path.startswith("/v1/blob/"):
             return self.blob()
         return self.js(404, {"ok": False, "err": "not found"})
@@ -164,6 +186,9 @@ class H(BaseHTTPRequestHandler):
 
     def blob(self):
         data = BOOK["bytes"]
+        sha = (urllib.parse.urlsplit(self.path).path.rsplit("/", 1)[-1] or "").lower()
+        if sha in BLOBS:
+            data = BLOBS[sha]["bytes"]
         rng = (self.headers.get("Range") or "").strip()
         if not rng:
             return self.send(200, data, "application/epub+zip", {"Accept-Ranges": "bytes"})
@@ -200,6 +225,17 @@ class H(BaseHTTPRequestHandler):
             return self.js(200, {"ok": True}, {"Set-Cookie": COOKIE + "; Path=/; HttpOnly; SameSite=Lax"})
         if path == "/v1/logout":
             return self.js(200, {"ok": True}, {"Set-Cookie": "srtoken=; Path=/; Max-Age=0"})
+        if path == "/v1/blob/check":
+            if not self.authed():
+                return self.js(401, {"ok": False})
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return self.js(400, {"ok": False})
+            want = [str(s).lower() for s in (payload.get("sha256") or [])]
+            missing = [s for s in want if s not in BLOBS]
+            sizes = {s: len(BLOBS[s]["bytes"]) for s in want if s in BLOBS}
+            return self.js(200, {"ok": True, "missing": missing, "sizes": sizes})
         return self.js(404, {"ok": False})
 
     def do_PUT(self):
@@ -208,8 +244,26 @@ class H(BaseHTTPRequestHandler):
         REQUESTS.append(("PUT", path))
         if not self.authed():
             return self.js(401, {"ok": False})
+        if path.startswith("/v1/blob/"):
+            sha = (path.rsplit("/", 1)[-1] or "").lower()
+            if len(sha) != 64:
+                return self.js(400, {"ok": False})
+            name = self.headers.get("x-file-name") or ""
+            try:
+                name = urllib.parse.unquote(name)
+            except Exception:
+                pass
+            existed = sha in BLOBS
+            if not existed or not (BLOBS[sha].get("name")):
+                BLOBS[sha] = {"bytes": raw, "name": name or (BLOBS.get(sha) or {}).get("name") or ""}
+            return self.js(200, {"ok": True, "existed": existed, "size": len(BLOBS[sha]["bytes"]),
+                                 "name": BLOBS[sha]["name"]})
         if path.startswith("/v1/state/"):
             kind = path.rsplit("/", 1)[-1]
+            if kind == "progress" and DROP_PROGRESS_PUT:
+                # 不回任何字节就断：浏览器那边 fetch 直接 reject（跟地铁里断网一模一样）
+                self.close_connection = True
+                return
             if kind == "stats" and FAIL_STATS_PUT:
                 return self.js(500, {"ok": False, "err": "探针在假装推送失败"})
             try:
@@ -220,6 +274,11 @@ class H(BaseHTTPRequestHandler):
             raw2 = json.dumps(doc, ensure_ascii=False).encode("utf-8")
             return self.js(200, {"ok": True, "rev": "r%d" % len(raw2)}, {"ETag": '"%d"' % len(raw2)})
         if path.startswith("/v1/lite/"):
+            uid = path.split("/")[3] if len(path.split("/")) > 3 else BOOK["uid"]
+            try:
+                LITE[uid] = json.loads(raw.decode("utf-8"))
+            except Exception:
+                return self.js(400, {"ok": False})
             return self.js(200, {"ok": True, "size": len(raw)})
         return self.js(404, {"ok": False})
 

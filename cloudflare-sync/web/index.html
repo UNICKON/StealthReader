@@ -24,11 +24,26 @@
   <header class="bar">
     <h1>书架</h1>
     <span id="shelf-meta" class="meta"></span>
-    <button id="logout" class="ghost" type="button">退出</button>
+    <span class="bar-actions">
+      <button id="upload-btn" class="ghost" type="button">上传书籍</button>
+      <button id="stats-btn" class="ghost" type="button">统计</button>
+      <button id="logout" class="ghost" type="button">退出</button>
+    </span>
   </header>
+  <!-- 只收阅读页真能打开的格式（foliate-js 没有 PDF，传上去也是打不开的一行） -->
+  <input id="file" type="file" accept=".epub,.mobi,.azw3,.fb2,.cbz,application/epub+zip" multiple hidden>
   <p id="shelf-stats" class="meta stats"></p>
   <ul id="books" class="books"></ul>
   <p id="shelf-note" class="meta note"></p>
+</section>
+
+<section id="stats-pane" class="pane overlay" hidden>
+  <header class="bar">
+    <h1>阅读统计</h1>
+    <span id="stats-note" class="meta"></span>
+    <span class="bar-actions"><button id="stats-close" class="ghost" type="button">×</button></span>
+  </header>
+  <div id="stats-body" class="stats-body"></div>
 </section>
 
 <section id="reader-pane" class="pane reader" hidden>

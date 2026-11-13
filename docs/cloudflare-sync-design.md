@@ -937,3 +937,109 @@ CSP 的 `font-src` 只放 `'self' data: blob:`，真要塞个中文字体进来�
 
 线上版本：`7d21117e`（三个文件）→ `dba73f5f`（补 `visibilitychange`）→ `047d23f1`（补落盘队列、
 `pageshow`、多标签互斥）。
+
+
+## 27. 阅读页补四件事：能传书、有统计页、回得去、读得进去
+
+用下来暴露的是四个具体问题，都在 `cloudflare-sync/web/` 里改：
+
+| 问题 | 原因 | 改法 |
+| --- | --- | --- |
+| 阅读页「← 书架」点不动 | `#back` 是 `await pushProgress(true)` → `await flushStats()` → 才切界面。进度 PUT 一断网就抛异常，整个函数终止，界面纹丝不动 | 抽出 `goShelf()`：**先切界面**，网络推送全部改成 `.catch()` 的后台动作 |
+| 读书时底栏一直占着 | `.hud` 常驻 + `#view-wrap` 留了 64px 底边距 | 底栏改成浮层，进阅读页 3.2 秒后自动收起（`body.bare`），正文吃满整屏 |
+| 没有看统计的入口 | 只有书架顶上一行"今天 N 分钟" | 书架右上角加「统计」，`#stats-pane` 里放今天/累计/最近几天/每本书 |
+| 网页不能自己传书 | 传书只有桌面端「设置 → 云端同步」 | 书架右上角加「上传书籍」，走 `POST /v1/blob/check` + `PUT /v1/blob/<sha256>` |
+
+### 27.1 「← 书架」为什么点不动（这是真 bug）
+
+老代码：
+
+```js
+$('#back').addEventListener('click', async () => {
+  await pushProgress(true)          // ← 断网/401 就在这里抛出去
+  await flushStats(false).catch(() => {})
+  await loadShelf()                 // ← 这里也可能抛
+  show('shelf-pane')                // ← 永远走不到
+})
+```
+
+`pushProgress` 里的 `req()` 在 401 时 `throw new Error('unauthorized')`，`fetch` 本身在断网时
+抛 `TypeError`；`pushProgress` 自己是**不**吞异常的（它是给定时器用的，吞了就没法判断成败）。
+于是只要网络有那么一次不顺，点「书架」的表现就是"什么都没发生"——不是按钮坏了，是异常把
+导航那行代码挡在后面了。假后端能复现：`DROP_PROGRESS_PUT = True` 让进度 PUT 直接断连，
+老代码下书架永远不出现。
+
+现在的写法是"界面先行"：
+
+```js
+function goShelf() {
+  ...面板收起、statCommit()...
+  show('shelf-pane')                            // 先切
+  loadShelf().catch(() => {})
+  pushProgress(true).catch(() => {})            // 推不上去也不拦人
+  flushStats(false).catch(() => {})
+}
+```
+
+顺带的好处：回书架是**立刻**的（探针里 0.00 秒），不用等一趟 HTTP。
+
+### 27.2 沉浸：底栏是浮层，会自动收起来
+
+- 底栏 `.hud` 从"占位"改成"浮层"：`#view-wrap` 的 `padding-bottom: 64px` 删掉，正文上下
+  边距一样（探针实测 `11px|11px`）。这点很重要——栏的显隐**不能引起正文重排**，否则每收一次
+  栏，分页就重算一次，页码会跳。
+- 进阅读页 `barsShow(3200)`：先让人看见"怎么回去"，3.2 秒后加 `body.bare`，`.hud` 位移 130%
+  + `opacity: 0` + `pointer-events: none`（收起来就真的点不到，不会误触）。
+- 叫回来的三种方式：鼠标挪到底部 110px 内、按任意键、点屏幕最下面 84px 一条。前两种是桌面，
+  第三种是手机（`touchstart`）；`onTapTurn` 里那一条"底部 84px 不翻页"就是为了让位给它，
+  否则想点「书架」会先翻过去一页。
+- `Esc`：有面板开着就关面板，没面板开着就切底栏显隐。
+
+### 27.3 统计页：直接读云端账本
+
+`openStats()` GET `/v1/state/stats`，渲染四块：今天（分钟）、累计（天数/分钟/字数）、最近 7 天
+（逐日条）、每本书（前 12 本，带书名）。数据口径不用网页自己算——`days`/`books` 是桌面端
+`consolidate` 重算出来的，所以显示的就是"所有设备合起来"的数。
+
+一个顺手修掉的小坑：`pushStats` 原来把整个账本对象**重建**成 `{v, updated_at, device, sessions,
+days, books}`，线上那份里还有 `version` 这种它不认识的键，一推就掉了。改成 `{...remote, ...}`，
+不认识的键原样带回去。
+
+### 27.4 网页传书：内容寻址，跟桌面端同一套接口
+
+```
+POST /v1/blob/check  {sha256: [sha]}        → {missing: [...], sizes: {...}}
+PUT  /v1/blob/<sha256>  X-File-Name: <百分号编码的文件名>  body: 字节
+```
+
+sha256 在浏览器里用 `crypto.subtle.digest` 算，`uid = sha[:16]`。服务端已有就跳过上传（探针里
+同一本传两次，书架行数不变）——这也是桌面端那条"永不删除远端、只补不改"的路子。
+
+**总字数怎么办**：桌面端传书时顺手算了章节表（`/v1/lite/<uid>/index.json`：`total` + 每章
+起始字偏移）。网页传的书没人算过，所以第一次打开时 `ensureTotal()` 自己数一遍——按 spine 逐篇
+`createDocument()` 取 `textContent`，去掉空白后的长度累加，把 `total` 和每章起点写回
+`/v1/lite/<uid>/index.json`，再 `pushProgress(true)` 把 `total` 和书名写进进度文档（书架上的
+"读 12%"就是拿它算的）。篇数 > 400 的超大合集不逐篇解析，按"三个字节一个字"粗估，避免开一本书
+卡十几秒。
+
+**为什么不用 `sections[i].size` 当总字数**：那是 zip 里 XHTML 的**解压后字节数**，不是字数
+（foliate 只拿它当分页权重）。真按字节当字数显示，中文会虚高三倍。
+
+能传的格式对齐阅读页真能打开的：`.epub/.mobi/.azw3/.fb2/.cbz`。PDF 收不了——`vendor` 里没有
+pdf.js，传上去只是书架上一行打不开的书。
+
+### 27.5 这一轮的探针
+
+| 探针 | 结果 |
+| --- | --- |
+| `tests/probe_web_upload_stats.py` | **28 / 28**（新文件：①沉浸——刚打开看得见底栏、3.4 秒后 `body.bare`、收起时 `pointer-events:none`、上下边距一样、鼠标到底部又浮出来且能点；②断网时点「书架」0.00 秒就回去了；③统计页有「统计」入口、今天的数对得上（2385 秒 → 40 分钟）、逐日行 1 行、每本书行带书名、× 能关；④上传——书架多一本、假后端按 sha 收到、原名对、打开后自己算出 2,535 字并传上章节表（3 篇）、进度文档记上 total、同一本再传不多行） |
+| `tests/probe_reader_ui.py` | 45 / 45（mock 改了书架/章节表返回，回归没破） |
+| `tests/probe_web_stats.py` | 27 / 27 |
+| `tests/check_web_assets.py` | **30 / 30**（新增标记：`function goShelf` 且不含 `await pushProgress(true)`、`barsShow`/`body.bare`、`/v1/blob/check` + `PUT /v1/blob/`、`ensureTotal` + `/v1/lite/`、`openStats`、`body.bare .hud`、`.s-row`/`.s-book`、`#upload-btn`/`#stats-btn`、`#stats-pane`、`#file`） |
+
+线上版本：`ab810165`（三个文件）。
+
+假后端为了这几条也加了东西（`tests/reader_mock_server.py`）：`BLOBS`/`LITE` 两个内存表、
+`POST /v1/blob/check`、`PUT /v1/blob/<sha>`、`PUT /v1/lite/<uid>/index.json`、书架按 `BLOBS`
+列书、未知书的章节表返回 404（否则"网页自己数总字数"这条路根本走不到）、`DROP_PROGRESS_PUT`
+用来复现断网、账本里补了一条书账。
