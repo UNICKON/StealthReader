@@ -113,7 +113,23 @@ def write_json_atomic(path, data, keep_bak=2):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+    # Windows 上 os.replace 偶尔被"别人正好开着这个文件"（杀软/索引/探针）挡一下，
+    # 重试几次基本就过去了；真不行就直接写——宁可少一层原子性，也别把缓存丢了
+    # （缓存丢了下一轮就会把没变的 kind 全下载一遍）。
+    for attempt in range(6):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 5:
+                break
+            time.sleep(0.05 * (attempt + 1))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
 
 
 class FileLock:
@@ -972,6 +988,16 @@ class SyncClient:
         rows = data.get("blobs")
         return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
 
+    def put_lite_index(self, uid, payload):
+        """章节偏移表：阅读页拿它把"第几个字"换成"跳到哪一章"。派生数据，随便覆盖。"""
+        body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        status, _hdrs, raw = self._request(
+            "PUT", "/v1/lite/%s/index.json" % uid, body,
+            {"Content-Type": "application/json; charset=utf-8"})
+        if status not in (200, 201):
+            raise SyncError("HTTP %s 传章节表失败 %s" % (status, raw[:120]))
+        return len(body)
+
     def blob_get(self, sha, dest):
         status, hdrs, raw = self._request("GET", "/v1/blob/" + sha)
         if status == 404:
@@ -995,7 +1021,7 @@ class SyncWorker(threading.Thread):
     """
 
     def __init__(self, *, base_url, token, device_name, state_path, apply_cb,
-                 log=None, kinds=SYNC_KINDS, books=False, state=None):
+                 log=None, kinds=SYNC_KINDS, books=False, state=None, index_fn=None):
         super().__init__(daemon=True, name="StealthReaderSync")
         self.client = SyncClient(base_url, token)
         self.device_name = device_name or "unknown"
@@ -1004,6 +1030,8 @@ class SyncWorker(threading.Thread):
         self.log = log or (lambda msg: None)
         self.kinds = tuple(kinds or SYNC_KINDS)
         self.books = bool(books)
+        # 章节偏移表的生成器（main.py 传进来：它已经有全文解析，别在引擎里再写一遍）
+        self.index_fn = index_fn
         self.state = state if isinstance(state, dict) else read_json(state_path, {})
         self._q = []
         self._lock = threading.Lock()
@@ -1255,6 +1283,48 @@ class SyncWorker(threading.Thread):
         self.state["settings_values"] = {k: config[k] for k in SYNC_SETTING_KEYS if k in config}
         return clock
 
+    def _sync_book_indexes(self, sha_by_path):
+        """给阅读页（手机/Kindle/网页）用的章节偏移表：一本书一个几 KB 的 JSON。
+
+        只有"书没动过"才跳过；`book_index` 里记 (uid, size, mtime)，改一个字就重算重传。
+        算不出来（坏书/纯图片）就跳过，不因为一本书失败拖垮整轮。
+        """
+        if not self.index_fn:
+            return 0
+        cache = self.state.setdefault("book_index", {})
+        done = 0
+        for path, sha in sorted(sha_by_path.items()):
+            key = os.path.normcase(os.path.abspath(path))
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            row = cache.get(key) or {}
+            if (row.get("uid") == sha[:16] and row.get("size") == st.st_size
+                    and row.get("mtime") == int(st.st_mtime)):
+                continue
+            try:
+                payload = self.index_fn(path)
+            except Exception as e:
+                self.log("章节表算不出来：%s（%s）" % (os.path.basename(path), e))
+                continue
+            if not isinstance(payload, dict) or not _num(payload.get("total")):
+                continue
+            payload = dict(payload)
+            payload["uid"] = sha[:16]
+            payload["schema"] = int(_num(payload.get("schema")) or 1)
+            payload["generated_at"] = _now()
+            try:
+                self.client.put_lite_index(sha[:16], payload)
+            except SyncError as e:
+                self.log("章节表传不上去：%s（%s）" % (os.path.basename(path), e))
+                continue
+            cache[key] = {"uid": sha[:16], "size": st.st_size, "mtime": int(st.st_mtime)}
+            done += 1
+        if done:
+            self.log("章节表：上传 %d 份（阅读页按它定位）" % done)
+        return done
+
     def _sync_books(self, snapshot):
         """书文件：内容寻址，只传"本机有、远端没记过"的，顺带给老对象补原名。永不删除远端。
 
@@ -1289,6 +1359,8 @@ class SyncWorker(threading.Thread):
             result["hashed"] += 1
             sha_by_path[path] = sha
         result["checked"] = len(sha_by_path)
+
+        result["indexed"] = self._sync_book_indexes(sha_by_path)
 
         todo = []
         for path, sha in sha_by_path.items():

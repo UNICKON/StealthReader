@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; frame-src 'self' blob:; base-uri 'none'; form-action 'self'; object-src 'none'">
+<meta name="theme-color" content="#12100e">
+<title>StealthReader · 读</title>
+<link rel="stylesheet" href="/r/style.css">
+</head>
+<body>
+
+<section id="login" class="pane center" hidden>
+  <h1>StealthReader</h1>
+  <p class="hint">粘贴同步 token（桌面端「设置 → 云端同步」里那个）</p>
+  <form id="login-form" autocomplete="on">
+    <input id="token" type="password" placeholder="token" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+    <button type="submit">进去</button>
+  </form>
+  <p id="login-err" class="err"></p>
+</section>
+
+<section id="shelf-pane" class="pane" hidden>
+  <header class="bar">
+    <h1>书架</h1>
+    <span id="shelf-meta" class="meta"></span>
+    <button id="logout" class="ghost" type="button">退出</button>
+  </header>
+  <ul id="books" class="books"></ul>
+  <p id="shelf-note" class="meta note"></p>
+</section>
+
+<section id="reader-pane" class="pane reader" hidden>
+  <div id="view-wrap"><foliate-view id="view"></foliate-view></div>
+
+  <nav id="toc-panel" class="toc" hidden>
+    <div class="toc-head"><b>目录</b><button id="toc-close" class="ghost" type="button">×</button></div>
+    <ol id="toc-list"></ol>
+  </nav>
+
+  <aside id="tools" class="tools" hidden>
+    <div class="row"><span>字号</span><button data-act="font-" type="button">A−</button><b id="v-font">19</b><button data-act="font+" type="button">A+</button></div>
+    <div class="row"><span>行距</span><button data-act="lh-" type="button">−</button><b id="v-lh">1.00</b><button data-act="lh+" type="button">+</button></div>
+    <div class="row"><span>段距</span><button data-act="ps-" type="button">−</button><b id="v-ps">0</b><button data-act="ps+" type="button">+</button></div>
+    <div class="row"><span>页边距</span><button data-act="mg-" type="button">−</button><b id="v-mg">1.0</b><button data-act="mg+" type="button">+</button></div>
+    <div class="row"><span>首行缩进</span><button data-act="ind-" type="button">−</button><b id="v-ind">2.0</b><button data-act="ind+" type="button">+</button></div>
+    <div class="row"><span>字体</span><button data-act="font-serif" type="button">宋体</button><button data-act="font-sans" type="button">黑体</button></div>
+    <div class="row"><span>配色</span><button data-act="theme-light" type="button">白</button><button data-act="theme-sepia" type="button">米</button><button data-act="theme-dark" type="button">夜</button></div>
+    <p id="tools-note" class="meta note"></p>
+  </aside>
+
+  <div id="hud" class="hud">
+    <button id="back" class="ghost" type="button">← 书架</button>
+    <span id="pos" class="meta">—</span>
+    <button id="toc" class="ghost" type="button">目录</button>
+    <button id="open-tools" class="ghost" type="button">Aa</button>
+  </div>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="/r/app.js"></script>
+</body>
+</html>

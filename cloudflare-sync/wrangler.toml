@@ -17,5 +17,12 @@ bucket_name = "stealthreader-sync"
 # token 不放这里（会被提交）：用 `npx wrangler secret put SYNC_TOKEN`
 TOKEN_TTL_DAYS = "365"
 
+# 阅读页（/r/）的静态文件。之所以 run_worker_first，是为了让 Worker 给 HTML 加
+# CSP（EPUB 里可以带脚本，必须锁 script-src）——直接由 assets 吐就没有这些头了。
+[assets]
+directory = "./web"
+binding = "ASSETS"
+run_worker_first = true
+
 [observability]
 enabled = true

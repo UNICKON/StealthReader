@@ -39,7 +39,33 @@ function makeBucket() {
       return row ? { key, size: row.bytes.length, etag: row.etag, uploaded: row.uploaded,
                      customMetadata: row.customMetadata || {} } : null;
     },
-    async get(key) { return mk(key); },
+    // 支持 Range（阅读页的 zip.js 要靠它）：只回被请求的那一段，并带上 range 元信息
+    async get(key, opts = {}) {
+      const obj = mk(key);
+      if (!obj) return null;
+      const hdr = opts && opts.range;
+      const raw = hdr && typeof hdr.get === "function" ? hdr.get("range") : "";
+      const row = store.get(key);
+      // 真 R2 整份取的时候也会填 range（offset=0, length=size），这里照样模拟——
+      // 否则"不带 Range 却回 206"这类 bug 在本地测不出来
+      if (!raw || !row) return { ...obj, range: { offset: 0, length: obj.size } };
+      const m = /^bytes=(\d*)-(\d*)$/.exec(String(raw).trim());
+      if (!m) return obj;
+      const size = row.bytes.length;
+      let start = m[1] === "" ? null : Number(m[1]);
+      let end = m[2] === "" ? null : Number(m[2]);
+      if (start === null) { start = Math.max(0, size - (end ?? 0)); end = size - 1; }
+      else if (end === null || end >= size) end = size - 1;
+      const length = Math.max(0, end - start + 1);
+      const slice = row.bytes.subarray(start, start + length);
+      return {
+        key, size, etag: row.etag, uploaded: row.uploaded,
+        httpMetadata: row.httpMetadata || {}, customMetadata: row.customMetadata || {},
+        range: { offset: start, length },
+        body: new Blob([slice]).stream(),
+        async arrayBuffer() { return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength); },
+      };
+    },
     async put(key, value, opts = {}) {
       let bytes;
       if (value instanceof ArrayBuffer) bytes = new Uint8Array(value);
@@ -71,7 +97,19 @@ function check(name, cond, extra = "") {
   else { fail++; bad.push(name + (extra ? "  << " + extra : "")); console.log("  FAIL " + name + (extra ? "  << " + extra : "")); }
 }
 
-const env = () => ({ SYNC_TOKEN: TOKEN, BUCKET: makeBucket() });
+/** 假的静态资源：只回一页 HTML，够验"HTML 带上 CSP"这一条。 */
+function makeAssets() {
+  return {
+    async fetch() {
+      return new Response("<!doctype html><title>reader</title><p>shelf</p>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    },
+  };
+}
+
+const env = () => ({ SYNC_TOKEN: TOKEN, BUCKET: makeBucket(), ASSETS: makeAssets() });
 const H = (extra = {}) => ({ Authorization: "Bearer " + TOKEN, ...extra });
 const call = (envObj, path, init = {}) => worker.fetch(new Request("https://sync.test" + path, init), envObj);
 const jcall = async (envObj, path, init = {}) => {
@@ -84,7 +122,13 @@ const jcall = async (envObj, path, init = {}) => {
 // ------------------------------------------------------------ 1. 鉴权
 {
   const e = env();
-  check("根路径不需要 token", (await call(e, "/")).status === 200);
+  const home = await call(e, "/");
+  check("根路径不需要 token（回的是阅读页，不是 JSON）",
+        home.status === 200 && (home.headers.get("content-type") || "").includes("text/html"),
+        home.headers.get("content-type"));
+  check("阅读页 HTML 带 CSP 且锁住 script-src",
+        (home.headers.get("content-security-policy") || "").includes("script-src 'self'"),
+        home.headers.get("content-security-policy"));
   check("没带 token → 401", (await call(e, "/v1/manifest")).status === 401);
   check("token 错了 → 401", (await call(e, "/v1/manifest", { headers: { Authorization: "Bearer nope" } })).status === 401);
   check("token 对了 → 200", (await call(e, "/v1/manifest", { headers: H() })).status === 200);
@@ -201,6 +245,77 @@ const payload = (n) => JSON.stringify({ v: 1, schema: 1, n, books: {} });
         JSON.stringify(evilRow));
 
   check("没带 token 列不出来 → 401", (await call(e, "/v1/blobs")).status === 401);
+}
+
+// ------------------------------------------------------------ 5. 阅读页：登录 Cookie / 书架 / 章节表 / Range
+{
+  const e2 = env();
+  const sha = "c".repeat(64);
+  const uid = sha.slice(0, 16);
+  const bytes = new Uint8Array([10, 20, 30, 40, 50, 60]);
+  await call(e2, "/v1/blob/" + sha, {
+    method: "PUT",
+    headers: H({ "Content-Length": String(bytes.length), "X-File-Name": encodeURIComponent("测试书.epub") }),
+    body: bytes,
+  });
+
+  const bad = await jcall(e2, "/v1/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "nope" }) });
+  check("登录：token 不对 → 401", bad.res.status === 401, bad.res.status);
+  check("登录：错的不会发 Cookie", !bad.res.headers.get("set-cookie"));
+
+  const ok = await jcall(e2, "/v1/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: TOKEN }) });
+  const cookie = ok.res.headers.get("set-cookie") || "";
+  check("登录：对了 → 200 且发 Cookie", ok.res.status === 200 && cookie.includes("srtoken="), cookie);
+  check("Cookie 是 HttpOnly + Secure + SameSite=Lax",
+        /HttpOnly/i.test(cookie) && /Secure/i.test(cookie) && /SameSite=Lax/i.test(cookie), cookie);
+
+  const withCookie = { Cookie: cookie.split(";")[0] };
+  check("只带 Cookie 也能读 manifest", (await call(e2, "/v1/manifest", { headers: withCookie })).status === 200);
+  check("只带 Cookie 也能读 ping", (await call(e2, "/v1/ping", { headers: withCookie })).status === 200);
+  check("错 Cookie → 401", (await call(e2, "/v1/manifest", { headers: { Cookie: "srtoken=wrong" } })).status === 401);
+  check("表单登录也认（Kindle 那条路要用）", (await jcall(e2, "/v1/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "token=" + encodeURIComponent(TOKEN),
+  })).res.status === 200);
+
+  const shelf0 = await jcall(e2, "/v1/shelf", { headers: withCookie });
+  check("书架：200 且只有一本书", shelf0.res.status === 200 && shelf0.body.books.length === 1,
+        JSON.stringify(shelf0.body).slice(0, 160));
+  const row0 = shelf0.body.books[0];
+  check("书架：uid 是 sha 前 16 位", row0.uid === uid, row0.uid);
+  check("书架：带原名和大小", row0.name === "测试书.epub" && row0.size === bytes.length, JSON.stringify(row0));
+  check("书架：没读过时 pos=0、at=0", row0.pos === 0 && row0.at === 0, JSON.stringify(row0));
+
+  const putProg = await jcall(e2, "/v1/state/progress", {
+    method: "PUT",
+    headers: { ...withCookie, "Content-Type": "application/json", "X-Create": "1" },
+    body: JSON.stringify({ v: 1, schema: 1, updated_at: 1, device: "d", books: { [uid]: { title: "测试书", pos: 120, total: 480, at: 1700000000, dev: "d", hidden: false } } }),
+  });
+  check("写一条进度（书架的输入）", putProg.res.status === 200, JSON.stringify(putProg.body));
+  const shelf1 = await jcall(e2, "/v1/shelf", { headers: withCookie });
+  const row1 = shelf1.body.books[0];
+  check("书架：把进度并进来了", row1.pos === 120 && row1.total === 480 && row1.title === "测试书", JSON.stringify(row1));
+
+  const idx = { total: 480, generated_at: 1, schema: 1, sections: [{ title: "一", start: 0, level: 1 }] };
+  const putIdx = await jcall(e2, `/v1/lite/${uid}/index.json`, {
+    method: "PUT", headers: { ...withCookie, "Content-Type": "application/json" }, body: JSON.stringify(idx),
+  });
+  check("章节表：能存", putIdx.res.status === 200 && putIdx.body.size > 0, JSON.stringify(putIdx.body));
+  const getIdx = await call(e2, `/v1/lite/${uid}/index.json`, { headers: withCookie });
+  check("章节表：能取回同样的内容", (await getIdx.json()).total === 480);
+  check("章节表：uid 不合法 → 404", (await call(e2, "/v1/lite/zzz/index.json", { headers: withCookie })).status === 404);
+  check("章节表：没登录 → 401", (await call(e2, `/v1/lite/${uid}/index.json`)).status === 401);
+
+  const part = await call(e2, "/v1/blob/" + sha, { headers: { ...withCookie, Range: "bytes=1-3" } });
+  check("Range：206", part.status === 206, part.status);
+  check("Range：Content-Range 对", part.headers.get("content-range") === `bytes 1-3/${bytes.length}`,
+        part.headers.get("content-range"));
+  const partBytes = Buffer.from(await part.arrayBuffer());
+  check("Range：只回那三个字节", partBytes.length === 3 && partBytes[0] === 20 && partBytes[2] === 40, partBytes.toString());
+  check("Range：响应带 Accept-Ranges", part.headers.get("accept-ranges") === "bytes");
+  const whole = await call(e2, "/v1/blob/" + sha, { headers: withCookie });
+  check("不带 Range 还是 200 + 整份", whole.status === 200 && (await whole.arrayBuffer()).byteLength === bytes.length);
 }
 
 console.log("\n" + pass + " 通过 / " + fail + " 失败");

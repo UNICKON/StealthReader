@@ -1,0 +1,157 @@
+:root {
+  --paper: #fbf8f2;
+  --ink: #1b1b1b;
+  --pad: 18px;
+  --ui-bg: #12100e;
+  --ui-fg: #e8e3da;
+  --ui-dim: #9a9288;
+  --ui-line: #2c2723;
+  --accent: #c9a227;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ui-bg);
+  color: var(--ui-fg);
+  font: 15px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: #221e1a;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.ghost { background: transparent; }
+
+input {
+  font: inherit;
+  color: inherit;
+  background: #1b1815;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.pane { position: fixed; inset: 0; display: flex; flex-direction: column; }
+.pane[hidden] { display: none; }
+
+/* ── 登录 ─────────────────────────────────────────── */
+#login { align-items: center; justify-content: center; padding: 24px; }
+#login h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: 0.08em; }
+#login .hint { color: var(--ui-dim); font-size: 13px; margin: 0 0 18px; text-align: center; max-width: 22em; }
+#login form { display: flex; gap: 8px; width: min(420px, 100%); }
+#login form button { flex: 0 0 auto; }
+.err { color: #e2725b; min-height: 1.4em; font-size: 13px; }
+
+/* ── 书架 ─────────────────────────────────────────── */
+.bar { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--ui-line); }
+.bar h1 { margin: 0; font-size: 17px; font-weight: 600; }
+.bar .meta { margin-left: auto; }
+.meta { color: var(--ui-dim); font-size: 12.5px; }
+.note { padding: 0 18px 18px; margin: 0; }
+
+.books { list-style: none; margin: 0; padding: 10px 12px 40px; overflow-y: auto; flex: 1; display: grid; gap: 10px; }
+@media (min-width: 900px) { .books { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1300px) { .books { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+.book {
+  background: #1b1815;
+  border: 1px solid var(--ui-line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.book:hover { border-color: var(--accent); }
+.book:active { transform: scale(0.99); }
+.b-title { font-size: 15px; font-weight: 600; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.b-meta { display: flex; gap: 10px; margin-top: 6px; color: var(--ui-dim); font-size: 12px; }
+.b-bar { height: 3px; background: #2a2521; border-radius: 2px; margin-top: 8px; overflow: hidden; }
+.b-bar i { display: block; height: 100%; background: var(--accent); width: 0; }
+
+/* ── 阅读 ─────────────────────────────────────────── */
+.reader { background: var(--paper); }
+#view-wrap {
+  position: absolute;
+  inset: 0;
+  padding: var(--pad);
+  padding-bottom: 64px;
+  overflow: hidden;
+}
+#view { display: block; inline-size: 100%; block-size: 100%; }
+
+.hud {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0));
+  color: #f2eee7;
+  font-size: 13px;
+  z-index: 5;
+}
+.hud .meta { color: #cfc7bb; margin-left: auto; margin-right: 6px; font-variant-numeric: tabular-nums; }
+.hud button { background: rgba(0, 0, 0, 0.35); color: #f2eee7; border-color: rgba(255, 255, 255, 0.16); }
+
+.tools {
+  position: fixed;
+  right: 12px; bottom: 68px;
+  width: min(340px, calc(100vw - 24px));
+  background: #171412;
+  border: 1px solid var(--ui-line);
+  border-radius: 14px;
+  padding: 12px 14px 8px;
+  z-index: 6;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+.tools .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+.tools .row > span { flex: 0 0 62px; color: var(--ui-dim); }
+.tools .row > b { min-width: 3.2em; text-align: center; font-variant-numeric: tabular-nums; }
+.tools .row > button { padding: 4px 10px; }
+.tools .note { padding: 4px 0 0; font-size: 11.5px; line-height: 1.4; }
+
+.toc {
+  position: fixed;
+  left: 0; top: 0; bottom: 0;
+  width: min(420px, 86vw);
+  background: #171412;
+  border-right: 1px solid var(--ui-line);
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+}
+.toc-head { display: flex; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--ui-line); }
+.toc-head button { margin-left: auto; }
+#toc-list { list-style: none; margin: 0; padding: 8px 0 40px; overflow-y: auto; flex: 1; }
+.toc-item { padding: 9px 14px; font-size: 14px; cursor: pointer; line-height: 1.4; }
+.toc-item:hover { background: #221e1a; }
+
+.toast {
+  position: fixed;
+  left: 50%; bottom: 84px;
+  transform: translateX(-50%);
+  background: rgba(20, 18, 16, 0.96);
+  border: 1px solid var(--ui-line);
+  color: var(--ui-fg);
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  max-width: 86vw;
+  z-index: 20;
+}
+
+/* foliate 的 iframe 容器里由 setStyles 上色，这里只保证外框一致 */
+#view::part(filter) { background: var(--paper); }

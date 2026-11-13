@@ -1046,6 +1046,36 @@ def load_epub_text(path):
     return text, chapters
 
 
+def book_char_index(path):
+    """给多端阅读页用的章节偏移表：总字数 + 每章起始字符偏移 + 层级。
+
+    坐标就是本机那套：pos 是"抽出来的纯文本里第几个字"，所以网页/手机上读到的位置
+    和桌面端是同一个数，不需要换算。纯派生数据，算不出来返回 None 就好。
+    """
+    try:
+        if str(path or "").lower().endswith(".epub"):
+            text, chapters = load_epub_text(path)
+        else:
+            text = read_book_text_quietly(path)
+            chapters = []
+    except Exception:
+        return None
+    total = len(text or "")
+    if total <= 0:
+        return None
+    sections = []
+    for row in chapters or []:
+        try:
+            title = str(row[0] or "").strip()[:120]
+            start = max(0, int(row[1]))
+            level = int(row[2]) if len(row) > 2 else 1
+        except Exception:
+            continue
+        sections.append({"title": title, "start": start, "level": max(1, min(9, level))})
+    sections.sort(key=lambda s: s["start"])
+    return {"schema": 1, "total": total, "sections": sections}
+
+
 def read_book_text_quietly(path):
     """只读地把一本书读成纯文本（书架算"一共多少字"用）。
 
@@ -11775,7 +11805,8 @@ class StealthReader(QWidget):
                 apply_cb=self.sync_applied_signal.emit,
                 log=log_event,
                 books=bool(conf.get("books")),
-                state=syncer.read_json(sync_state_path(), {}))
+                state=syncer.read_json(sync_state_path(), {}),
+                index_fn=book_char_index)
             worker.start()
         except Exception as e:
             log_event("同步线程起不来：%s" % e)

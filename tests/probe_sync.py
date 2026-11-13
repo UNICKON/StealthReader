@@ -9,6 +9,7 @@
 """
 import copy
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -485,11 +486,127 @@ def run_e2e():
         shutil.rmtree(root, ignore_errors=True)
 
 
+class _StubClient:
+    """只收 put_lite_index 的假客户端，免得这一节还要起服务器。"""
+
+    def __init__(self):
+        self.puts = []
+
+    def put_lite_index(self, uid, payload):
+        self.puts.append((uid, copy.deepcopy(payload)))
+        return 1
+
+
+def run_index():
+    section("章节偏移表（手机/Kindle/网页按它定位）")
+    root = tempfile.mkdtemp(prefix="sr-index-")
+    try:
+        path = os.path.join(root, "index-book.epub")
+        with open(path, "wb") as f:
+            f.write(b"epub-index" * 500)
+        calls = []
+
+        def index_fn(p):
+            calls.append(p)
+            return {"schema": 1, "total": 4000,
+                    "sections": [{"title": "第一章", "start": 0, "level": 1},
+                                 {"title": "第二章", "start": 2000, "level": 2}]}
+
+        worker = se.SyncWorker(
+            base_url="http://127.0.0.1:9", token="t", device_name="A",
+            state_path=os.path.join(root, "idx-state.json"),
+            apply_cb=lambda payload: None, log=lambda m: None,
+            books=True, index_fn=index_fn, state={})
+        worker.client = _StubClient()
+        sha = se._hash_file(path)
+
+        n = worker._sync_book_indexes({path: sha})
+        check("算出并上传 1 份章节表", n == 1 and len(worker.client.puts) == 1, (n, len(worker.client.puts)))
+        uid, payload = worker.client.puts[0]
+        check("uid 是 sha 前 16 位", uid == sha[:16], uid)
+        check("总字数带上去了", payload.get("total") == 4000, payload.get("total"))
+        check("章节偏移带上去了", [s["start"] for s in payload["sections"]] == [0, 2000],
+              payload.get("sections"))
+        check("自动补 schema / generated_at / uid",
+              payload.get("schema") == 1 and payload.get("generated_at") and payload.get("uid") == uid,
+              {k: payload.get(k) for k in ("schema", "generated_at", "uid")})
+
+        n = worker._sync_book_indexes({path: sha})
+        check("书没动过 → 不重算也不重传", n == 0 and len(calls) == 1 and len(worker.client.puts) == 1,
+              (n, len(calls), len(worker.client.puts)))
+
+        later = os.stat(path).st_mtime + 5
+        os.utime(path, (later, later))
+        n = worker._sync_book_indexes({path: sha})
+        check("书动过 → 重算重传", n == 1 and len(calls) == 2, (n, len(calls)))
+
+        def boom(p):
+            raise RuntimeError("坏书")
+
+        worker.index_fn = boom
+        later = os.stat(path).st_mtime + 5
+        os.utime(path, (later, later))
+        check("算不出来也不炸（记 0 份）", worker._sync_book_indexes({path: sha}) == 0)
+
+        worker.index_fn = None
+        check("没传 index_fn 就整段跳过", worker._sync_book_indexes({path: sha}) == 0)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def run_state_write():
+    section("状态文件写盘（Windows 上被别人占着也要写进去）")
+
+    root = tempfile.mkdtemp(prefix="sr-state-")
+
+    try:
+        path = os.path.join(root, 'sync_state.json')
+
+        def read_back():
+            with open(path, encoding='utf-8') as f:
+                return json.load(f).get('a')
+
+        se.write_json_atomic(path, {'a': 1}, keep_bak=0)
+        check('正常情况直接原子替换', read_back() == 1, read_back())
+
+        real_replace = se.os.replace
+        calls = {'n': 0}
+
+        def flaky(src, dst):
+            calls['n'] += 1
+            if calls['n'] <= 3:
+                raise PermissionError('被占用')
+            return real_replace(src, dst)
+
+        se.os.replace = flaky
+        try:
+            se.write_json_atomic(path, {'a': 2}, keep_bak=0)
+        finally:
+            se.os.replace = real_replace
+        check('前几次被挡住，重试几次后写成功', read_back() == 2, (read_back(), calls))
+        check('重试确实发生了', calls['n'] >= 2, calls)
+
+        def always(src, dst):
+            raise PermissionError('一直被占用')
+
+        se.os.replace = always
+        try:
+            se.write_json_atomic(path, {'a': 3}, keep_bak=0)
+        finally:
+            se.os.replace = real_replace
+        check('重试全失败就直接写（缓存不丢）', read_back() == 3, read_back())
+        check('临时文件没留在旁边', not os.path.exists(path + '.tmp'), os.listdir(root))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main(argv):
     t0 = time.time()
     if "--pure" not in argv:
         run_e2e()
     run_pure()
+    run_index()
+    run_state_write()
     print("\n%d 通过 / %d 失败（%.1f 秒）" % (PASS, FAIL, time.time() - t0))
     for b in BAD:
         print("  - " + b)

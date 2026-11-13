@@ -599,3 +599,157 @@ Class A 100 万次/月）连零头都用不到，正常是 0 元。
 | gzip 压请求体 | 账本现在 ~8 KB，压完省几 KB，但省不了往返；等真到几百 KB 再说 |
 | 划线按书分对象（`v1/state/annotations/<uid>.json`） | 对象数变多、每轮请求数变多；现在 9 条划线一个对象 4 KB，完全够 |
 | 书文件断点续传 | 8 MB 一本书、45 秒超时；失败了下次整本重传，但一本书就一次，忍了 |
+
+
+## 24. 多端阅读页：手机/平板/电脑直接看同一本书
+
+桌面端只能在 Windows 上读。这一节是把"同一份进度、同一批排版设置"搬进浏览器：
+电脑浏览器、手机浏览器打开 `https://sync.noteklip.org/r/`，输一次 token，就能接着读。
+
+### 24.1 为什么用 foliate-js，而不是自己写解析
+
+| 方案 | 结论 |
+| --- | --- |
+| foliate-js（选它） | MIT；原生 ES module，没有构建步骤；EPUB/MOBI/KF8/FB2/CBZ 都认；`renderer.setStyles()` 能直接把 CSS 注进正文 iframe，排版设置不用自己算 |
+| epub.js | 只认 EPUB；要 preact/polyfill 打包；分页器对 CJK 的标点挤压不如 foliate |
+| 自己用 zip.js 解 + 自己排版 | 光"分页"这一件事就要处理字体度量、标点悬挂、双栏、滚动模式，几千行起步，不值 |
+
+锁定上游 commit `78914aef4466eb960965702401634c2cb348e9b1`（2026-05-01），整包 **257.7 KB / 16 个文件**，
+放在 `cloudflare-sync/web/vendor/foliate-js/`，`VENDOR.md` 记了来源、许可证（含 `vendor/zip.js` 的 BSD-3
+和 `vendor/fflate.js` 的 MIT）和升级办法。**不打包、不转译**：浏览器直接 `<script type="module">` 加载，
+所以 Worker 只需要把静态文件原样发出去。
+
+### 24.2 三种设备，两条通道
+
+| 通道 | 谁用 | 实现 | 状态 |
+| --- | --- | --- | --- |
+| `/r/` 单页应用 | 电脑浏览器、手机浏览器、平板 | foliate-js + `app.js`（约 18 KB） | **已上线** |
+| `/k/<uid>?p=N` 服务端渲染的极简 HTML | Kindle 实验浏览器（老 WebKit） | Worker 里把纯文本切成一页页 HTML | 二期，未做 |
+| 桌面端 | Windows | 原有 PyQt5 | 不变 |
+
+Kindle 那条路不共用前端：Kindle 的浏览器跑不动 ES module 和 iframe 分页，硬接只会得到白屏。
+二期的做法是 Worker 直接用桌面端上传的章节表把纯文本切片，服务端出 HTML。
+
+### 24.3 一次阅读的完整链路
+
+```
+打开 /r/ ──► GET /v1/ping（Cookie 鉴权，401 就显示登录框）
+   │
+   ├─ 登录：POST /v1/login {token} ──► Set-Cookie: srtoken=…; HttpOnly; Secure; SameSite=Lax
+   │
+   ├─ 书架：GET /v1/shelf ──► R2 书清单 × progress 里的 pos/total 拼成一行行
+   │
+   ├─ 点一本：GET /v1/lite/<uid>/index.json（几 KB 的章节表，可无）
+   │           GET /v1/blob/<sha>（**只拉这一本**，zip.js 自己按 Range 分块取）
+   │
+   ├─ 翻页：foliate 的 relocate 事件 ──► pos = round(fraction × total)
+   │       防抖 2.5 秒 ──► GET /v1/state/progress（拿 ETag）──► PUT（只改我这一行）
+   │
+   └─ 改排版：点一下 ──► 立刻改本地 CSS ──► PUT /v1/state/settings（只动改到的 key 的 clock）
+```
+
+关键取舍：浏览器**不做"读全量 → 合并 → 写回"**。桌面端那套合并逻辑（按 `at` 最新的一行赢、
+`total` 取 max、划线的 tombstone 并集）在 JS 里重写一遍必然会和 Python 版跑偏。浏览器只做
+"把我在读的这一行的 7 个字段替换掉，其他行原样带回去"，再靠 `If-Match` 保证不覆盖别人：
+冲突就重来（最多 3 次），语义和桌面端合并出来的结果一致。
+
+### 24.4 一个真踩到的坑：R2 整份取也会填 `range`
+
+Worker 加 Range 支持时，第一版写成"`obj.range` 存在就回 206"。本地内存版 R2 不填这个字段，
+测不出来；**真 R2 整份取的时候也会填 `{offset: 0, length: size}`**，于是线上所有书都变成
+`206 Partial Content + Content-Range: bytes 0-N/N`。
+
+后果不是"网页放不出书"，而是更隐蔽的：桌面端 `blob_get()` 只认 200，会直接报「HTTP 206 下书失败」。
+也就是网页一上线，另一台机器的"从云端补书"就废了。
+
+修法：判"是不是部分响应"看**请求**有没有带 Range，不看 `obj.range` 有没有值；同时把内存版假 R2
+也改成整份取时填 `range`，这样这个 bug 在本地就能被 `worker_selftest.mjs` 抓住（现在 60 条断言里
+有一条专门盯它）。
+
+### 24.5 另一个真踩到的坑：`os.replace` 被占用
+
+上线当天日志里出现「同步状态写不进去：[WinError 5] 拒绝访问：sync_state.json.tmp → sync_state.json」。
+原因是 Windows 上那个瞬间有别的手（杀软 / 搜索索引 / 探针）开着目标文件。后果不只是这一轮没写进去：
+`sync_state.json` 里存着每个 kind 的 rev 和书文件缓存，丢了下一轮就会把没变的 kind 全下载一遍。
+
+现在 `write_json_atomic()` 会重试 6 次（0.05+0.10+…+0.25 秒），全失败就直接覆盖写——
+宁可少一层原子性，也别把缓存丢了。探针里有 5 条断言盯着这条路径（包括"重试全失败也要写进去"）。
+
+### 24.6 章节表：`v1/lite/<uid>/index.json`
+
+桌面端本来就要为每本书抽全文（算字数、算进度），顺手把结果里现成的章节偏移存下来：
+
+```json
+{"schema": 1, "uid": "481f48cfaf0aa453", "total": 357534, "generated_at": 1763000000.0,
+ "sections": [{"title": "第一章 …", "start": 619, "level": 1}, …]}
+```
+
+- **坐标就是桌面端那套**：`total` 是抽出来的纯文本字符数，`start` 是该章正文在纯文本里的字符偏移。
+  所以网页上的 `pos` 和桌面端的 `pos` 是同一个数，不需要任何换算。
+- 只在一本书"大小或 mtime 变了"时重算重传（`sync_state.json` 里的 `book_index` 记着）。
+  9 本书首次共 **9 个 PUT**，之后 0 个。
+- 大小几 KB 到几十 KB（146 章的那本约 8 KB），走 `PUT /v1/lite/<uid>/index.json`，随写随覆盖。
+
+### 24.7 排版：桌面端的键 ↔ 浏览器的 CSS
+
+| 设置键 | 桌面端 | 浏览器 | 换算 |
+| --- | --- | --- | --- |
+| `font_size` | px | `font-size` | 1:1（夹到 10–48） |
+| `line_spacing` | 百分比（100 = 默认） | `line-height` | ×1.35 换成 CSS 倍数（Qt 的 100% 比例行距在 CSS 里约等于 1.35 倍字号）；夹到 1.1–2.8 |
+| `paragraph_spacing` | px | `p { margin-bottom }` | 1:1（0–40） |
+| `page_margin_chars` | 字符数 | 外层 `padding` | ×字号 换成 px |
+| `first_line_indent` | 字符数 | `p { text-indent }` | 用 `em`，天然随字号 |
+| `font_family` | 字体名 | `font-family` | 名字里带 宋/Serif 走衬线栈，其余走黑体栈 |
+| `text_color` / `bg_color` | Qt `rgba(r,g,b,0-255)` | CSS `rgba()` | alpha 除以 255 |
+
+行距这一条是**估算**，不是数学等价：Qt 的"100% 比例行距"落在 CSS 里没有精确对应值，先用 1.35 对齐，
+真读起来别扭再调。其余都是 1:1。
+
+### 24.8 已知不精确的地方（说清楚，不装）
+
+- **`pos ↔ 页面` 是近似映射**。foliate 给的 `fraction` 是"按章节等权"的全局比例，而 `pos` 是字符偏移；
+  两者相乘在章节长度不均的书里会差 1%～3%（一本 35 万字的书约差几页）。同一台设备来回读不会漂
+  （都是同一套映射），换设备续读会落偏几页。要做准，得让桌面端把**每章字数**也传上来（二期），
+  或者浏览器把所有 section 都量一遍（大书会卡）。
+- **Kindle 通道没有**：老 WebKit 跑不动这套前端，二期单独做服务端渲染。
+- **划线/书签不能在网页上编辑**：只读展示都没做（foliate 的 overlayer 能画，但交互和桌面端的
+  坐标对齐是另一摊活）。网页上目前只同步"读到哪"和"怎么排"。
+- **完整模式下的书**（有图、有复杂版式）能看，但排版设置只作用于 reflowable 文本节点；
+  fixed-layout 的书 foliate 会切到固定版式渲染，字号设置对它无效——这跟桌面端的行为一致。
+
+### 24.9 量到的数（2026-11-13，生产）
+
+| 项目 | 数值 |
+| --- | --- |
+| 静态资源 | 19 个文件（foliate-js 16 + `index.html` + `app.js` 18 KB + `style.css` 5.5 KB） |
+| 首屏（未登录） | 1 个 HTML（约 4 KB）+ `style.css` + `app.js` + `view.js` 及其依赖，约 **110 KB** |
+| 书架 | 1 个 `GET /v1/shelf`（11 本，约 2 KB） |
+| 打开一本书 | 1 个 `GET /v1/lite/<uid>/index.json` + N 个 `GET /v1/blob/<sha>`（Range 分块，3 MB 的书约 6～10 块） |
+| 翻一页 | 0 个请求；停 2.5 秒后 1 个 GET + 1 个 PUT（约 3 KB） |
+| 章节表上传 | 9 本书首次 9 个 PUT，之后 0 |
+| 桌面端重启后第一轮 | 11 个请求（GET 1 / PUT 10：9 张章节表 + 1 条进度），第二轮 0 |
+
+### 24.10 怎么验的
+
+| 探针 | 覆盖 | 结果 |
+| --- | --- | --- |
+| `cloudflare-sync/tests/worker_selftest.mjs` | Worker 全路由（内存 R2）：鉴权、状态对象、书文件、登录 Cookie、书架、章节表、Range 206、CSP | **60 / 60** |
+| `tests/check_web_live2.py`-式线上验收（临时脚本） | 线上真机：`/` 是 HTML 且带 CSP、`/r/*` 静态资源、书架、Range、章节表 | **16 / 16** |
+| `tests/probe_reader_ui.py` | **真浏览器**（无头 Edge + 自己写的 120 行 CDP 客户端）：登录 → 书架 → 打开一本 → 连翻 6 页读到 5075 字 → 排版注进正文（19px/25.65px/缩进 38px）→ 按键翻页 → 位置写回 → 改字号写回设置 → 目录 23 条 → 无 JS 报错 | **20 / 20** |
+| `tests/probe_sync.py` | 桌面端同步（含章节表上传、状态文件写盘重试） | **90 / 90** |
+
+浏览器那条探针是这台机器上唯一能跑的"真浏览器"验证方式：没有 Chrome、没有 playwright/selenium，
+于是用标准库写了个最小 CDP 客户端（`tests/mini_cdp.py`），起 `msedge --headless=new` 跑真实 DOM。
+假后端 `tests/reader_mock_server.py` 提供登录/书架/进度/设置/章节表/带 Range 的书，
+**不连线上、不用真 token**。
+
+### 24.11 怎么用
+
+1. 电脑或手机浏览器打开 `https://sync.noteklip.org/r/`（手机可以"添加到主屏幕"当 App 用）。
+2. 输一次 token（桌面端「设置 → 云端同步」里那个，跟 `config.json` 的 `sync.token` 是同一个）。
+   Cookie 存一年，之后不用再输。
+3. 书架点一本就开始读。左右箭头 / 点屏幕左三分之一 / 手机上左右滑翻页；右下角 `Aa` 是排版和目录。
+4. 位置和排版都会自动回到桌面端；反过来桌面端改字号，网页再打开也是新的。
+
+> 注意：`GET /` 现在回的是**阅读页**，不再是以前那行 `{"ok":true,...}` JSON。任何把它当探活接口的脚本
+> 都得改到 `/v1/ping`（探针里已经改过）。

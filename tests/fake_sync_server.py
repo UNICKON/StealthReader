@@ -137,6 +137,13 @@ class FakeSyncServer:
                     self._send(200, row["bytes"], {"Content-Type": "application/octet-stream",
                                                    "ETag": row["etag"],
                                                    "X-File-Name": outer.blob_names.get(sha, "")})
+                elif path.startswith("/v1/lite/"):
+                    row = outer.objects.get(path.lstrip("/"))
+                    if not row:
+                        self._json(404, {"ok": False, "err": "not found"})
+                        return
+                    self._send(200, row["bytes"], {"Content-Type": "application/json; charset=utf-8",
+                                                   "ETag": row["etag"]})
                 else:
                     self._json(404, {"ok": False, "err": "not found"})
 
@@ -174,6 +181,9 @@ class FakeSyncServer:
                     outer._archive(kind, cur)
                     rev = outer._put(key, body, "application/json")
                     self._json(200, {"ok": True, "rev": rev})
+                elif path.startswith("/v1/lite/"):
+                    outer._put(path.lstrip("/"), body, "application/json")
+                    self._json(200, {"ok": True, "size": len(body)})
                 elif path.startswith("/v1/blob/"):
                     sha = path.split("/")[3]
                     if len(sha) != 64:
