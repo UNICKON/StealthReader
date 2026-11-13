@@ -17,6 +17,13 @@
   打开又关掉、随手瞟一眼那种不该占一条"会话"。
 * 只累加**正增量**的字数，往回翻不扣；跨零点的通宵算在**开始那一刻**所在的日期里，
   但日账只按真实日期切分（跨零点的秒数全算开始那天，这是刻意的简化，写在这儿免得被当 bug）。
+* **"跳"不算读**（2026-11-13 加的）：一拍里位置往前跳了一页半以上，那是点目录 / 点脚注 /
+  搜索 / 恢复进度，不是眼睛扫过去的——这一拍记 0 字，只累进 `jumped`（次数）和
+  `jumped_chars`（跳过多少字），收场时写进日志。
+  以前不分跳和读：实测一本 146 章的书，25 分钟记成 6.5 万字（同期进度只推进 3 千多字），
+  原因是点脚注来回跳，每跳一次都按"读了这么多"累加。
+* **一场的平均速度封顶 1200 字/分**（`MAX_CHARS_PER_SEC`）：真有人读得比这快也不该记账，
+  这是给人写的字，不是给机器扫的（`clamp_chars` 在收场时兜底）。
 * 单日时长封顶 18 小时（`DAY_SEC_CAP`）：时钟跳变或休眠恢复时不会记出荒唐的数。
 
 会话结构（`sessions` 里的一条）：
@@ -40,6 +47,9 @@ TICK_SEC = 5              # 心跳粒度：5 秒一次（界面那边就这么�
 IDLE_SEC = 180            # 3 分钟没有任何输入 = 先停止计时（这一场先不收，人可能只是在看）
 SESSION_GAP_SEC = 15 * 60  # 同一本书断 15 分钟以上才算这一场结束；不到就并回去（真人 2026-11-12 定的）
 MIN_SESSION_SEC = 60      # 接不上上一场、本身又读了不到 1 分钟的：当成"没看"，整段不记
+MAX_CHARS_PER_SEC = 20    # 一场的平均速度上限：1200 字/分（收场时按它兜底）
+JUMP_PAGE_FACTOR = 1.6    # 一拍里往前跳超过 1.6 页 → 判定成"跳"，不算读
+MIN_JUMP_CHARS = 400      # 再小的页也不让门槛低于这个数（小窗口下一页才两三百字）
 KEEP_SESSIONS = 400       # 会话表只留最近这么多场
 KEEP_DAYS = 420           # 日账留这么久（约 14 个月，热力图一年多够看）
 DAY_SEC_CAP = 18 * 3600   # 单日封顶：时钟跳变 / 休眠恢复时别记出荒唐的数
@@ -145,6 +155,51 @@ def fmt_speed(chars_per_min):
 
 
 # ---------------------------------------------------------------- 结构
+def count_forward(delta, page_chars):
+    """一拍里位置往前挪了 `delta` 个字：这算不算"读了"。
+
+    返回 `(算进字数的量, 是不是跳转)`。判定只有一条：**挪过一页半以上就是"跳"**
+    （点目录 / 点脚注 / 搜索 / 恢复进度 / 换书），眼睛没扫过，这一拍记 0 字；
+    否则就是正常翻页或滚动，照实记。
+
+    `page_chars` 是当前版式下一屏大概多少字（`calc_next_page_start()`）；拿不到就传 0，
+    门槛退回 `MIN_JUMP_CHARS`。
+    """
+    try:
+        delta = int(delta)
+    except (TypeError, ValueError):
+        return 0, False
+    if delta <= 0:
+        return 0, False
+    try:
+        page = max(0, int(page_chars))
+    except (TypeError, ValueError):
+        page = 0
+    limit = max(MIN_JUMP_CHARS, int(page * JUMP_PAGE_FACTOR))
+    if delta > limit:
+        return 0, True
+    return delta, False
+
+
+def clamp_chars(chars, sec):
+    """一场的字数不能超过"在读时长 × 1200 字/分"。返回 `(字数, 是否被砍)`。
+
+    这是收场时的兜底：单拍判定放过去的东西（连按翻页键、跳章后又慢慢读），
+    攒到一场里速度仍然荒唐就一起砍掉——账面上的速度不该出现人类读不出来的数。
+    """
+    try:
+        chars = max(0, int(chars))
+        sec = max(0.0, float(sec))
+    except (TypeError, ValueError):
+        return 0, False
+    if sec <= 0:
+        return chars, False
+    cap = int(sec * MAX_CHARS_PER_SEC)
+    if chars > cap:
+        return cap, True
+    return chars, False
+
+
 def blank():
     """空账本。"""
     return {"version": VERSION, "days": {}, "books": {}, "sessions": []}

@@ -4260,6 +4260,7 @@ try:
     w.local_start_index = 0
     w.current_top_offset = lambda: _pos38["v"]
     w.book_pos_key = lambda path: "probe-stats-k"
+    w._stats_page_chars = lambda: 250      # 一屏 250 字 → "跳"的门槛 400 字（探针里钉住）
     # 门槛压到 10 秒：只是为了让"23 秒这一场"能在探针里几拍走完（真值是 60，最后单独验一条）
     _min38_bak = _rs38.MIN_SESSION_SEC
     _rs38.MIN_SESSION_SEC = 10
@@ -4275,14 +4276,21 @@ try:
     _s = w.stats_session or {}
     check("心跳 5 秒一拍：三拍 = 15 秒", abs(_s.get("sec", 0) - 15) < 0.01, _s.get("sec"))
 
-    _pos38["v"] = 4000
+    _pos38["v"] = 1300
     w._stats_tick()
     _s = w.stats_session or {}
-    check("往前读 3000 字，字数进这一场", abs(_s.get("chars", 0) - 3000) < 0.01, _s.get("chars"))
-    _pos38["v"] = 500
+    check("翻一页（300 字）：字数进这一场", abs(_s.get("chars", 0) - 300) < 0.01, _s.get("chars"))
+    _pos38["v"] = 1000
     w._stats_tick()
     _s = w.stats_session or {}
-    check("往回翻不记负数（字数原地不动）", abs(_s.get("chars", 0) - 3000) < 0.01, _s.get("chars"))
+    check("往回翻不记负数（字数原地不动）", abs(_s.get("chars", 0) - 300) < 0.01, _s.get("chars"))
+    _pos38["v"] = 4900
+    w._stats_tick()
+    _s = w.stats_session or {}
+    check("一下往前跳 3900 字（点脚注那种）不算读：字数还是 300",
+          abs(_s.get("chars", 0) - 300) < 0.01, _s.get("chars"))
+    check("跳过多少字记下来了（好查账）",
+          int(_s.get("jumped") or 0) == 1 and int(_s.get("jumped_chars") or 0) == 3900, _s)
 
     _sec38 = (w.stats_session or {}).get("sec", 0)
     w.stats_active_ts = time.monotonic() - 240          # 停 4 分钟：人可能在盯着这一页看
@@ -4300,12 +4308,12 @@ try:
     w.stats_active_ts = time.monotonic() - 3000         # 停 50 分钟 = 这一场真结束了
     w._stats_tick()
     _day = w.stats_data["days"].get(_rs38.day_key(), {})
-    check("停 50 分钟（超过 15 分钟分界）才收场：这一场写进日账（30 秒 / 3000 字）",
-          w.stats_session is None and int(_day.get("sec", 0)) == 30
-          and int(_day.get("chars", 0)) == 3000, (w.stats_session, _day))
+    check("停 50 分钟（超过 15 分钟分界）才收场：这一场写进日账（35 秒 / 300 字）",
+          w.stats_session is None and int(_day.get("sec", 0)) == 35
+          and int(_day.get("chars", 0)) == 300, (w.stats_session, _day))
     _disk = _rs38.load(os.environ["STEALTHREADER_STATS"])
     check("落盘了，而且能原样读回来（reading_stats.json 不是 config）",
-          bool(_disk["sessions"]) and _disk["sessions"][-1]["sec"] == 30
+          bool(_disk["sessions"]) and _disk["sessions"][-1]["sec"] == 35
           and os.path.basename(os.environ["STEALTHREADER_STATS"]) == "reading_stats.json",
           _disk["sessions"][-1:])
     check("收场之后不点不动，不会凭空再长一场",

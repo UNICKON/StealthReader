@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import os
 
 # 开发态：PyQt5 / keyboard 解包在 libs/，不依赖启动器设置 PYTHONPATH，
@@ -5588,6 +5588,17 @@ class StealthReader(QWidget):
         except Exception:
             return ""
 
+    def _stats_page_chars(self):
+        """当前版式下一屏大概多少字：判"这一拍是翻页还是跳转"的门槛。
+
+        只探几何，不改任何状态。拿不到（没排版 / 空正文）就返回 0，让门槛退回
+        `reading_stats.MIN_JUMP_CHARS`。
+        """
+        try:
+            return max(0, int(self.calc_next_page_start()))
+        except Exception:
+            return 0
+
     def _stats_tick(self):
         """5 秒一拍：在读就累加，人走了就收场。"""
         if not self._stats_can_count():
@@ -5612,12 +5623,18 @@ class StealthReader(QWidget):
                 self._stats_flush("换书")
             session = {"key": key, "title": self._stats_book_title(), "start": time.time(),
                        "sec": 0.0, "chars": 0.0, "pos": int(pos), "ticks": [],
-                       "saved": time.time()}
+                       "jumped": 0, "jumped_chars": 0, "saved": time.time()}
             self.stats_session = session
         delta = max(0, int(pos) - int(session.get("pos") or 0))
         session["pos"] = int(pos)
+        # 往前挪了一页半以上 = 点目录 / 点脚注 / 搜索 / 恢复进度，不是读（见 reading_stats 顶部口径）。
+        # 以前不分这个：一本 146 章的书 25 分钟记成 6.5 万字，而同期进度只推进了 3 千多字。
+        counted, is_jump = reading_stats.count_forward(delta, self._stats_page_chars())
+        if is_jump:
+            session["jumped"] = int(session.get("jumped") or 0) + 1
+            session["jumped_chars"] = int(session.get("jumped_chars") or 0) + int(delta)
         session["sec"] += reading_stats.TICK_SEC
-        session["chars"] += delta
+        session["chars"] += counted
         _now_wall = time.time()
         session["last"] = _now_wall        # 真实结束时间：合并会话 / 画时间线都要它
         # 场内每一个"在读数"的落点，收场时能算出中间歇了多久（画时间线要这个）
@@ -5650,19 +5667,27 @@ class StealthReader(QWidget):
             pause = _b - _a - reading_stats.TICK_SEC
             if pause > reading_stats.IDLE_SEC:
                 gaps.append([_a - start + reading_stats.TICK_SEC, pause])
+        chars, capped = reading_stats.clamp_chars(session.get("chars") or 0,
+                                                  session.get("sec") or 0)
         reading_stats.add_span(self.stats_data, session.get("key") or "",
                                session.get("title") or "",
                                start,
                                session.get("sec") or 0,
-                               session.get("chars") or 0,
+                               chars,
                                end_ts=session.get("last") or time.time(),
                                gaps=gaps)
         self._stats_commit()
         if reason == "定期落盘":
             return True
-        log_event("阅读统计：记一场 %s（%s，%s）" % (
+        extra = ""
+        if session.get("jumped"):
+            extra += "，跳过 %d 次跳转（共 %s没算）" % (
+                int(session["jumped"]), fmt_words(session.get("jumped_chars") or 0))
+        if capped:
+            extra += "，按 1200 字/分封顶砍掉一些"
+        log_event("阅读统计：记一场 %s（%s，%s%s）" % (
             reading_stats.fmt_duration(session.get("sec")),
-            reason or "结束", fmt_words(session.get("chars"))))
+            reason or "结束", fmt_words(chars), extra))
         return True
 
     def _stats_commit(self):
