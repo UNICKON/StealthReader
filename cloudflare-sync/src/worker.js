@@ -135,8 +135,10 @@ async function serveStatic(request, env) {
   if (!env.ASSETS) return json({ ok: false, err: "没有 ASSETS 绑定" }, 500);
   const url = new URL(request.url);
   const path = url.pathname;
-  // 阅读页挂在 /r/ 下，但静态文件就在 assets 根目录：转发前把前缀去掉
-  const mapped = path === "/r" || path === "/r/" ? "/index.html"
+  // 阅读页挂在 /r/ 下，但静态文件就在 assets 根目录：转发前把前缀去掉。
+  // 首页也显式指到 /index.html——否则 assets 那边会把 /index.html 307 到 /，
+  // 用户敲 /r/ 会被弹成 /（能看，但 URL 莫名其妙）。
+  const mapped = (path === "/" || path === "/r" || path === "/r/") ? "/index.html"
     : path.startsWith("/r/") ? path.slice(2) : path;
   const inner = new Request(new URL(mapped, url).toString(), request);
   const res = await env.ASSETS.fetch(inner);

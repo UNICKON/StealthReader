@@ -753,3 +753,7 @@ Worker 加 Range 支持时，第一版写成"`obj.range` 存在就回 206"。本
 
 > 注意：`GET /` 现在回的是**阅读页**，不再是以前那行 `{"ok":true,...}` JSON。任何把它当探活接口的脚本
 > 都得改到 `/v1/ping`（探针里已经改过）。
+
+> 另一个小坑：`[assets]` 默认的 `html_handling` 会把 `/index.html` 307 到 `/`，于是用户敲 `/r/` 会被弹成 `/`
+> （能用，但地址栏莫名其妙）。现在 `html_handling = "none"`，由 Worker 自己把 `/`、`/r`、`/r/` 都映射到
+> `/index.html`，三个地址都直接 200，不再跳。

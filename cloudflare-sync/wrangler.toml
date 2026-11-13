@@ -23,6 +23,9 @@ TOKEN_TTL_DAYS = "365"
 directory = "./web"
 binding = "ASSETS"
 run_worker_first = true
+# 不要 assets 那套"把 /index.html 收拾成 /"的默认行为：我们自己在 Worker 里映射路径，
+# 否则客户敲 /r/ 会被 307 弹到 /。
+html_handling = "none"
 
 [observability]
 enabled = true
