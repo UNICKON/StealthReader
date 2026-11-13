@@ -59,6 +59,17 @@ except Exception as _anki_import_err:      # pragma: no cover
 # 这是本仓库自己的文件，缺了就是装错了——直接 import，出问题在启动日志里一眼看得见。
 import reading_stats
 
+# 云端同步（Cloudflare Worker + R2）：纯标准库的引擎，界面这边只做接线。
+# 缺文件 / 导入失败都不许影响阅读器本身——同步是锦上添花。
+try:
+    import sync_engine as syncer
+    SYNC_OK = True
+    SYNC_IMPORT_HINT = ""
+except Exception as _sync_import_err:      # pragma: no cover
+    syncer = None
+    SYNC_OK = False
+    SYNC_IMPORT_HINT = "云端同步需要 sync_engine.py（本目录下），当前加载失败：%s" % (_sync_import_err,)
+
 # 社区统一流：数据模型 / 来源适配器 / HTML 渲染（纯标准库）。缺文件也不该让阅读器起不来。
 try:
     import feed as feed_mod
@@ -272,6 +283,22 @@ def stats_path():
         return override
     return os.path.join(APP_DIR, reading_stats.STATS_NAME)
 
+
+def sync_state_path():
+    """同步的运行时状态（远端 rev / 书 UID 缓存 / 设置时钟 / 墓碑）。
+
+    单独一个文件：config.json 每翻一页就被内存副本整份重写，那些东西放进去会被擦掉。
+    `STEALTHREADER_STATS` 指到别处时（探针）跟着一起搬，免得探针跑一遍把真机器的 rev 写坏。
+    """
+    override = os.environ.get("STEALTHREADER_STATS")
+    if override:
+        return os.path.join(os.path.dirname(override), "sync_state.json")
+    return os.path.join(APP_DIR, "sync_state.json")
+
+
+SYNC_MIN_GAP_SEC = 60          # 两轮自动同步至少隔这么久（手动点"立即同步"不受限）
+
+
 # 行距（字号行高的百分比）、段间距（同样以行高为基准）、页边距（逻辑像素）
 LINE_SPACING_MIN = 80
 LINE_SPACING_MAX = 250
@@ -397,7 +424,17 @@ DEFAULT_CONFIG = {
     "local_book_totals": {},
     "local_book_times": {},
     # 书架里点过「移出书架」的（books/ 目录里的书删不掉文件，只能先记着不显示）
-    "local_book_hidden": []
+    "local_book_hidden": [],
+    # --- 云端同步（设计见 docs/cloudflare-sync-design.md；这台机器自己的凭据与开关）---
+    # 运行时状态（rev / UID 缓存 / 设置时钟）全在 sync_state.json，不放这里：
+    # config.json 每翻一页就被整份重写，塞进去会被擦掉。
+    "sync": {
+        "enabled": False,                     # 总开关；关着就完全不联网
+        "base_url": "https://sync.noteklip.org",
+        "token": "",
+        "books": False,                       # 书文件要不要一起传（默认不传）
+        "auto": True,                         # 改了就自动同步（关掉只能手动点）
+    }
 }
 
 # 内置的安全文档：有人看到屏幕时顶上的那份"工作文档"。
@@ -4409,6 +4446,10 @@ class StealthReader(QWidget):
     peek_panel_close_signal = pyqtSignal()
     # 书架后台算完字数（epub 要解压，不能在界面线程读），发回主线程
     shelf_totals_signal = pyqtSignal(dict)
+    # 同步线程合并完，把"本地形状的数据"发回主线程写回（绝不从后台线程碰 self.config）
+    sync_applied_signal = pyqtSignal(object)
+    # 同步状态变化（成功/失败/待同步），给界面上的状态行用
+    sync_status_signal = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -4438,6 +4479,19 @@ class StealthReader(QWidget):
         self.stats_timer.setInterval(reading_stats.TICK_SEC * 1000)
         self.stats_timer.timeout.connect(self._stats_tick)
         self.stats_timer.start()
+
+        # --- 云端同步（细节全在 sync_engine.py；这里只有接线）---
+        self._sync_worker = None        # 后台线程，第一次要同步时才起
+        self._sync_timer = QTimer(self)  # 防抖：改完等一会儿再同步
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.timeout.connect(self._sync_fire)
+        self._sync_ready = False        # 起来这一路存盘不算"改动"，别触发同步
+        self._sync_applying = False     # 正在把远端结果写回，期间的 save_config 不再触发同步
+        self._sync_last_fire = 0.0      # 上一轮真跑的时间（限速用）
+        self._sync_last_status = {}     # 给界面看的最后一次结果
+        self.sync_applied_signal.connect(self._on_sync_applied)
+        self.sync_status_signal.connect(self._on_sync_status)
+        QTimer.singleShot(8000, self._sync_boot)     # 起来 8 秒后跑第一次（别跟首屏抢）
         self.is_popup_open = False               # 弹菜单/对话框时别让幽灵模式把字淡掉
         self.ghost_veiled = False                # 幽灵态下连高亮一起藏，别让彩色条露馅
         self.filter_drag_origin = None           # 中键/Alt+左键拖动窗口用
@@ -5582,7 +5636,12 @@ class StealthReader(QWidget):
         return True
 
     def _stats_commit(self):
-        return reading_stats.save(stats_path(), self.stats_data)
+        ok = reading_stats.save(stats_path(), self.stats_data)
+        try:
+            self.sync_kick("stats")
+        except Exception:
+            pass
+        return ok
 
     def forget_book(self, path):
         """从书架移出：位置/字数/时间三本账一起删，文件本身不动。
@@ -5640,6 +5699,10 @@ class StealthReader(QWidget):
                 json.dump(self.config, f, indent=4)
         except Exception as e:
             print(f"Failed to save config: {e}")
+        try:
+            self.sync_kick("config")
+        except Exception:
+            pass
 
     def on_update_text_safe(self, text, is_bottom):
         self.displaying_local_text = False
@@ -6662,6 +6725,7 @@ class StealthReader(QWidget):
         tray_menu.addAction("本地书架…").triggered.connect(self.open_local_shelf)
         tray_menu.addAction("打开本地书籍…").triggered.connect(self.open_local_file_dialog)
         tray_menu.addAction("设置…").triggered.connect(self.open_settings)
+        tray_menu.addAction("云端同步…").triggered.connect(self.open_sync_dialog)
         tray_menu.addSeparator()
         tray_menu.addAction("重新启动").triggered.connect(self.restart_app)
         tray_menu.addAction("退出").triggered.connect(self.quit_app)
@@ -10728,6 +10792,10 @@ class StealthReader(QWidget):
 
     def persist_annotations(self):
         save_annotations(self.annotations)
+        try:
+            self.sync_kick("annotations")
+        except Exception:
+            pass
 
     def chapter_at(self, offset):
         """这个偏移落在哪一章：返回 (标题, 层级)。epub 用目录，txt 用标题行兜底。"""
@@ -11620,6 +11688,407 @@ class StealthReader(QWidget):
         log_event("社区来源：%d 个（当前 %s）" % (len(self.feed_sources),
                                                 getattr(self.feed_source(), "key", "")))
 
+    # ================= 云端同步（这里只接线，干活的全在 sync_engine.py）=================
+    # 三条不可破的规矩（改这段代码前先读）：
+    #   1. 后台线程绝不碰 self.config / self.annotations / self.stats_data，也不写盘：
+    #      它只把合并结果发到主线程，由主线程写回内存再调应用自己的保存函数；
+    #   2. 合并结果只能"多"不能"少"，本地文件永远是真相（远端不会反向覆盖本机文件）；
+    #   3. 同步永远不许卡住界面：连接 20 秒超时、失败退避、整轮都在后台线程里。
+
+    def sync_conf(self):
+        """这台机器的同步设置。缺了补默认值，别让调用处到处判空。"""
+        conf = self.config.get("sync")
+        if not isinstance(conf, dict):
+            conf = {}
+            self.config["sync"] = conf
+        for key, val in (DEFAULT_CONFIG.get("sync") or {}).items():
+            conf.setdefault(key, val)
+        return conf
+
+    def sync_configured(self):
+        """开关开着、地址和 token 都填了，才算"能用"。"""
+        if not SYNC_OK:
+            return False
+        if os.environ.get("STEALTHREADER_SYNC") == "0":
+            return False        # 探针/调试用：彻底不联网（探针跑假账本，别把假数据并进真云端）
+        conf = self.sync_conf()
+        return (bool(conf.get("enabled"))
+                and bool(str(conf.get("base_url") or "").strip())
+                and bool(str(conf.get("token") or "").strip()))
+
+    def sync_device_name(self):
+        name = str(self.sync_conf().get("device") or "").strip()
+        if name:
+            return name
+        try:
+            import socket as _socket
+            name = _socket.gethostname()
+        except Exception:
+            name = ""
+        return (name or "pc")[:40]
+
+    def sync_kick(self, reason="change", delay_ms=None):
+        """有改动 → 安排一轮同步。防抖 + 限速，翻页翻得再凶也不会把网络打满。"""
+        if not getattr(self, "_sync_ready", False) or getattr(self, "_sync_applying", False):
+            return
+        if not self.sync_configured() or not self.sync_conf().get("auto", True):
+            return
+        if delay_ms is None:
+            delay_ms = {"config": 6000, "annotations": 4000, "stats": 15000}.get(reason, 6000)
+        wait = max(0.0, self._sync_last_fire + SYNC_MIN_GAP_SEC - time.time())
+        self._sync_timer.start(int(max(delay_ms / 1000.0, wait) * 1000))
+
+    def sync_snapshot(self):
+        """主线程此刻内存里的数据副本（深拷贝，交给后台线程随便用）。"""
+        import copy
+        book_paths = []
+        if self.sync_conf().get("books"):
+            try:
+                book_paths = list(list_book_files(self.shelf_dir()))
+            except Exception:
+                book_paths = []
+            for path in list((self.config.get("local_book_positions") or {}).keys()):
+                if path not in book_paths and os.path.isfile(path):
+                    book_paths.append(path)
+        return {"config": copy.deepcopy(self.config),
+                "annotations": copy.deepcopy(self.annotations),
+                "stats": copy.deepcopy(self.stats_data),
+                "book_paths": book_paths}
+
+    def _sync_ensure_worker(self):
+        if not SYNC_OK:
+            return None
+        worker = self._sync_worker
+        if worker is not None and worker.is_alive():
+            return worker
+        conf = self.sync_conf()
+        try:
+            worker = syncer.SyncWorker(
+                base_url=str(conf.get("base_url") or "").strip(),
+                token=str(conf.get("token") or "").strip(),
+                device_name=self.sync_device_name(),
+                state_path=sync_state_path(),
+                apply_cb=self.sync_applied_signal.emit,
+                log=log_event,
+                books=bool(conf.get("books")),
+                state=syncer.read_json(sync_state_path(), {}))
+            worker.start()
+        except Exception as e:
+            log_event("同步线程起不来：%s" % e)
+            return None
+        self._sync_worker = worker
+        return worker
+
+    def _sync_boot(self):
+        """起来几秒后的第一次：只跑一轮，把两边并一下。"""
+        if not self.sync_configured():
+            return
+        self._sync_ready = True
+        self.sync_now(reason="启动")
+
+    def sync_now(self, reason="手动"):
+        """立刻同步一轮（托盘里点、对话框里点、启动时）。"""
+        if not self.sync_configured():
+            self.sync_status_signal.emit({"ok": False, "error": "还没启用，或地址/token 没填",
+                                          "at": time.time()})
+            return False
+        worker = self._sync_ensure_worker()
+        if worker is None:
+            return False
+        self._sync_last_fire = time.time()
+        try:
+            worker.request(self.sync_snapshot(), reason)
+        except Exception as e:
+            log_event("同步请求失败：%s" % e)
+            return False
+        self.sync_status_signal.emit({"ok": True, "pending": True, "at": time.time()})
+        return True
+
+    def _sync_fire(self):
+        """防抖计时到了：真跑一轮。"""
+        if not self.sync_configured():
+            return
+        worker = self._sync_ensure_worker()
+        if worker is None:
+            return
+        self._sync_last_fire = time.time()
+        try:
+            worker.request(self.sync_snapshot(), "自动")
+        except Exception as e:
+            log_event("同步请求失败：%s" % e)
+
+    def _on_sync_status(self, info):
+        """后台线程回的"这一轮怎么样"：记日志、留给界面看。不弹窗，别打断阅读。"""
+        info = info or {}
+        self._sync_last_status = dict(info)
+        if info.get("pending"):
+            return                      # 只是排上了，等真跑完再记一行
+        if not info.get("ok"):
+            log_event("同步失败：%s" % (info.get("error") or "?"))
+            return
+        log_event("同步完成：%s" % (", ".join(info.get("kinds") or []) or "无变化"))
+
+    def _on_sync_applied(self, payload):
+        """后台线程并完的结果 → 主线程写回内存 + 存盘（绝不在别的线程里改这些对象）。"""
+        if not isinstance(payload, dict):
+            return
+        kinds = payload.get("kinds") or {}
+        notes = payload.get("notes") or []
+        if not kinds:
+            return
+        self._sync_applying = True
+        try:
+            style_changed = False
+            hotkey_changed = False
+            if "progress" in kinds:
+                prog = kinds["progress"] or {}
+                for key in ("local_book_positions", "local_book_totals",
+                            "local_book_times", "local_book_hidden"):
+                    if key in prog:
+                        self.config[key] = prog[key]
+            if "annotations" in kinds:
+                fresh = kinds["annotations"]
+                if isinstance(fresh, dict):
+                    self.annotations.clear()
+                    self.annotations.update(fresh)
+                    self.persist_annotations()
+            if "stats" in kinds:
+                fresh = kinds["stats"]
+                if isinstance(fresh, dict):
+                    self.stats_data.clear()
+                    self.stats_data.update(fresh)
+                    self._stats_commit()
+            if "settings" in kinds:
+                fresh = kinds["settings"] or {}
+                changed = {}
+                for key, val in fresh.items():
+                    if self.config.get(key) != val:
+                        changed[key] = val
+                if changed:
+                    self.config.update(changed)
+                    style_changed = True
+                    hotkey_changed = any(k in changed for k in (
+                        "boss_key", "peek_key", "safe_key", "lowkey_key",
+                        "solid_key", "anki_key", "feed_key"))
+            if "progress" in kinds or "settings" in kinds:
+                self.save_config()
+            if style_changed:
+                self.apply_style()
+            if hotkey_changed:
+                self.refresh_hotkeys()
+        except Exception as e:
+            log_event("同步写回失败：%s" % e)
+        finally:
+            self._sync_applying = False
+        for note in notes:
+            log_event("同步：%s" % note)
+        self.sync_status_signal.emit({"ok": True, "at": time.time(),
+                                      "kinds": sorted(kinds.keys()),
+                                      "notes": notes})
+
+    def sync_status_text(self):
+        """给界面/托盘看的一句话状态。"""
+        if not SYNC_OK:
+            return SYNC_IMPORT_HINT or "同步模块没加载"
+        conf = self.sync_conf()
+        if not conf.get("enabled"):
+            return "未启用"
+        if not self.sync_configured():
+            return "还没填地址或 token"
+        worker = self._sync_worker
+        if worker is None:
+            return "等第一次同步"
+        res = getattr(worker, "last_result", {}) or {}
+        if res.get("error"):
+            return "上次失败：%s" % res["error"]
+        state = getattr(worker, "state", {}) or {}
+        ok_at = float(state.get("last_ok_at") or 0)
+        if not ok_at:
+            return "还没成功过"
+        return "上次成功 %s" % time.strftime("%m-%d %H:%M", time.localtime(ok_at))
+
+    def stop_sync(self):
+        """退出前把线程收掉，顺手把状态落盘（rev 留着下次用）。"""
+        try:
+            if getattr(self, "_sync_timer", None) is not None:
+                self._sync_timer.stop()
+        except Exception:
+            pass
+        worker = getattr(self, "_sync_worker", None)
+        self._sync_worker = None
+        if worker is not None:
+            try:
+                worker.stop()
+                worker.save_state()
+            except Exception:
+                pass
+
+    def open_sync_dialog(self):
+        """托盘里的「云端同步…」：开关、地址、token、书文件、立即同步、状态。"""
+        if not SYNC_OK:
+            QMessageBox.warning(self, "云端同步", SYNC_IMPORT_HINT or "同步模块没加载")
+            return
+        conf = self.sync_conf()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("云端同步")
+        keep_above_page(dialog)
+        dialog.setMinimumWidth(520)
+        form = QFormLayout(dialog)
+        desc = QLabel("把进度、划线书签、阅读统计和一部分设置同步到 Cloudflare。\n"
+                      "只合并不覆盖：云端只会让本机变多，不会让本机变少。", dialog)
+        desc.setWordWrap(True)
+        form.addRow(desc)
+
+        enabled = QCheckBox("启用（关掉就完全不联网）", dialog)
+        enabled.setChecked(bool(conf.get("enabled")))
+        form.addRow(enabled)
+
+        url_edit = QLineEdit(str(conf.get("base_url") or ""), dialog)
+        url_edit.setPlaceholderText("https://sync.example.com")
+        form.addRow("地址：", url_edit)
+
+        token_row = QHBoxLayout()
+        token_edit = QLineEdit(str(conf.get("token") or ""), dialog)
+        token_edit.setEchoMode(QLineEdit.Password)
+        token_edit.setPlaceholderText("和 Worker 里 SYNC_TOKEN 一致")
+        show_btn = QPushButton("显示", dialog)
+        show_btn.setCheckable(True)
+        show_btn.toggled.connect(lambda on: token_edit.setEchoMode(
+            QLineEdit.Normal if on else QLineEdit.Password))
+        token_row.addWidget(token_edit)
+        token_row.addWidget(show_btn)
+        form.addRow("Token：", token_row)
+
+        books = QCheckBox("书文件也一起传（按内容去重，第一次会慢）", dialog)
+        books.setChecked(bool(conf.get("books")))
+        form.addRow(books)
+
+        auto = QCheckBox("有改动就自动同步", dialog)
+        auto.setChecked(bool(conf.get("auto", True)))
+        form.addRow(auto)
+
+        status = QLabel(self.sync_status_text(), dialog)
+        status.setWordWrap(True)
+        form.addRow("状态：", status)
+
+        row = QHBoxLayout()
+        test_btn = QPushButton("测试连接", dialog)
+        now_btn = QPushButton("立即同步", dialog)
+        pull_btn = QPushButton("从云端补齐书", dialog)
+        close_btn = QPushButton("关闭", dialog)
+        row.addWidget(test_btn)
+        row.addWidget(now_btn)
+        row.addWidget(pull_btn)
+        row.addStretch(1)
+        row.addWidget(close_btn)
+        form.addRow(row)
+
+        def _save_conf():
+            conf["enabled"] = enabled.isChecked()
+            conf["base_url"] = url_edit.text().strip()
+            conf["token"] = token_edit.text().strip()
+            conf["books"] = books.isChecked()
+            conf["auto"] = auto.isChecked()
+            self.save_config()
+
+        def _test():
+            _save_conf()
+            address = str(conf.get("base_url") or "").strip()
+            token = str(conf.get("token") or "").strip()
+            if not address or not token:
+                status.setText("地址和 token 都要填")
+                return
+            status.setText("正在连…")
+            QApplication.processEvents()
+
+            def work():
+                result = {"ok": False, "error": ""}
+                try:
+                    client = syncer.SyncClient(address, token)
+                    info = client.ping()
+                    result = {"ok": True, "latency": info.get("latency_ms")}
+                    client.close()
+                except Exception as e:
+                    result = {"ok": False, "error": str(e)}
+                self.sync_status_signal.emit(dict(result, test=True))
+
+            import threading
+            threading.Thread(target=work, daemon=True).start()
+
+        def _now():
+            _save_conf()
+            if self.sync_now(reason="手动"):
+                status.setText("已排上，稍等几秒")
+            else:
+                status.setText(self.sync_status_text())
+
+        def _pull():
+            """云端有、本机没有的书下到书架目录（要用户点了才动磁盘）。"""
+            _save_conf()
+            address = str(conf.get("base_url") or "").strip()
+            token = str(conf.get("token") or "").strip()
+            if not address or not token:
+                status.setText("地址和 token 都要填")
+                return
+            dest_dir = self.shelf_dir()
+            status.setText("正在数云端有哪些书…")
+            QApplication.processEvents()
+
+            def work():
+                try:
+                    client = syncer.SyncClient(address, token)
+                    local = set()
+                    for path in list_book_files(dest_dir):
+                        try:
+                            local.add(syncer._hash_file(path))
+                        except OSError:
+                            pass
+                    res = syncer.pull_books(client, dest_dir, local, log=log_event)
+                    client.close()
+                    self.sync_status_signal.emit({"pull": True, "ok": True, "result": res})
+                except Exception as e:
+                    self.sync_status_signal.emit({"pull": True, "ok": False, "error": str(e)})
+
+            import threading
+            threading.Thread(target=work, daemon=True).start()
+
+        def _on_status(info):
+            info = info or {}
+            if info.get("pull"):
+                if info.get("ok"):
+                    res = info.get("result") or {}
+                    extra = "，%d 本失败" % len(res.get("failed") or []) if res.get("failed") else ""
+                    status.setText("云端 %d 本：补下 %d 本，本机已有 %d 本%s" % (
+                        res.get("remote") or 0, res.get("downloaded") or 0,
+                        res.get("skipped") or 0, extra))
+                else:
+                    status.setText("拉书失败：%s" % info.get("error"))
+                return
+            if info.get("test"):
+                status.setText("连上了，%s ms" % info.get("latency") if info.get("ok")
+                               else "连不上：%s" % info.get("error"))
+            elif info.get("error"):
+                status.setText("上次失败：%s" % info["error"])
+            else:
+                status.setText(self.sync_status_text())
+
+        test_btn.clicked.connect(_test)
+        now_btn.clicked.connect(_now)
+        pull_btn.clicked.connect(_pull)
+        close_btn.clicked.connect(dialog.accept)
+        self.sync_status_signal.connect(_on_status)
+        was_auto = self._sync_ready
+        try:
+            dialog.exec_()
+        finally:
+            _save_conf()
+            try:
+                self.sync_status_signal.disconnect(_on_status)
+            except Exception:
+                pass
+            dialog.deleteLater()
+            self._sync_ready = was_auto or self.sync_configured()
+
     def open_settings(self):
         self.is_settings_open = True
         was_auto = self.config.get("auto_mode")
@@ -11709,6 +12178,7 @@ class StealthReader(QWidget):
 
     def closeEvent(self, event):
         self._stats_flush("关窗口")
+        self.stop_sync()          # 先停同步线程（它退出前会把 rev 落盘）
         self.exit_peek("close")  # 窗口关了必须先卸全局钩子，再走保存
         if self.review_mode:
             self.exit_review_mode(reason="close")   # 关窗口＝整套收起（只想藏卡片用 Ctrl+D）
@@ -11859,6 +12329,7 @@ class StealthReader(QWidget):
 
         self.peek_input_hook.uninstall()  # 钩子泄漏的症状是全系统滚轮发卡，退出必须拆干净
         keyboard.unhook_all()
+        self.stop_sync()                  # 同步线程也要停干净，顺带落 rev
         self.shutdown_anki()              # 放 Anki 出来 + 停后台线程（线程没停就退会崩）
         try:
             ctypes.windll.wtsapi32.WTSUnRegisterSessionNotification(int(self.winId()))
