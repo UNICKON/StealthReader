@@ -7,6 +7,8 @@ annotations.json
 # 个人阅读统计（时长 / 日账 / 会话）
 reading_stats.json
 reading_stats.json.tmp
+# 账本修复/迁移前留的备份（里头是个人阅读数据）
+reading_stats.json*.bak
 
 # 事件日志
 stealthreader.log
