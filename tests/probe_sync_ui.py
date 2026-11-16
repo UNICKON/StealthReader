@@ -180,6 +180,65 @@ def main():
                 os.environ["STEALTHREADER_SYNC"] = _hold3
             w.sync_conf()["auto"] = True
         check("关了「改了就自动同步」，每 15 分钟那一轮照样跑", fired["n"] == 1, fired["n"])
+
+        # ---- 同步回来的东西怎么落到本机：设置不落地，Cookie 要落地 ----
+        # 这一轮的真要求是「电脑端的设置不用同步，cookie 要多端同步」，所以这两条必须在
+        # 真实的窗口对象上验：_on_sync_applied 拿到 kinds 之后到底动了什么。
+        font_before = w.config.get("font_size")
+        color_before = w.config.get("text_color")
+        w._on_sync_applied({"kinds": {"settings": {"font_size": 99,
+                                                   "text_color": "rgba(1,2,3,255)"}},
+                            "notes": []})
+        check("设置从云端回来也不再落到本机（字号/颜色都没变）",
+              w.config.get("font_size") == font_before and w.config.get("text_color") == color_before,
+              (font_before, w.config.get("font_size"), color_before, w.config.get("text_color")))
+
+        import feed_sources as _fs
+        _tmp_auth = os.path.join(tempfile.mkdtemp(prefix="sr-auth-"), "feed_auth.json")
+        _real_path = _fs.auth_path
+        try:
+            _fs.auth_path = lambda root=None: _tmp_auth
+            with open(_tmp_auth, "w", encoding="utf-8") as f:
+                json.dump({"v2ex": {"cookie": "keep=1"}}, f)
+            w._on_sync_applied({"kinds": {"cookies": {"set": {"zhihu": {"cookie": "z_c0=9",
+                                                                      "user_agent": "UA-z"}},
+                                                      "drop": ["nga"]}},
+                                "notes": []})
+            with open(_tmp_auth, encoding="utf-8") as f:
+                got = json.load(f)
+        finally:
+            _fs.auth_path = _real_path
+            try:
+                import shutil as _sh
+                _sh.rmtree(os.path.dirname(_tmp_auth), ignore_errors=True)
+            except Exception:
+                pass
+        check("Cookie 从云端落地到 feed_auth.json", (got.get("zhihu") or {}).get("cookie") == "z_c0=9", got)
+        check("本地原有的那条没被写坏（只并、不整份覆盖）",
+              (got.get("v2ex") or {}).get("cookie") == "keep=1", got)
+
+        # 设置页贴完 Cookie 点保存：要真写盘，而且**要真排一轮同步**。
+        # 这条以前接在了对话框自己身上（self.sync_kick），一按就是 AttributeError 被
+        # 外层 except 吞掉——"贴了 Cookie 云端没动"这种哑巴问题就是这么来的。
+        import shutil as _sh2
+        _tmp2 = os.path.join(tempfile.mkdtemp(prefix="sr-auth2-"), "feed_auth.json")
+        kicked = []
+        _real_kick = w.sync_kick
+        try:
+            _fs.auth_path = lambda root=None: _tmp2
+            w.sync_kick = lambda reason="change", delay_ms=None: kicked.append(reason)
+            dlg = app_mod.SettingsDialog(w.config, w)
+            dlg.cookie_edits = {"zhihu": "z_c0=from_dialog"}
+            dlg.save_cookie_edits()
+            with open(_tmp2, encoding="utf-8") as f:
+                got2 = json.load(f)
+        finally:
+            w.sync_kick = _real_kick
+            _fs.auth_path = _real_path
+            _sh2.rmtree(os.path.dirname(_tmp2), ignore_errors=True)
+        check("设置页贴的 Cookie 真写进了 feed_auth.json",
+              (got2.get("zhihu") or {}).get("cookie") == "z_c0=from_dialog", got2)
+        check("贴完就排了一轮 cookies 同步（不是等 15 分钟）", kicked == ["cookies"], kicked)
     finally:
         try:
             w.stop_sync()

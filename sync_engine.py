@@ -46,9 +46,14 @@ MAX_CONFLICT_RETRY = 3
 SYNC_DEBUG = os.environ.get("STEALTHREADER_SYNC_DEBUG") == "1"   # 逐 kind 的细节日志
 KEEP_VERSIONS = 5
 
-SYNC_KINDS = ("progress", "annotations", "stats", "settings")
+# 设置**不再同步**：字体/字号/快捷键是"这台机器怎么顺手"的事，同步过去只会在另一台
+# 机器上制造惊喜。Cookie 反过来——它是"登录态"，换台机器就得重贴一遍，所以搬上云。
+SYNC_KINDS = ("progress", "annotations", "stats", "cookies")
+BASE_KINDS = ("progress", "annotations", "stats")
+SETTINGS_KIND = "settings"      # 旧客户端还会推这一档，服务端照收；新客户端不读不写
 
 # 这些键跨机器有意义；其余（窗口大小/位置/上一次打开的书/safe_doc_path 这类）是设备本地的，别同步
+# 注意：这一整张表**只在旧客户端还在用**（见 SETTINGS_KIND）。新客户端不再推/拉 settings。
 SYNC_SETTING_KEYS = (
     "font_size", "font_family", "line_spacing", "paragraph_spacing", "page_margin_chars",
     "first_line_indent", "paragraph_indent", "page_overlap_lines", "arrow_scroll_lines",
@@ -335,6 +340,11 @@ def stats_view(stats, uidmap, device):
 
 
 def settings_view(config, clock, device):
+    """【旧】设置视图。2026-11-16 起 `settings` 不在 SYNC_KINDS 里：本机不再推也不再读。
+
+    留着是因为（a）Worker 还收这一档，旧客户端不至于 404；（b）merge_settings 的合并/时钟
+    逻辑仍在 tests/probe_sync.py 里当纯函数测着。新代码别调它——要跨设备的登录态用 cookies。
+    """
     values = {}
     for key in SYNC_SETTING_KEYS:
         if key in config:
@@ -751,6 +761,105 @@ def settings_to_local(view, config):
     return out
 
 
+# ---------------------------------------------------------------- Cookie（跨设备登录态）
+# 为什么是 cookie 而不是 settings：Cookie 是"登录状态"，换台机器就得重贴一遍（或者让程序去
+# 翻浏览器 Cookie 库，而 Chrome 127+ 的 v20 加密根本翻不出来）。它只跟"你是谁"有关，跟
+# "这台机器怎么显示"无关，所以它值得跨设备；字号字体快捷键正好相反。
+#
+# 形状：{"v":2, "items": {来源: {"at": 时间戳, "cookie": "a=1; b=2", "user_agent": "...",
+#                            "deleted": true(可选)}}}
+# 合并只做"整条谁更新"，绝不做字段级拼接——Cookie 是一整串，拼起来只会是废的。
+
+COOKIE_SCHEMA = 1
+COOKIE_MAX_TOMBSTONES = 50
+
+
+def cookie_entries(auth):
+    """feed_auth.json 原始内容 → 同步用的形状（只留 cookie / user_agent，空的不算）。"""
+    out = {}
+    for key, val in (auth or {}).items():
+        if not isinstance(val, dict):
+            continue
+        cookie = str(val.get("cookie") or "").strip()
+        if not cookie:
+            continue
+        out[str(key)] = {"cookie": cookie,
+                         "user_agent": str(val.get("user_agent") or "")}
+    return out
+
+
+def _cookie_hash(row):
+    return _view_hash({"row": row})
+
+
+def cookie_clock(prev_clock, prev_hash, entries, local_tombstones=None, now=None):
+    """这条 Cookie 这次算"什么时候变的"。
+
+    - 内容跟上次记下的一样 → 沿用上次的时间（不然每一轮都会报"刚变过"，云端白写）
+    - 内容不一样 / 第一次见 → 就是现在
+    - 本地新长出来的一条，正好在墓碑里（本机重新贴了）→ 也是现在，并且从墓碑里撤掉
+    """
+    now = _now() if now is None else _num(now)
+    clock = {}
+    for key, row in (entries or {}).items():
+        h = _cookie_hash(row)
+        old_at = (prev_clock or {}).get(key)
+        same = (prev_hash or {}).get(key) == h
+        if key in (local_tombstones or {}) or old_at is None or not same:
+            clock[key] = now
+        else:
+            clock[key] = _num(old_at)
+    return clock
+
+
+def cookies_view(entries, clock, device, tombstones=None):
+    """cookies 这一档的视图：本地有的 + 本地删掉的（墓碑，带删除时间）。"""
+    items = {}
+    for key, row in (entries or {}).items():
+        items[key] = {"at": _num((clock or {}).get(key)),
+                      "cookie": row.get("cookie") or "",
+                      "user_agent": row.get("user_agent") or ""}
+    for key, at in (tombstones or {}).items():
+        if key not in items:
+            items[key] = {"at": _num(at), "deleted": True}
+    return {"v": STATE_VERSION, "schema": COOKIE_SCHEMA, "updated_at": _now(),
+            "device": device, "items": items}
+
+
+def merge_cookies(local, remote):
+    """整条比 at：谁新听谁的。deleted 也算一次更新（另一台清掉了，这边跟着清）。"""
+    left = dict((local or {}).get("items") or {})
+    right = dict((remote or {}).get("items") or {})
+    items = {}
+    for key in set(left) | set(right):
+        a, b = left.get(key), right.get(key)
+        if a is None:
+            items[key] = b
+            continue
+        if b is None:
+            items[key] = a
+            continue
+        if _num(a.get("at")) == _num(b.get("at")):
+            items[key] = _later(a, b)          # at 撞上了就按内容定，保证对称
+        else:
+            items[key] = a if _num(a.get("at")) > _num(b.get("at")) else b
+    return {"v": STATE_VERSION, "schema": COOKIE_SCHEMA, "updated_at": _now(),
+            "device": (local or {}).get("device") or (remote or {}).get("device") or "",
+            "items": items}
+
+
+def cookies_to_local(merged):
+    """合并结果 → {"set": {来源: {cookie, user_agent}}, "drop": [来源]}（主线程据此改文件）。"""
+    keep, drop = {}, []
+    for key, row in ((merged or {}).get("items") or {}).items():
+        if row.get("deleted") or not str(row.get("cookie") or "").strip():
+            drop.append(key)
+        else:
+            keep[key] = {"cookie": row.get("cookie") or "",
+                         "user_agent": row.get("user_agent") or ""}
+    return {"set": keep, "drop": sorted(drop)}
+
+
 # ---------------------------------------------------------------- HTTP 客户端
 
 class SyncError(Exception):
@@ -1021,7 +1130,7 @@ class SyncWorker(threading.Thread):
     """
 
     def __init__(self, *, base_url, token, device_name, state_path, apply_cb,
-                 log=None, kinds=SYNC_KINDS, books=False, state=None, index_fn=None):
+                 log=None, kinds=SYNC_KINDS, cookies=True, books=False, state=None, index_fn=None):
         super().__init__(daemon=True, name="StealthReaderSync")
         self.client = SyncClient(base_url, token)
         self.device_name = device_name or "unknown"
@@ -1029,6 +1138,8 @@ class SyncWorker(threading.Thread):
         self.apply_cb = apply_cb
         self.log = log or (lambda msg: None)
         self.kinds = tuple(kinds or SYNC_KINDS)
+        if not cookies:                     # 不想让登录态上云的人可以关掉这一档
+            self.kinds = tuple(k for k in self.kinds if k != "cookies")
         self.books = bool(books)
         # 章节偏移表的生成器（main.py 传进来：它已经有全文解析，别在引擎里再写一遍）
         self.index_fn = index_fn
@@ -1108,7 +1219,27 @@ class SyncWorker(threading.Thread):
         uidmap = uid_map_for(config, cache)
         paths_by_uid = uid_to_paths(uidmap)
         self._collect_tombstones(annotations, uidmap, cache)
-        settings_clock = self._settings_clock_for(config)
+
+        # Cookie：本地这份什么时候变的（内容指纹没变就沿用上次的时间，不然每轮都白写）
+        cookie_state = self.state.setdefault("cookies", {})
+        entries = cookie_entries(snapshot.get("cookies"))
+        tombs = dict(cookie_state.get("tombstones") or {})
+        if snapshot.get("cookies_ok", True):
+            for key in (cookie_state.get("hash") or {}):
+                if key not in entries and key not in tombs:
+                    tombs[key] = _now()          # 本机删了这条 → 记墓碑，让别的机器跟着删
+        for key in list(tombs):
+            if key in entries:
+                tombs.pop(key, None)             # 本机又有了 → 墓碑作废，本地说了算
+        if len(tombs) > COOKIE_MAX_TOMBSTONES:
+            tombs = dict(sorted(tombs.items(), key=lambda kv: _num(kv[1]))[-COOKIE_MAX_TOMBSTONES:])
+        cookie_clk = cookie_clock(cookie_state.get("clock"), cookie_state.get("hash"),
+                                  entries, local_tombstones=tombs)
+        self.state["cookies"] = {
+            "clock": cookie_clk,
+            "hash": {k: _cookie_hash(v) for k, v in entries.items()},
+            "tombstones": tombs,
+        }
 
         out = {"reason": reason, "kinds": {}, "notes": [], "device": self.device_name}
         manifest = self.client.manifest()
@@ -1119,13 +1250,13 @@ class SyncWorker(threading.Thread):
             "annotations": lambda: annotations_view(annotations, uidmap, self.device_name,
                                                     self.state.get("tombstones"), cache),
             "stats": lambda: stats_view(stats, uidmap, self.device_name),
-            "settings": lambda: settings_view(config, settings_clock, self.device_name),
+            "cookies": lambda: cookies_view(entries, cookie_clk, self.device_name, tombs),
         }
         mergers = {
             "progress": merge_progress,
             "annotations": merge_annotations,
             "stats": merge_stats,
-            "settings": merge_settings,
+            "cookies": merge_cookies,
         }
 
         for kind in self.kinds:
@@ -1231,9 +1362,21 @@ class SyncWorker(threading.Thread):
                 for uid, row in (merged.get("books") or {}).items()}
         elif kind == "stats":
             out["kinds"]["stats"] = stats_to_local(merged, uidmap, paths_by_uid)
-        elif kind == "settings":
-            out["kinds"]["settings"] = settings_to_local(merged, config)
-            self.state["settings_clock"] = dict(merged.get("clock") or {}) if isinstance(merged, dict) else {}
+        elif kind == "cookies":
+            local = cookies_to_local(merged)
+            out["kinds"]["cookies"] = local
+            # 记下"我们让主线程写进去的是什么"：下一轮本地文件跟它一样，就不会被误判成
+            # "本机刚改过"、把别处刚删掉的 Cookie 又用新时间戳复活（这条以前真踩过）。
+            cstate = self.state.setdefault("cookies", {})
+            clk = dict(cstate.get("clock") or {})
+            hsh = dict(cstate.get("hash") or {})
+            for key, row in (local.get("set") or {}).items():
+                hsh[key] = _cookie_hash(row)
+                clk[key] = _num(((merged.get("items") or {}).get(key) or {}).get("at"))
+            for key in local.get("drop") or []:
+                hsh.pop(key, None)
+                clk.pop(key, None)
+            cstate["clock"], cstate["hash"] = clk, hsh
 
     # --- 两件"记账"的活：墓碑、设置时钟 ---
     def _collect_tombstones(self, annotations, uidmap, cache=None):

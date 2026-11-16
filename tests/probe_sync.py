@@ -63,21 +63,24 @@ class Device:
             self.config["local_book_times"][book_path] = 1762950000.0
         self.annotations = {}
         self.stats = {"days": {}, "books": {}, "sessions": []}
+        self.cookies = {}                     # 就是 feed_auth.json 的内容
         self.state_path = os.path.join(self.root, "sync_state.json")
         self.applied = []
         self.worker = None
 
-    def make_worker(self, srv, books=False):
+    def make_worker(self, srv, books=False, cookies=True):
         self.worker = se.SyncWorker(
             base_url=srv.base_url, token=srv.token, device_name=self.name,
             state_path=self.state_path, apply_cb=self.apply, log=lambda m: None,
-            books=books)
+            books=books, cookies=cookies)
         return self.worker
 
     def snapshot(self):
         return {"config": copy.deepcopy(self.config),
                 "annotations": copy.deepcopy(self.annotations),
                 "stats": copy.deepcopy(self.stats),
+                "cookies": copy.deepcopy(self.cookies),
+                "cookies_ok": True,
                 "book_paths": [self.book_path] if self.book_path and os.path.isfile(self.book_path) else []}
 
     def apply(self, payload):
@@ -91,8 +94,12 @@ class Device:
             self.annotations = kinds["annotations"]
         if "stats" in kinds:
             self.stats = kinds["stats"]
-        if "settings" in kinds:
-            self.config.update(kinds["settings"])
+        if "cookies" in kinds:
+            fresh = kinds["cookies"] or {}
+            for key in fresh.get("drop") or []:
+                self.cookies.pop(key, None)
+            for key, row in (fresh.get("set") or {}).items():
+                self.cookies[key] = dict(row)
 
     def round(self, reason="test"):
         return self.worker._round(self.snapshot(), reason)
@@ -196,6 +203,19 @@ def run_pure():
     check("颜色用时钟更新的 A（a）", vals["text_color"] == "a", vals)
     check("设置视图带时钟（能再传回远端）", view.get("clock", {}).get("font_size") == T - 100, view.get("clock"))
 
+    section("Cookie 合并（整条比时间，不拼字段）")
+    l = se.cookies_view({"zhihu": {"cookie": "z_c0=old"}}, {"zhihu": 100.0}, "A")
+    r = se.cookies_view({"zhihu": {"cookie": "z_c0=new"}}, {"zhihu": 200.0}, "B")
+    m = se.merge_cookies(l, r)
+    check("谁新听谁的", se.cookies_to_local(m)["set"]["zhihu"]["cookie"] == "z_c0=new",
+          se.cookies_to_local(m))
+    check("合并对称（A并B == B并A）", json_eq(m["items"], se.merge_cookies(r, l)["items"]),
+          (m["items"], se.merge_cookies(r, l)["items"]))
+    tomb = se.cookies_view({}, {}, "A", {"zhihu": 300.0})
+    m2 = se.merge_cookies(tomb, r)
+    check("删除也算更新（晚一点的墓碑赢）", se.cookies_to_local(m2)["drop"] == ["zhihu"],
+          se.cookies_to_local(m2))
+
     section("书身份")
     tmp = tempfile.mkdtemp(prefix="sr_uid_")
     try:
@@ -272,10 +292,13 @@ def run_e2e():
         A.config["local_book_positions"][book] = 9000       # 读到第 9000 个字符
         A.highlight("第一段", 100, "h1")
         A.config["font_size"] = 18
+        A.cookies["zhihu"] = {"cookie": "z_c0=abc; d_c0=def", "user_agent": "UA-zhihu"}
         A.round("first")
-        kinds = srv.state("progress") is not None and srv.state("annotations") is not None \
-            and srv.state("stats") is not None and srv.state("settings") is not None
-        check("四个对象都传到远端了", kinds)
+        kinds = all(srv.state(k) is not None for k in ("progress", "annotations", "stats", "cookies"))
+        check("四类对象都传到远端了（进度/划线/统计/Cookie）", kinds,
+              {k: srv.state(k) is not None for k in ("progress", "annotations", "stats", "cookies")})
+        check("设置**没有**上云（settings 这一档不存在）", srv.state("settings") is None,
+              srv.state("settings"))
         check("进度里有这本书（按 UID）", len((srv.state("progress") or {}).get("books") or {}) == 1,
               (srv.state("progress") or {}).get("books"))
         check("A 的 sync_state 落了盘", os.path.isfile(A.state_path))
@@ -288,7 +311,10 @@ def run_e2e():
               B.config["local_book_positions"].get(book))
         check("B 拿到了划线", [h["id"] for h in (B.annotations.get(book) or {}).get("highlights") or []] == ["h1"],
               B.annotations.get(book))
-        check("B 拿到了字号 18", B.config.get("font_size") == 18, B.config.get("font_size"))
+        check("B 没被同步到字号（设置不同步，B 还是 17）", B.config.get("font_size") == 17,
+              B.config.get("font_size"))
+        check("B 拿到了知乎 Cookie", (B.cookies.get("zhihu") or {}).get("cookie") == "z_c0=abc; d_c0=def",
+              B.cookies.get("zhihu"))
         check("B 的账本也到了（1800 秒）", abs(sum(s["sec"] for s in B.stats["sessions"]) - 1800) < 1,
               [s["sec"] for s in B.stats["sessions"]])
         got_stats = [p["kinds"]["stats"] for p in A.applied if (p.get("kinds") or {}).get("stats")]
@@ -331,12 +357,30 @@ def run_e2e():
         check("墓碑不会把删掉的拉回来", "h2" not in [h["id"] for h in (A.annotations.get(book) or {}).get("highlights") or []],
               A.annotations.get(book))
 
-        section("设置双向")
-        B.config["text_color"] = "rgba(9,9,9,255)"
-        B.round("B set")
-        A.round("A pull set")
-        check("A 收到 B 改的颜色", A.config.get("text_color") == "rgba(9,9,9,255)", A.config.get("text_color"))
-        check("字号还是 18（没被 B 的旧值盖掉）", A.config.get("font_size") == 18, A.config.get("font_size"))
+        section("Cookie 双向：换台机器不用重贴")
+        B.cookies["nga"] = {"cookie": "ngaPassportUid=42; ngaPassportCid=x"}
+        B.round("B cookie")
+        A.round("A pull cookie")
+        check("A 也拿到了 NGA Cookie",
+              (A.cookies.get("nga") or {}).get("cookie") == "ngaPassportUid=42; ngaPassportCid=x",
+              A.cookies.get("nga"))
+        check("知乎那条没被顺手清掉",
+              (A.cookies.get("zhihu") or {}).get("cookie") == "z_c0=abc; d_c0=def",
+              A.cookies.get("zhihu"))
+        check("设字号还是各管各的（B 的字体类改动从没传过来）",
+              A.config.get("font_size") == 18 and B.config.get("font_size") == 17,
+              (A.config.get("font_size"), B.config.get("font_size")))
+
+        section("Cookie 删除也传播")
+        A.cookies.pop("nga", None)
+        A.round("A del cookie")
+        B.round("B pull del cookie")
+        check("B 那边的 NGA Cookie 也没了", "nga" not in B.cookies, list(B.cookies))
+        for _ in range(3):
+            A.round("A again")
+            B.round("B again")
+        check("删掉的不会被来回拉锯（几轮之后还是没了）",
+              "nga" not in A.cookies and "nga" not in B.cookies, (list(A.cookies), list(B.cookies)))
 
         section("冲突：另一端刚写过")
         A.config["local_book_positions"][book] = 9500

@@ -15,7 +15,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-KINDS = {"progress", "annotations", "stats", "settings"}
+KINDS = {"progress", "annotations", "stats", "cookies", "settings"}
 
 
 class FakeSyncServer:

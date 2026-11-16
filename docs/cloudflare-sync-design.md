@@ -70,7 +70,8 @@
         │  v1/state/progress.json     进度（按 book_uid）        │
         │  v1/state/annotations.json  划线/书签（含墓碑）        │
         │  v1/state/stats.json        阅读账本（sessions）       │
-        │  v1/state/settings.json     设置白名单                 │
+        │  v1/state/cookies.json      各站登录 Cookie（§29）     │
+        │  v1/state/settings.json     【旧】设置白名单，见 §29     │
         │  v1/state/history/{kind}/{ts}.json  最近 5 个旧版本    │
         │  v1/blob/{sha256}           书文件（内容寻址，可选）    │
         └───────────────────────────────────────────────────────┘
@@ -155,6 +156,13 @@
 > "这本书哪年开始读的"永久删掉——这正是反目标里不许发生的事。合并规则见 §7。
 
 **settings**（只同步"跨机器有意义"的键）
+
+> **2026-11-16 起这一档已经废弃，桌面端不再推也不再读**（下面这段留着当历史）。
+> 理由是真人一句「电脑端的设置不用同步，cookie 要多端同步」：字体/字号/快捷键是"这台机器怎么
+> 顺手"的事，同步过去只是在另一台机器上制造惊喜；真正跨机器缺的是**登录态**。
+> 现在这一档换成了 `cookies`，见 **§29**。Worker 仍然收 `settings`，只是为了让还没升级的
+> 旧客户端不报 404。
+
 - 同步：`font_size font_family line_spacing paragraph_spacing page_margin_chars first_line_indent
   paragraph_indent page_overlap_lines arrow_scroll_lines text_color bg_color opacity lowkey_key
   peek_key boss_key solid_key safe_key anki_deck anki_swallow_keys anki_conceal feed_lowkey
@@ -332,7 +340,8 @@ TOKEN_TTL_DAYS = "365"
 
 Worker 里只做四件事：
 1. `Authorization` 常量时间比较（`crypto.subtle.timingSafeEqual` 不可用时用手写异或比较）；
-2. 四个 kind 白名单（`progress|annotations|stats|settings`），其它一律 404，防止被当免费网盘；
+2. kind 白名单（`progress|annotations|stats|cookies`，外加 `settings` 只为旧客户端），其它一律 404，
+   防止被当免费网盘；
 3. 条件写（`onlyIf.etagMatches` / `*`），成功顺手把旧版本存进 `v1/state/history/{kind}/{ts}.json`，只留 5 个；
 4. blob 只允许 `sha256` 形式的 key、单次 ≤ 50 MB（epub 最大 8 MB，留余量）。
 
@@ -347,8 +356,9 @@ Class A 100 万次/月）连零头都用不到，正常是 0 元。
   "base_url": "",                 // 例如 https://sync.example.com（不要用 *.workers.dev，见 §14）
   "token": "",                    // 只存本机；界面里是密码框
   "device_name": "home-pc",
-  "kinds": {"progress": true, "annotations": true, "stats": true, "settings": true},
+  "kinds": {"progress": true, "annotations": true, "stats": true, "cookies": true},
   "books": false,                 // 书文件（19 MB，默认不同步）
+  "cookies": true,                // 各站登录 Cookie 跨设备（默认要：换台机器不用重贴，见 §29）
   "debounce_sec": 3,
   "interval_sec": 600
 }
@@ -358,8 +368,8 @@ Class A 100 万次/月）连零头都用不到，正常是 0 元。
 
 ## 11. 界面（三处，都很小）
 
-1. **设置 → 同步**：开关 / 服务器地址 / Token / 设备名 / 同步哪些内容（四个勾 + 书文件）/ 「连通性自检」/
-   「立即同步」/ 一行结果（`上次成功 20:41，推了 2 个对象，187 ms`）。
+1. **设置 → 同步**：开关 / 服务器地址 / Token / 设备名 / 同步哪些内容（四类 + 书文件 + Cookie）/
+   「连通性自检」/「立即同步」/ 一行结果（`上次成功 20:41，推了 2 个对象，187 ms`）。
 2. **托盘菜单**：「☁ 立即同步（上次 20:41）」。
 3. **首次启用时的对话框**（只有这一次）：
    - 远端空 → "上传本机数据（10 本书的进度、6 本的笔记、8 场账本）"；
@@ -1273,3 +1283,73 @@ Worker 版本 `3678cda7-847e-4ad5-8a97-e263d7d21cdb`。
 **说清楚没验到的**：以上全是本机无头 Edge 的 iPhone 仿真（UA + 390×844 + 真触摸事件），
 **没有真机**。iOS 上"加进主屏幕之后是不是真的全屏""安全区数值对不对"这两条只能你手上那台说了算；
 Safari 标签页里地址栏仍然只在滚动时收起，这一点改代码改不了。
+## 29. 第六轮：设置不再同步，Cookie 上云（2026-11-16）
+
+真人原话：「**电脑端的设置不用同步，cookie 要多端同步**」。
+
+### 29.1 为什么反过来
+
+- **设置**（字号 / 字体 / 行距 / 配色 / 老板键这些）是"这台机器怎么顺手"。原来按 `SYNC_SETTING_KEYS`
+  同步 26 个键，换来的常常是**在另一台机器上制造惊喜**：桌面 15 寸调好的字号，搬到小笔记本上挤成一坨；
+  一台机器上改的老板键，把另一台的热键覆盖掉。跨机器真正缺的从来不是这些。
+- **Cookie**（`feed_auth.json`）是登录态：知乎 / NGA / 虎扑 / 小红书这些来源，换台机器就得重贴一遍；
+  而 Chrome 127+ 的 v20 加密从浏览器里读不出来（`feed_cookies` 只能读 Firefox 明文和 Chrome/Edge 的
+  v10/v11），"从浏览器自动找"这条路在新机器上经常是死的。它只跟"你是谁"有关，跟"这台机器怎么显示"
+  无关，所以**它值得上云，设置不值得**。
+
+### 29.2 具体改了什么
+
+| 位置 | 改法 |
+| --- | --- |
+| `sync_engine.SYNC_KINDS` | `(progress, annotations, stats, settings)` → `(progress, annotations, stats, cookies)` |
+| `main._on_sync_applied` | 删掉 settings 分支（不再 `self.config.update(...)` / `apply_style()` / `refresh_hotkeys()`）；新增 cookies 分支 |
+| `main.sync_snapshot` | 多带 `cookies`（`feed_sources.load_auth` 的内容）与 `cookies_ok`（文件在不在） |
+| `main._apply_synced_cookies` | 合并结果写回 `feed_auth.json`（仍走 `feed_sources.save_auth`：先 `.bak` 再原子替换）；没变化就不写盘 |
+| `main.refresh_feed_auth` | 现场换掉已建好的来源对象里的 `http.cookies` / UA / `_sess`，不用重启 |
+| Worker `KINDS` | 加 `cookies`；`settings` 留着**只为还没升级的旧客户端**（新客户端不读不写，也不再 404 打扰它们） |
+| 网页端 | 一行没改：§24 起网页就不碰 `/v1/state/settings`，这次也**不碰 cookies**——登录态永远不下发到浏览器 |
+
+### 29.3 `cookies` 这一档的形状与合并
+
+```json
+{"v": 2, "schema": 1, "updated_at": 1763000000.5, "device": "home-pc",
+ "items": {"zhihu": {"at": 1763000000.5, "cookie": "z_c0=…; d_c0=…", "user_agent": "…"},
+           "nga":   {"at": 1763000100.0, "deleted": true}}}
+```
+
+- **整条比 `at`，不做字段级拼接**：Cookie 是一整串，拼起来只会是废的。
+- `deleted` 也是一次更新（墓碑）：一台机器清了某个站，另一台跟着清。
+- 只有"本机用户真改过"才刷新 `at`：内容指纹没变就沿用上次的 `at`，否则每轮都白写一次云端、
+  还害别的机器白拉一次。
+- 删除靠 `sync_state.json` 里的 `cookies.tombstones` 传播（上限 50 条）；本机又出现同一条时墓碑作废
+  ——"本地文件是真相"这条老规矩不变。
+- 只带 `cookie` / `user_agent` 两个字段（`cookie_entries()` 过滤），`feed_auth.json` 里将来加别的键不往云上带。
+- **踩到过一个坑**：B 收到 A 传来的 Cookie 之后，下一轮把它当"本机刚改过"给了**新的** `at`，于是 A 稍后
+  删掉的那条又被 B 用更新的时间戳复活了。改法：`_sync_kind` 在 cookies 这一档里，把"我们让主线程写进去
+  的内容指纹 + 远端那条的 `at`"立刻记进 state —— **收到的东西不算本机改动**。探针里对应
+  「删掉的不会被来回拉锯」。
+
+### 29.4 开关与界面
+
+- `config.json` 的 `sync.cookies`，默认 **true**；关掉就是 `SyncWorker(kinds=…)` 里去掉 `cookies`。
+- 同步对话框多一个勾「各站登录 Cookie 也一起同步（换台机器不用重贴）」，顶部说明改成
+  「把进度、划线书签、阅读统计和各站登录 Cookie 同步到 Cloudflare。**设置（字体/字号/快捷键/配色）不同步**」。
+- 设置页贴完 Cookie 点保存 → `refresh_feed_auth()` + `sync_kick("cookies")`（4 秒防抖），不用等 15 分钟那一轮。
+
+### 29.5 这一轮的探针
+
+| 探针 | 结果 | 这一轮多了什么 |
+| --- | --- | --- |
+| `probe_sync.py` | **98 / 98**（原 91） | 四类都上云且 `settings` **不存在**于远端、B 拿不到字号、Cookie 双向、删除传播、几轮之后不复活、整条比时间的纯函数测试（含 A 并 B == B 并 A 的对称性） |
+| `worker_selftest.mjs` | **69 / 69**（原 65） | `/v1/state/cookies` 新建 / 读回 / 条件写、`manifest` 里有 cookies 的 rev、未知 kind 仍 404 |
+| `probe_sync_ui.py` | 12 / 12 | 对话框照旧能开、能「从云端补齐书」、同步节奏没变 |
+| `probe_reader_ui.py` | 45 / 45 | — |
+| `probe_ui.py` | 530 / 532 | 未通过的两条（"第二楼折起后底部高度""本周时长 = 本周合计"）在**干净 HEAD 上同样失败**（已用 stash 对照复现），是这台机器 Qt 找不到字体的既存问题，与这一轮无关 |
+
+### 29.6 没验到的（说清楚）
+
+这台机器的桌面 Python 环境坏了：`%APPDATA%\WPS 灵犀\python-env\python.exe` 起不来
+（`0xC0000135`，缺 `python312.dll` / `msvcp140.dll` 等，只剩 macOS AppleDouble 的 `._*.dll` 占位文件）。
+所以这一轮**没能在真的桌面程序里点一次「立即同步」**；验到的是引擎（假账本 + 真合并）、探针
+（真 Qt 对话框）和 Worker 自测。桌面那半边只是接线：快照多带两个字段、应用时写回 `feed_auth.json`
+再刷新来源对象，没有动阅读 / 渲染 / 排版任何一行。

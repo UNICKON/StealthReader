@@ -170,6 +170,26 @@ const payload = (n) => JSON.stringify({ v: 1, schema: 1, n, books: {} });
 
   check("未知 kind → 404", (await call(e, "/v1/state/whatever", { headers: H() })).status === 404);
   check("未知路由 → 404", (await call(e, "/v1/nope", { headers: H() })).status === 404);
+
+  // cookies 是这一轮新加的一档（登录态跨设备）；settings 只为旧客户端留着
+  const ck = await jcall(e, "/v1/state/cookies", {
+    method: "PUT",
+    headers: H({ "Content-Type": "application/json", "X-Create": "1" }),
+    body: JSON.stringify({ v: 2, items: { zhihu: { at: 1, cookie: "z_c0=1" } } }),
+  });
+  check("cookies 这一档能新建", ck.res.status === 200, ck.res.status);
+  const ckGot = await jcall(e, "/v1/state/cookies", { headers: H() });
+  check("cookies 读得回来", ckGot.body.items.zhihu.cookie === "z_c0=1", JSON.stringify(ckGot.body));
+  const ckUpd = await jcall(e, "/v1/state/cookies", {
+    method: "PUT",
+    headers: H({ "Content-Type": "application/json", "If-Match": ck.body.rev }),
+    body: JSON.stringify({ v: 2, items: {} }),
+  });
+  check("cookies 能条件写", ckUpd.res.status === 200, ckUpd.res.status);
+  const ckMan = await jcall(e, "/v1/manifest", { headers: H() });
+  check("manifest 里有 cookies 的 rev", !!ckMan.body.kinds.cookies && !!ckMan.body.kinds.cookies.rev,
+    JSON.stringify(ckMan.body.kinds.cookies));
+
   const man = await jcall(e, "/v1/manifest", { headers: H() });
   check("manifest 里有 progress", !!man.body.kinds.progress && !!man.body.kinds.progress.rev, JSON.stringify(man.body));
   check("manifest 里没有没写过的 kind", man.body.kinds.stats === undefined, JSON.stringify(Object.keys(man.body.kinds)));

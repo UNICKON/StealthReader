@@ -3,7 +3,8 @@
  *
  * 这个文件只做四件事，故意保持"笨"：
  *   1. 认 token（Authorization: Bearer …），常量时间比较；
- *   2. 只放行四个 kind（progress / annotations / stats / settings），别的一律 404；
+ *   2. 只放行这几个 kind（progress / annotations / stats / cookies，
+ *      外加 settings 留给旧客户端），别的一律 404；
  *   3. 条件写：更新必须带 If-Match: <etag>，新建必须带 X-Create: 1；
  *      什么都没带的 PUT 一律 428 —— 服务端不提供"无条件覆盖"这条路；
  *   4. 书文件按 sha256 内容寻址，PUT/GET 直接转 R2。
@@ -12,7 +13,9 @@
  * 所以这个 Worker 出问题最多是"同步不动"，不会把谁的数据并坏。
  */
 
-const KINDS = new Set(["progress", "annotations", "stats", "settings"]);
+// settings 只留给还没升级的旧客户端：新客户端不同步设置（字体/字号/快捷键是每台机器自己的
+// 事），改同步 cookies（登录态，换台机器就得重贴一遍，所以值得上云）。
+const KINDS = new Set(["progress", "annotations", "stats", "cookies", "settings"]);
 const STATE_PREFIX = "v1/state/";
 const HISTORY_PREFIX = "v1/state/history/";
 const BLOB_PREFIX = "v1/blob/";

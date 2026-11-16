@@ -434,6 +434,7 @@ DEFAULT_CONFIG = {
         "base_url": "https://sync.noteklip.org",
         "token": "",
         "books": False,                       # 书文件要不要一起传（默认不传）
+        "cookies": True,                      # 登录 Cookie 要不要跨设备（默认要：换机器不用重贴）
         "auto": True,                         # 改了就自动同步（关掉只能手动点）
     }
 }
@@ -4141,6 +4142,17 @@ class SettingsDialog(QDialog):
                         data.pop(key, None)
             fs.save_auth(path, data)
             log_event("登录：写回 feed_auth.json（%d 个来源）" % len(edits))
+            # 刚贴/刚清的 Cookie：换掉已建好的来源对象里的登录态，并立刻排一轮同步
+            # （换台机器也能用上，不用等 15 分钟那一轮）。主窗口是外面给的，拿不到就算了。
+            win = getattr(self, "main_window", None)
+            for name, arg in (("refresh_feed_auth", None), ("sync_kick", "cookies")):
+                fn = getattr(win, name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    fn() if arg is None else fn(arg)
+                except Exception as exc:
+                    log_event("登录：%s 没成（%s）" % (name, exc))
         except Exception as exc:
             log_event("写 feed_auth.json 失败: %s" % exc)
 
@@ -11797,7 +11809,8 @@ class StealthReader(QWidget):
         if not self.sync_configured() or not self.sync_conf().get("auto", True):
             return
         if delay_ms is None:
-            delay_ms = {"config": 6000, "annotations": 4000, "stats": 15000}.get(reason, 6000)
+            delay_ms = {"config": 6000, "annotations": 4000, "stats": 15000,
+                        "cookies": 4000}.get(reason, 6000)
         wait = max(0.0, self._sync_last_fire + SYNC_MIN_GAP_SEC - time.time())
         self._sync_timer.start(int(max(delay_ms / 1000.0, wait) * 1000))
 
@@ -11813,9 +11826,19 @@ class StealthReader(QWidget):
             for path in list((self.config.get("local_book_positions") or {}).keys()):
                 if path not in book_paths and os.path.isfile(path):
                     book_paths.append(path)
+        cookies, cookies_ok = {}, False
+        try:
+            import feed_sources as _fs
+            path = _fs.auth_path()
+            cookies_ok = os.path.isfile(path)          # 文件在 = 这次读到的空就是"真清空了"
+            cookies = _fs.load_auth(path)
+        except Exception:
+            cookies, cookies_ok = {}, False
         return {"config": copy.deepcopy(self.config),
                 "annotations": copy.deepcopy(self.annotations),
                 "stats": copy.deepcopy(self.stats_data),
+                "cookies": copy.deepcopy(cookies),
+                "cookies_ok": cookies_ok,
                 "book_paths": book_paths}
 
     def _sync_ensure_worker(self):
@@ -11834,6 +11857,7 @@ class StealthReader(QWidget):
                 apply_cb=self.sync_applied_signal.emit,
                 log=log_event,
                 books=bool(conf.get("books")),
+                cookies=bool(conf.get("cookies", True)),
                 state=syncer.read_json(sync_state_path(), {}),
                 index_fn=book_char_index)
             worker.start()
@@ -11913,6 +11937,65 @@ class StealthReader(QWidget):
             ", ".join(info.get("kinds") or []) or "无变化", used,
             int(calls.get("GET") or 0), int(calls.get("PUT") or 0)))
 
+    def _apply_synced_cookies(self, payload):
+        """把合并后的 Cookie 写进 feed_auth.json（其它键原样保留，清空的按 drop 删）。
+
+        返回"真的改了没有"——没改就不写盘，不给 feed_auth.json 制造无谓的 mtime 变化。
+        """
+        try:
+            import feed_sources as fs
+        except Exception:
+            return False
+        keep = dict((payload or {}).get("set") or {})
+        drop = list((payload or {}).get("drop") or [])
+        path = fs.auth_path()
+        cur = fs.load_auth(path)
+        before = json.dumps(cur, ensure_ascii=False, sort_keys=True)
+        for key in drop:
+            cur.pop(key, None)
+        for key, row in keep.items():
+            if not isinstance(row, dict):
+                continue
+            old = cur.get(key) if isinstance(cur.get(key), dict) else {}
+            merged = dict(old)
+            merged["cookie"] = str(row.get("cookie") or "")
+            if row.get("user_agent"):
+                merged["user_agent"] = row["user_agent"]
+            if not merged["cookie"].strip():
+                cur.pop(key, None)
+            else:
+                cur[key] = merged
+        after = json.dumps(cur, ensure_ascii=False, sort_keys=True)
+        if after == before:
+            return False
+        fs.save_auth(path, cur)
+        log_event("同步：Cookie 写回 feed_auth.json（%d 条）" % len(keep))
+        return True
+
+    def refresh_feed_auth(self):
+        """Cookie 变了之后，把已经建好的来源对象里的登录态也换掉（不用重启程序）。"""
+        try:
+            import feed_sources as fs
+            auth = fs.load_auth(fs.auth_path())
+        except Exception:
+            return
+        for src in (self.feed_sources or []):
+            key = getattr(src, "key", "")
+            cred = auth.get(key) if isinstance(auth.get(key), dict) else {}
+            http = getattr(src, "http", None)
+            if http is not None:
+                try:
+                    http.cookies = fs._cookies_from(cred.get("cookie"))
+                    if cred.get("user_agent"):
+                        http.headers["User-Agent"] = cred["user_agent"]
+                    http._sess = None            # 丢掉旧会话，别把旧 Cookie 又带上
+                except Exception:
+                    pass
+            try:
+                src.auth = dict(cred)
+            except Exception:
+                pass
+
     def _on_sync_applied(self, payload):
         """后台线程并完的结果 → 主线程写回内存 + 存盘（绝不在别的线程里改这些对象）。"""
         if not isinstance(payload, dict):
@@ -11923,8 +12006,6 @@ class StealthReader(QWidget):
             return
         self._sync_applying = True
         try:
-            style_changed = False
-            hotkey_changed = False
             if "progress" in kinds:
                 prog = kinds["progress"] or {}
                 for key in ("local_book_positions", "local_book_totals",
@@ -11943,24 +12024,16 @@ class StealthReader(QWidget):
                     self.stats_data.clear()
                     self.stats_data.update(fresh)
                     self._stats_commit()
-            if "settings" in kinds:
-                fresh = kinds["settings"] or {}
-                changed = {}
-                for key, val in fresh.items():
-                    if self.config.get(key) != val:
-                        changed[key] = val
-                if changed:
-                    self.config.update(changed)
-                    style_changed = True
-                    hotkey_changed = any(k in changed for k in (
-                        "boss_key", "peek_key", "safe_key", "lowkey_key",
-                        "solid_key", "anki_key", "feed_key"))
-            if "progress" in kinds or "settings" in kinds:
+            cookies_changed = False
+            if "cookies" in kinds:
+                try:
+                    cookies_changed = self._apply_synced_cookies(kinds["cookies"] or {})
+                except Exception as e:
+                    log_event("同步写回 Cookie 失败：%s" % e)
+            if "progress" in kinds:
                 self.save_config()
-            if style_changed:
-                self.apply_style()
-            if hotkey_changed:
-                self.refresh_hotkeys()
+            if cookies_changed:
+                self.refresh_feed_auth()
         except Exception as e:
             log_event("同步写回失败：%s" % e)
         finally:
@@ -12023,7 +12096,8 @@ class StealthReader(QWidget):
         keep_above_page(dialog)
         dialog.setMinimumWidth(520)
         form = QFormLayout(dialog)
-        desc = QLabel("把进度、划线书签、阅读统计和一部分设置同步到 Cloudflare。\n"
+        desc = QLabel("把进度、划线书签、阅读统计和各站登录 Cookie 同步到 Cloudflare。\n"
+                      "**设置（字体/字号/快捷键/配色）不同步**——那是每台机器自己的事。\n"
                       "只合并不覆盖：云端只会让本机变多，不会让本机变少。", dialog)
         desc.setWordWrap(True)
         form.addRow(desc)
@@ -12052,6 +12126,10 @@ class StealthReader(QWidget):
         books.setChecked(bool(conf.get("books")))
         form.addRow(books)
 
+        cookies = QCheckBox("各站登录 Cookie 也一起同步（换台机器不用重贴）", dialog)
+        cookies.setChecked(bool(conf.get("cookies", True)))
+        form.addRow(cookies)
+
         auto = QCheckBox("有改动就自动同步", dialog)
         auto.setChecked(bool(conf.get("auto", True)))
         form.addRow(auto)
@@ -12077,6 +12155,7 @@ class StealthReader(QWidget):
             conf["base_url"] = url_edit.text().strip()
             conf["token"] = token_edit.text().strip()
             conf["books"] = books.isChecked()
+            conf["cookies"] = cookies.isChecked()
             conf["auto"] = auto.isChecked()
             self.save_config()
 
