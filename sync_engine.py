@@ -46,6 +46,11 @@ MAX_CONFLICT_RETRY = 3
 SYNC_DEBUG = os.environ.get("STEALTHREADER_SYNC_DEBUG") == "1"   # 逐 kind 的细节日志
 KEEP_VERSIONS = 5
 
+# 章节偏移表的 schema（必须和 main.INDEX_SCHEMA 对齐）：2 起多了 files（每个文件的起始字符
+# 偏移）。缓存里记着 schema，就是为了偏移表升版时老缓存也能重传一次——不然手机上永远
+# 拿不到 files，位置只能按字节比例猜。
+INDEX_SCHEMA = 2
+
 # 设置**不再同步**：字体/字号/快捷键是"这台机器怎么顺手"的事，同步过去只会在另一台
 # 机器上制造惊喜。Cookie 反过来——它是"登录态"，换台机器就得重贴一遍，所以搬上云。
 SYNC_KINDS = ("progress", "annotations", "stats", "cookies")
@@ -1429,7 +1434,9 @@ class SyncWorker(threading.Thread):
     def _sync_book_indexes(self, sha_by_path):
         """给阅读页（手机/Kindle/网页）用的章节偏移表：一本书一个几 KB 的 JSON。
 
-        只有"书没动过"才跳过；`book_index` 里记 (uid, size, mtime)，改一个字就重算重传。
+        只有"书没动过"才跳过；`book_index` 里记 (uid, size, mtime, schema)，改一个字就重算重传。
+        记 schema 是因为**偏移表本身升级**也要重传：schema 2 多了 files（每个文件的起始字符
+        偏移），网页靠它把"第几个字"精确换算到第几节，老缓存不重传就永远拿不到。
         算不出来（坏书/纯图片）就跳过，不因为一本书失败拖垮整轮。
         """
         if not self.index_fn:
@@ -1444,7 +1451,8 @@ class SyncWorker(threading.Thread):
                 continue
             row = cache.get(key) or {}
             if (row.get("uid") == sha[:16] and row.get("size") == st.st_size
-                    and row.get("mtime") == int(st.st_mtime)):
+                    and row.get("mtime") == int(st.st_mtime)
+                    and int(_num(row.get("schema")) or 1) >= INDEX_SCHEMA):
                 continue
             try:
                 payload = self.index_fn(path)
@@ -1462,7 +1470,8 @@ class SyncWorker(threading.Thread):
             except SyncError as e:
                 self.log("章节表传不上去：%s（%s）" % (os.path.basename(path), e))
                 continue
-            cache[key] = {"uid": sha[:16], "size": st.st_size, "mtime": int(st.st_mtime)}
+            cache[key] = {"uid": sha[:16], "size": st.st_size, "mtime": int(st.st_mtime),
+                          "schema": int(_num(payload.get("schema")) or 1)}
             done += 1
         if done:
             self.log("章节表：上传 %d 份（阅读页按它定位）" % done)

@@ -50,6 +50,7 @@ def load_book():
     with open(best[1], "rb") as f:
         data = f.read()
     BOOK["bytes"] = data
+    BOOK["path"] = best[1]            # 探针要拿它算真章节表（main.book_char_index）
     BOOK["sha"] = hashlib.sha256(data).hexdigest()
     BOOK["uid"] = BOOK["sha"][:16]
     BOOK["name"] = os.path.basename(best[1])

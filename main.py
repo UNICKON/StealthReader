@@ -884,9 +884,13 @@ def _epub_toc_entries(zf, opf_path, manifest):
     return [(t, f, l, lv) for t, f, l, lv in entries if l and l.strip()]
 
 
-def _load_epub(path):
+def _load_epub(path, file_starts=None):
     """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...], {标题行偏移},
-    {注释标记偏移: 对面那一处偏移})。"""
+    {注释标记偏移: 对面那一处偏移})。
+
+    传了 file_starts（dict）就顺手填上"每个 spine 文件（zip 内路径）的起始字符偏移"：
+    网页那边要拿它把"第几个字"精确换算到"哪一节、节内几分之几"，靠字节比例猜会差 1%。
+    """
     with zipfile.ZipFile(path) as zf:
         opf_path = None
         try:
@@ -991,6 +995,8 @@ def _load_epub(path):
                         for offset in offsets}
             headings.update(offset for _label, offset, _level in chapters)
             joined = "".join(blocks)
+            if file_starts is not None:
+                file_starts.update(file_start)
             return (joined, chapters, headings,
                     _epub_links_map(joined, docs, file_start))
 
@@ -1034,6 +1040,8 @@ def _load_epub(path):
 
         chapters.sort(key=lambda item: item[1])
         joined = "".join(blocks)
+        if file_starts is not None:
+            file_starts.update(file_start)
         return joined, chapters, headings, _epub_links_map(joined, docs, file_start)
 
 
@@ -1042,21 +1050,34 @@ def load_epub_with_headings(path):
     return _load_epub(path)
 
 
-def load_epub_text(path):
-    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...])。"""
-    text, chapters, _headings, _links = _load_epub(path)
+def load_epub_text(path, file_starts=None):
+    """解析 epub，返回 (全文, [(章节标题, 起始字符偏移, 层级), ...])。
+
+    file_starts 传 dict 时顺带填上每个 spine 文件的起始字符偏移（见 _load_epub）。
+    """
+    text, chapters, _headings, _links = _load_epub(path, file_starts)
     return text, chapters
 
 
+# 偏移表的 schema：2 起多一张 files（每个 spine 文件的起始字符偏移）。
+# 网页那边见到 schema>=2 才敢按文件锚点换算，不然退回老的"按字节比例"。
+INDEX_SCHEMA = 2
+
+
 def book_char_index(path):
-    """给多端阅读页用的章节偏移表：总字数 + 每章起始字符偏移 + 层级。
+    """给多端阅读页用的章节偏移表：总字数 + 每章起始字符偏移 + 层级（+ 每个文件的起点）。
 
     坐标就是本机那套：pos 是"抽出来的纯文本里第几个字"，所以网页/手机上读到的位置
     和桌面端是同一个数，不需要换算。纯派生数据，算不出来返回 None 就好。
+
+    schema 2 多了 files：[{path: zip 内路径, start: 该文件正文的起始字符偏移}, ...]（按 start 升序）。
+    网页端的书是按文件切节的，有了这张表，把"第几个字"换成"哪一节 + 节内比例"是精确的；
+    只按字节比例猜的话，同一本书能差 1%（十几页）。
     """
+    files = {}
     try:
         if str(path or "").lower().endswith(".epub"):
-            text, chapters = load_epub_text(path)
+            text, chapters = load_epub_text(path, files)
         else:
             text = read_book_text_quietly(path)
             chapters = []
@@ -1075,7 +1096,18 @@ def book_char_index(path):
             continue
         sections.append({"title": title, "start": start, "level": max(1, min(9, level))})
     sections.sort(key=lambda s: s["start"])
-    return {"schema": 1, "total": total, "sections": sections}
+    payload = {"schema": INDEX_SCHEMA, "total": total, "sections": sections}
+    if files:
+        # 一节一个文件的书占绝大多数：有了这张表，网页端不用再按字节比例瞎猜位置
+        rows = []
+        for target, start in sorted(files.items(), key=lambda kv: kv[1]):
+            try:
+                rows.append({"path": str(target), "start": max(0, int(start))})
+            except Exception:
+                continue
+        if len(rows) > 1:
+            payload["files"] = rows
+    return payload
 
 
 def read_book_text_quietly(path):

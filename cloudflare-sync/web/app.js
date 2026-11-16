@@ -42,6 +42,7 @@ const S = {
   books: [], values: {}, book: null, view: null,
   total: 0, pos: 0, timer: 0, dirty: false, applying: false, entered: false,
   flow: 'paginated', cols: 1,          // 版式：翻页/滚动、单栏/双栏（存在本机）
+  index: null, anchors: null, sf: null, // 桌面端偏移表 / 每节的起始字偏移 / 每节在全书的占比
   progressEtag: '', progressBooks: {}, // 关页面那一下只发一个 PUT，得先记着上次的 rev 和其他书
   syncEveryMs: 15 * 60 * 1000,         // 开着页面时每 15 分钟同步一次；关页面再同步一次
 }
@@ -211,6 +212,8 @@ async function openBook(book) {
   S.pos = book.pos || 0
   S.total = book.total || 0
   S.index = null                       // 换书了，上一本的章节表不能留着
+  S.anchors = null                     // 每节的起始字偏移（拿到偏移表再说）
+  S.sf = null                          // 每节在全书的占比（open 之后才有）
   S.dirty = false
 
   // 桌面端抽全文时算的章节表：拿到就能按"第几个字"精确定位，也能把 total 校准成桌面端那套
@@ -250,11 +253,30 @@ async function openBook(book) {
     }
   } catch (e) { /* 拿不到就退回"先 GET 再 PUT"的老路 */ }
 
-  // 有进度就跳过去。从头读的书（pos=0）跟着第一屏走，但 foliate 有时 open 完
-  // 拿到的是空壳文档（看着像白屏），这时用"翻一页再翻回来"逼它重排一次。
-  const frac = S.total > 0 ? clamp(S.pos / S.total, 0, 1) : 0
-  if (frac > 0) {
-    await goToFrac(frac)
+  // 书架那一行可能是几个小时前拉的（手机上的 PWA 一直挂在后台，不会重载），而别的设备
+  // 刚读过。上面这份进度文档是刚拿到的，它比书架那行新就按它定位——否则"PC 上读到第 10 章，
+  // 手机打开还停在第 2 章，然后一按返回就把 PC 的进度盖回第 2 章"。
+  try {
+    const row = S.progressBooks[S.book.uid]
+    const atRow = Number(row && row.at) || 0
+    const atShelf = Number(book.at) || 0
+    const rowPos = Number(row && row.pos)
+    if (row && Number.isFinite(rowPos) && rowPos >= 0
+        && atRow > atShelf && Math.abs(rowPos - S.pos) > 1) {
+      S.pos = Math.round(rowPos)
+      if (Number(row.total) > 0 && !S.total) S.total = Number(row.total)
+      book.pos = S.pos
+      book.at = atRow
+    }
+  } catch (e) { /* 老书架那个位置也能用，别因为这段打不开书 */ }
+
+  // 偏移表 schema>=2 带 files（每个文件的起始字符偏移）：有了就能按"第几个字"精确落位，
+  // 没有就只能按字节比例猜（同一本书能差 1%，十几页）。S.anchors=null 就是退回老路。
+  S.anchors = buildCharAnchors(view.book, S.index)
+  S.sf = sectionFractions()
+
+  if (S.pos > 0 && S.total > 0) {
+    await goToPos(S.pos)
   } else {
     const shown = () => {
       const r = S.view && S.view.renderer
@@ -276,7 +298,98 @@ async function openBook(book) {
   }
 }
 
-/* 按全书百分比定位。foliate 自带的 goToFraction 依赖"章节字数表"，
+/* 桌面端的坐标是"抽出来的全文里第几个字"。书是按文件切节的，偏移表 schema>=2 里
+   带 files：每个文件的起始字符偏移。有了它，[第几个字] ↔ [第几节 + 节内几分之几]
+   是精确换算；只有 total 的话只能按"字节比例"猜，实测差 1%（十几页）。
+
+   返回 {starts: [每节的起始字符偏移], total}，或者 null（索引太老/对不上 → 走老路）。 */
+function buildCharAnchors(book, index) {
+  const secs = (book && book.sections) || []
+  const files = (index && Number(index.schema) >= 2 && Array.isArray(index.files)) ? index.files : null
+  const total = Number(index && index.total) || 0
+  if (!secs.length || !files || files.length < 2 || !total) return null
+  const norm = (p) => String(p || '').replace(/^\.?\//, '')
+  const byPath = new Map()
+  for (const f of files) {
+    const key = norm(f && f.path)
+    const st = Number(f && f.start)
+    if (key && Number.isFinite(st) && st >= 0) byPath.set(key, st)
+  }
+  if (!byPath.size) return null
+  const starts = new Array(secs.length).fill(null)
+  let hit = 0
+  secs.forEach((s, i) => {
+    const st = byPath.get(norm(s && s.id))
+    if (st !== undefined) { starts[i] = st; hit += 1 }
+  })
+  // 一个路径都对不上（别处传上来的书、路径写法不同）：数量一致时按顺序对齐
+  if (!hit && files.length === secs.length) {
+    files.forEach((f, i) => { starts[i] = Number(f.start) || 0 })
+    hit = secs.length
+  }
+  if (hit < 2 || hit < Math.ceil(secs.length * 0.6)) return null
+  // 没对上的（封面、纯图片页）沿用前一个锚点，再保证单调不减
+  let last = 0
+  for (let i = 0; i < starts.length; i++) {
+    if (starts[i] === null) starts[i] = last
+    else last = starts[i]
+    if (i && starts[i] < starts[i - 1]) starts[i] = starts[i - 1]
+  }
+  return { starts, total: Math.max(total, starts[starts.length - 1] + 1) }
+}
+
+/* 每一节在全书里的位置（foliate 按字节算的累计比例）——换算节内比例要用它 */
+function sectionFractions() {
+  const v = S.view
+  try {
+    const f = v && typeof v.getSectionFractions === 'function' ? v.getSectionFractions() : null
+    return Array.isArray(f) && f.length > 1 ? f.map((x) => Number(x) || 0) : null
+  } catch (e) { return null }
+}
+
+/* relocate 之后：这一步该记成"第几个字" */
+function posOfLoc(loc) {
+  const frac = Number(loc && loc.fraction) || 0
+  const total = Number(S.total) || 0
+  const A = S.anchors
+  const sf = S.sf
+  const idx = Number(loc && loc.section && loc.section.current)
+  if (!A || !sf || !total || !Number.isFinite(idx) || idx < 0 || idx >= A.starts.length) {
+    return Math.round(frac * total)
+  }
+  const lo = sf[idx] || 0
+  const hi = idx + 1 < sf.length ? sf[idx + 1] : 1
+  const within = hi > lo ? clamp((frac - lo) / (hi - lo), 0, 1) : 0
+  const s0 = A.starts[idx]
+  const s1 = idx + 1 < A.starts.length ? A.starts[idx + 1] : A.total
+  return Math.round(clamp(s0 + within * (s1 - s0), 0, total))
+}
+
+/* 跳到"第几个字"：有锚点表就按节+节内比例走，没有就退回按比例 */
+async function goToPos(pos) {
+  if (S.anchors && S.total > 0) {
+    const v = S.view
+    const A = S.anchors
+    const p = clamp(Number(pos) || 0, 0, A.total)
+    let idx = A.starts.length - 1
+    for (let i = 0; i < A.starts.length; i++) {
+      const end = i + 1 < A.starts.length ? A.starts[i + 1] : A.total
+      if (p < end) { idx = i; break }
+    }
+    const s0 = A.starts[idx]
+    const s1 = idx + 1 < A.starts.length ? A.starts[idx + 1] : A.total
+    const within = s1 > s0 ? clamp((p - s0) / (s1 - s0), 0, 0.99) : 0
+    try { await v.goTo(idx) } catch (e) { return }
+    await new Promise((r) => setTimeout(r, 250))     // goTo 发起即返回，等它真换完
+    if (within > 0.01) {
+      try { await v.renderer.scrollToAnchor(within) } catch (e) { /* 差一点就落节首 */ }
+    }
+    return
+  }
+  return goToFrac(S.total > 0 ? clamp((Number(pos) || 0) / S.total, 0, 1) : 0)
+}
+
+/* 按全书百分比定位（没有锚点表时的老路）。foliate 自带的 goToFraction 依赖"章节字数表"，
    有些书里它还没准备好，调了等于没动（打开就回到开头）。这里自己按章节字数
    累加算出目标章节，用 goTo(章节下标) 跳——这条路桌面和手机上都实测有效。 */
 async function goToFrac(frac) {
@@ -319,12 +432,13 @@ async function goToFrac(frac) {
 function onRelocate(e) {
   const loc = (e && e.detail) || {}
   const frac = Number(loc.fraction) || 0
-  S.pos = Math.round(frac * (S.total || 0))
+  S.pos = posOfLoc(loc)                // 有锚点表就换算成"第几个字"，和桌面端同一个数
   S.dirty = true
   statMove(S.pos)                     // 统计只在本机攒着，跟"推不推"没关系
+  const pct = S.total ? Math.round((100 * S.pos) / S.total) : Math.round(frac * 100)
   $('#pos').textContent = S.total
-    ? `${Math.round(frac * 100)}%  ·  ${fmt(S.pos)} / ${fmt(S.total)} 字`
-    : `${Math.round(frac * 100)}%`
+    ? `${pct}%  ·  ${fmt(S.pos)} / ${fmt(S.total)} 字`
+    : `${pct}%`
   // 不做实时同步：这里只记"有改动"，等 15 分钟的定时器或者关页面时再推
 }
 

@@ -525,6 +525,55 @@ def main():
               bool(b2["text"]) and b2["text"] != first_text and b2["chars"] > 50, b2["text"][:24])
         check("进度也跟着新书重算（%s）" % b2["pos"], "/" in (b2["pos"] or ""), b2["pos"])
 
+        print("\n— 书架是旧的：别的设备刚读过，打开得跟着新进度 —")
+        ensure_bars(True)
+        box = json.loads(cdp.js("JSON.stringify(document.querySelector('#back').getBoundingClientRect())"))
+        tap(cdp, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+        cdp.wait_js("!document.querySelector('#shelf-pane').hidden", 10, "回书架")
+        time.sleep(1.2)                                   # 等 loadShelf 拉完
+        uid = mock.BOOK["uid"]
+        total = int(mock.LITE[uid]["total"])
+        doc = dict(mock.STATE.get("progress") or {})
+        books = dict(doc.get("books") or {})
+        old = dict(books.get(uid) or {})
+        old_at = float(old.get("at") or 0)
+        old_pos = int(old.get("pos") or 0)
+        # 书架上这一行现在显示的是不是旧位置（不然这段测不出东西）
+        shown = cdp.js("""(() => {
+          const li = Array.from(document.querySelectorAll('.book'))
+            .find(b => b.textContent.indexOf(%r) >= 0);
+          return li ? li.textContent : '';
+        })()""" % mock.BOOK["name"])
+        new_pos = int(total * 0.62)
+        books[uid] = {"title": old.get("title") or mock.BOOK["name"], "pos": new_pos,
+                      "total": total, "at": old_at + 5000, "dev": "desktop-pc"}
+        mock.STATE["progress"] = {"v": 1, "schema": 1, "updated_at": old_at + 5000,
+                                  "device": "desktop-pc", "books": books}
+        print("      书架显示 %r；旧 pos=%d，服务器上新 pos=%d（at %+d）"
+              % (str(shown)[:28], old_pos, new_pos, 5000))
+        i = cdp.js("Array.from(document.querySelectorAll('.book'))"
+                   ".findIndex(b => b.textContent.indexOf(%r) >= 0)" % mock.BOOK["name"])
+        cdp.js("document.querySelectorAll('.book')[%d].click(); 1" % max(int(i or 0), 0))
+        cdp.wait_js("window.__docs && window.__docs().length>0", 30, "旧书架开书")
+        time.sleep(2.6)
+        pos_txt = cdp.js("document.querySelector('#pos').textContent").strip()
+        pct = None
+        try:
+            pct = int((pos_txt.split("%")[0] or "0").strip())
+        except Exception:
+            pct = None
+        check("旧书架上点开，落到服务器那个新进度（%s）" % pos_txt,
+              pct is not None and pct >= 50, "pct=%s 旧 pos=%d 新 pos=%d" % (pct, old_pos, new_pos))
+        # 回书架会 force 推一次：进度文档里也不能被写成旧位置
+        ensure_bars(True)
+        box = json.loads(cdp.js("JSON.stringify(document.querySelector('#back').getBoundingClientRect())"))
+        tap(cdp, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+        cdp.wait_js("!document.querySelector('#shelf-pane').hidden", 10, "回书架2")
+        time.sleep(1.5)
+        after = int((((mock.STATE.get("progress") or {}).get("books") or {}).get(uid) or {}).get("pos") or 0)
+        check("回书架推上去的也不是旧位置（%d / 新 %d）" % (after, new_pos),
+              after >= int(total * 0.45), after)
+
         real = real_errs(cdp)
         check("整轮没有 JS 报错", real == [], real[:3])
         noisy = json.loads(cdp.js("JSON.stringify(window.__errs||[])") or "[]")
