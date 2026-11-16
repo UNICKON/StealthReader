@@ -1,0 +1,15 @@
+{
+  "name": "StealthReader 读",
+  "short_name": "读",
+  "description": "自己的书架，自己的进度，手机和电脑接着读。",
+  "start_url": "/r/",
+  "scope": "/r/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12100e",
+  "theme_color": "#12100e",
+  "icons": [
+    { "src": "/r/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/r/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

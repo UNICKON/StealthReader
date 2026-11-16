@@ -2,9 +2,17 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; frame-src 'self' blob:; base-uri 'none'; form-action 'self'; object-src 'none'">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; frame-src 'self' blob:; manifest-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'">
 <meta name="theme-color" content="#12100e">
+<!-- 从「添加到主屏幕」的图标打开时：没有地址栏、没有工具栏，状态栏压在正文上（真·全屏）。
+     Safari 里这三条没副作用，只有装成图标之后才生效。 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="读">
+<link rel="manifest" href="/r/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/r/icons/icon-192.png">
 <title>StealthReader · 读</title>
 <link rel="stylesheet" href="/r/style.css">
 </head>
@@ -83,6 +91,7 @@
     <span id="pos" class="meta">—</span>
     <button id="toc" class="ghost" type="button">目录</button>
     <button id="open-tools" class="ghost" type="button">Aa</button>
+    <button id="full" class="ghost" type="button" title="全屏（iPhone 上要先添加到主屏幕）">全屏</button>
   </div>
 </section>
 

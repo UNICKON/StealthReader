@@ -82,15 +82,25 @@ def main():
                 const arr = v.renderer.getContents() || [];
                 return arr.map(x => (x.doc && x.doc.body) ? x.doc.body.innerText : '').join('');
             };
+            // 直接从正文中间开始数：开头几节是扉页/版权页/目录，一节只有一两行字，
+            // 数出来的总数全看窗口落在哪儿，测不稳（不是正文翻页有问题）
+            // 跳到全书中间那一节：foliate 的 goTo 是发起即返回，要等它真的换页
+            await v.goTo(Math.floor((v.book.sections || []).length / 2));
+            await new Promise(r => setTimeout(r, 400));
+            const where = () => document.querySelector('#pos').textContent;
+            for (let i = 0; i < 25 && !grab().length; i++)
+                await new Promise(r => setTimeout(r, 80));
             let total = grab().length;
             for (let i = 0; i < 5; i++) {
                 v.next();
                 await new Promise(r => setTimeout(r, 260));
                 total += grab().length;
             }
-            return total;
+            return JSON.stringify({ total, at: where() });
         })()""", True)
-        check("连翻 6 页，正文读得到字（累计 %d 字）" % (seen or 0), (seen or 0) > 500, seen)
+        seen_info = json.loads(seen or "{}")
+        seen = seen_info.get("total")
+        check("连翻 6 页，正文读得到字（累计 %d 字）" % (seen or 0), (seen or 0) > 500, seen_info)
 
         style = cdp.js("""(() => {
             const v = document.querySelector('#view');

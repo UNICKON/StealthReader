@@ -2,11 +2,18 @@
   --paper: #fbf8f2;
   --ink: #1b1b1b;
   --pad: 18px;
+  --pad-v: 11px;
   --ui-bg: #12100e;
   --ui-fg: #e8e3da;
   --ui-dim: #9a9288;
   --ui-line: #2c2723;
   --accent: #c9a227;
+  /* iPhone 从主屏幕图标打开（standalone）时状态栏是透明的、压在正文上，
+     这几个安全区就在这种情况下有值；Safari 里是 0，一点不影响。 */
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
 }
 
 * { box-sizing: border-box; }
@@ -51,7 +58,9 @@ input {
 .pane[hidden] { display: none; }
 
 /* ── 登录 ─────────────────────────────────────────── */
-#login { align-items: center; justify-content: center; padding: 24px; }
+#login { align-items: center; justify-content: center;
+         padding: calc(24px + var(--sat)) calc(24px + var(--sar))
+                  calc(24px + var(--sab)) calc(24px + var(--sal)); }
 #login h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: 0.08em; }
 #login .hint { color: var(--ui-dim); font-size: 13px; margin: 0 0 18px; text-align: center; max-width: 22em; }
 #login form { display: flex; flex-direction: column; gap: 8px; width: min(420px, 100%); }
@@ -63,7 +72,9 @@ input {
 .err { color: #e2725b; min-height: 1.4em; font-size: 13px; }
 
 /* ── 书架 ─────────────────────────────────────────── */
-.bar { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--ui-line); }
+.bar { display: flex; align-items: center; gap: 12px;
+       padding: calc(14px + var(--sat)) calc(18px + var(--sar)) 14px calc(18px + var(--sal));
+       border-bottom: 1px solid var(--ui-line); }
 .bar h1 { margin: 0; font-size: 17px; font-weight: 600; }
 .bar .meta { margin-left: auto; }
 .bar-actions { display: flex; gap: 8px; margin-left: auto; }
@@ -113,7 +124,10 @@ input {
 #view-wrap {
   position: absolute;
   inset: 0;
-  padding: var(--pad);
+  /* 上下各让出状态栏 / 底部横条：从主屏幕图标打开时正文才不会钻到刘海底下。
+     --pad 由 app.js 按"页边距"算，这里只在它外面再套一层安全区。 */
+  padding: calc(var(--pad-v) + var(--sat)) calc(var(--pad) + var(--sar))
+           calc(var(--pad-v) + var(--sab)) calc(var(--pad) + var(--sal));
   overflow: hidden;
 }
 #view { display: block; inline-size: 100%; block-size: 100%; }
@@ -139,7 +153,7 @@ body.bare .hud { transform: translateY(130%); opacity: 0; pointer-events: none; 
 
 .tools {
   position: fixed;
-  right: 12px; bottom: 68px;
+  right: 12px; bottom: calc(68px + var(--sab));
   width: min(340px, calc(100vw - 24px));
   background: #171412;
   border: 1px solid var(--ui-line);
@@ -186,7 +200,9 @@ body.bare .hud { transform: translateY(130%); opacity: 0; pointer-events: none; 
   display: flex;
   flex-direction: column;
 }
-.toc-head { display: flex; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--ui-line); }
+.toc-head { display: flex; align-items: center;
+            padding: calc(12px + var(--sat)) calc(14px + var(--sar)) 12px calc(14px + var(--sal));
+            border-bottom: 1px solid var(--ui-line); }
 .toc-head button { margin-left: auto; }
 #toc-list { list-style: none; margin: 0; padding: 8px 0 40px; overflow-y: auto; flex: 1; }
 .toc-item { padding: 9px 14px; font-size: 14px; cursor: pointer; line-height: 1.4; }

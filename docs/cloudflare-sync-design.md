@@ -1184,3 +1184,92 @@ etag: <R2 的 etag>                        ← 过了 24 小时拿它来问"变�
 
 `worker_selftest.mjs` 因此从 60 项变成 **65 / 65**（etag/缓存头、304 空 body、引号 etag、
 etag 不符仍是 200、带 Range 不走 304）。
+## 28. 阅读页第五轮：iPhone 上真用出来的四个问题（外加一个自己撞见的白屏）
+
+这一轮不是我挑的题，是拿 iPhone 真读了一晚上，用户报的四条 + 我查的时候撞见的第五条：
+
+| 现象 | 真正的原因 | 改法 |
+| --- | --- | --- |
+| 换字体没反应 | 书自带的样式表给 `p`、`div` 写了 `font-family`。**子元素自己声明的字体比祖先的 `!important` 更硬**，所以只给 `body` 写 `!important` 压不住 | `bookCSS()` 里对 `body, body *` 都写 `font-family: … !important`，单独把 `code/pre/kbd/samp` 留成等宽 |
+| 左右翻页"很怪" | 分页模式下把手指位移交给 `paginator.scrollBy()`，而它解构的 `#scrollBounds` 只有 `#scrollTo()` 里才赋值 → 第一次划动就 `TypeError: undefined is not iterable … at Paginator.scrollBy (paginator.js:797)`；另外手指把小节拖到两页中间就停住，看着像"卡住了半页" | 触控模型整段重写（见 28.1） |
+| 上下滚到底不接下一章 | scrolled 模式下滚到头没有任何判定，`#onTouchEnd` 什么都不做 | 加 `#turnAtSectionEdge()`（见 28.2） |
+| 系统栏不沉浸、没有全屏 | iPhone 的 Safari **不给网页 `Element.requestFullscreen`**（`document.fullscreenEnabled` 是 false），地址栏只能靠滚动临时收起 | 上 PWA：`manifest` + `apple-mobile-web-app-*` + 安全区（见 28.3） |
+| 打开书第一页是白屏（我自己撞见的） | `view.open()` 有时候拿到的是**空壳文档**（`body.textContent` 长度 0，iframe 尺寸都正常）；而且 `goToFraction()` 依赖"章节字数表"，没准备好时**静默不动**（不抛错、也不换页） | 样式在 `open()` 之后立刻注入（`setStyles` 会重排一次）；还空就 `next()` + `prev()` 逼它重排；恢复进度不再用 `goToFraction`（见 28.4） |
+
+### 28.1 触控：点、划、双指各管一件事
+
+`paginator.js` 里 `#onTouchStart/Move/End` 全部重写，`#touchOf(e)` 统一取 `changedTouches[0] || touches[0]`：
+
+* 记录起点 `{x, y, t, vx, vy, dx, dy, moved, pinched, multitouch, link}`；`link` 是"起点在 `a[href]` 上"。
+* **位移必须在 `if (this.scrolled) return` 之前累加**，否则滚动模式看不到手指走了多远。
+* 分页模式下只在"横向位移大于纵向"时 `preventDefault()`，竖向滑动留给浏览器（不然会卡住整页）。
+* 抬手时按优先级判断，**命中一条就返回**：
+  1. `pinched || multitouch` → 什么都不做（双指缩放不翻页）
+  2. `link` → 交给链接自己的点击
+  3. `!moved` → 当点击：`#tapAt()`，`x < 0.3w` 回翻、`x > 0.7w` 前进、中间抛 `tap` 事件给 `app.js`（收/叫底栏）
+  4. `|dx| >= 24 && |dx| >= |dy| * 1.2` → 整页翻一页（横向），**不再让正文停在两页之间**
+  5. 滚动模式 → `#turnAtSectionEdge()`
+* 抛给外面的自定义事件都带 `{bubbles: true, composed: true}`，不然穿不出两层 shadow root。
+
+`app.js` 侧只做两件"跟界面有关"的事：`tap` 的 `zone === 'middle'` 收/叫底栏；底部 84px 内点一下把底栏叫出来。
+
+### 28.2 滚到底再滑一下 = 下一章
+
+```js
+#turnAtSectionEdge(state) {
+    if (Math.abs(state.dy) < 30 || Math.abs(state.dy) < Math.abs(state.dx) * 1.2) return
+    if (now - this.#lastSectionTurn < 900) return          // 900ms 冷却，防连翻两章
+    const atBottom = this.viewSize - this.end <= 4 && innerAtBottom
+    const atTop    = this.start <= 0 && innerAtTop
+    if (state.dy < 0 && atBottom) this.#touchTurn(1)
+    if (state.dy > 0 && atTop)    this.#touchTurn(-1)
+}
+```
+
+`innerAtBottom/innerAtTop` 是再看一眼 `#view.document.documentElement` 的 `scrollTop`——
+有些书在 iframe 里自己滚，只看外层 `start` 会漏判。
+
+### 28.3 沉浸：靠 PWA，不靠 requestFullscreen
+
+新增 `web/manifest.webmanifest`（`display: standalone`、`start_url`/`scope` 都是 `/r/`、
+`background_color`/`theme_color` = `#12100e`、192/512 图标）与 `web/icons/icon-{192,512}.png`，
+`index.html` 加 `apple-mobile-web-app-capable=yes`、`black-translucent`、`apple-touch-icon`；
+`style.css` 用 `env(safe-area-inset-*)` 变成 `--sat/--sab/--sal/--sar`，`#view-wrap` 的
+padding 直接吃这四个值——**只有 standalone 下它们才非 0**，普通 Safari 里等于没加。
+
+「全屏」按钮的优先级：已经在 fullscreen → 退出；浏览器给了 `requestFullscreen`/`webkitRequestFullscreen`
+→ 用；都没有（iPhone Safari）→ 如实说「iPhone 的 Safari 不给网页全屏：点底部「分享」→「添加到主屏幕」」。
+**不假装成功**。
+
+### 28.4 打开就白屏 + 恢复进度
+
+两件事其实同一个根：**foliate 的"读位置"接口不总靠得住**。
+
+* `goToFraction(frac)` → `#sectionProgress.getSection(frac)`，章节字数表没建好时返回的章节号是废的，
+  `renderer.goTo()` 里 `#canGoToIndex()` 一挡就静默返回——**不抛错、不换页**，外面看着就是"没反应"。
+* 实测：`await view.goTo(12)` / `goTo(20)` 是真的能换页（`#pos` 从 0% 跳到 30%/66%），
+  所以 app 侧自己算章节：按 `sections[i].size` 累加到目标字数 → `goTo(idx)` → 等 250ms →
+  `renderer.scrollToAnchor(章内比例)`（这个也是真的有效）。
+
+白屏那半：`open()` 之后立刻 `applyStyles()`（`setStyles` 会触发一次重排，正文这才铺出来），
+如果此时 `getContents()[0].doc.body.textContent` 还是空的，就 `next()` + `prev()` 再逼一次。
+探针里对应两条：`打开就有字（不是一片空白）`、`跳进正文后读得到整段字`。
+
+### 28.5 这一轮的探针
+
+| 探针 | 结果 | 这一轮多了什么 |
+| --- | --- | --- |
+| `probe_reader_ui.py` | **45 / 45** | 「连翻 6 页读得到字」改成先跳进正文中间（原来从扉页开始数，窗口一晃就掉到 400 多字，测的其实是扉页长度） |
+| `probe_web_mobile.py` | **40 / 0** | 换字体三种真不一样、点右侧/划左/划右各翻一页且落点对齐、点中间收/叫底栏、底部 84px 叫底栏、上下滚真能滚、滚到底多滑几下换到下一章（文字指纹变）、manifest/apple meta/图标真能取到、`requestFullscreen` 有就走、没有就弹"加到主屏幕"的提示 |
+| `probe_web_stats.py` | 27 / 27 | — |
+| `probe_web_upload_stats.py` | 28 / 28 | — |
+| `check_web_assets.py` | 32 / 32 | 线上 `app.js` / `style.css` / `index.html` / `paginator.js` / `manifest.webmanifest` / 两个图标逐字节对得上 |
+| `worker_selftest.mjs` | 65 / 65 | — |
+
+线上：`sync.noteklip.org/r/manifest.webmanifest` 200 `application/manifest+json`、
+`/r/icons/icon-192.png` 200 `image/png` 4,920 字节、`icon-512.png` 14,106 字节；
+Worker 版本 `3678cda7-847e-4ad5-8a97-e263d7d21cdb`。
+
+**说清楚没验到的**：以上全是本机无头 Edge 的 iPhone 仿真（UA + 390×844 + 真触摸事件），
+**没有真机**。iOS 上"加进主屏幕之后是不是真的全屏""安全区数值对不对"这两条只能你手上那台说了算；
+Safari 标签页里地址栏仍然只在滚动时收起，这一点改代码改不了。

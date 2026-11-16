@@ -217,6 +217,8 @@ async function openBook(book) {
     toast('这本书打不开：' + (e.message || e))
     return
   }
+  // 打开后立刻把字体/字号交给 renderer：foliate 刚 open 完拿到的是空壳文档，
+  // 这一步重排才会把正文铺出来（不然第一页一片空白，翻一下才有字）。
   applyStyles()
   applyLayout()
   barsShow(3200)                      // 刚打开时让人看见底栏，之后自己收起来
@@ -233,13 +235,68 @@ async function openBook(book) {
     }
   } catch (e) { /* 拿不到就退回"先 GET 再 PUT"的老路 */ }
 
-  if (S.pos > 0 && S.total > 0) {
-    const frac = clamp(S.pos / S.total, 0, 1)
-    try { await view.goToFraction(frac) } catch (e) { /* 从头开始读也不会丢进度 */ }
+  // 有进度就跳过去。从头读的书（pos=0）跟着第一屏走，但 foliate 有时 open 完
+  // 拿到的是空壳文档（看着像白屏），这时用"翻一页再翻回来"逼它重排一次。
+  const frac = S.total > 0 ? clamp(S.pos / S.total, 0, 1) : 0
+  if (frac > 0) {
+    await goToFrac(frac)
+  } else {
+    const shown = () => {
+      const r = S.view && S.view.renderer
+      if (!r || typeof r.getContents !== 'function') return false
+      return r.getContents().some(c => c.doc && c.doc.body &&
+        (c.doc.body.textContent || '').trim().length > 0)
+    }
+    if (!shown()) {
+      await new Promise((r) => setTimeout(r, 80))
+      if (!shown()) {
+        try { await view.next(); await view.prev() } catch (e) { /* 还是不行就先放着 */ }
+      }
+    }
   }
   renderTOC()
-  $('#pos').textContent = S.total ? `0%  ·  0 / ${fmt(S.total)} 字` : '—'
-  if (!S.total) ensureTotal(book).catch(() => {})   // 网页自己传上来的书：没人给它算总字数
+  if (!S.total) {
+    $('#pos').textContent = '—'
+    ensureTotal(book).catch(() => {})   // 网页自己传上来的书：没人给它算总字数
+  }
+}
+
+/* 按全书百分比定位。foliate 自带的 goToFraction 依赖"章节字数表"，
+   有些书里它还没准备好，调了等于没动（打开就回到开头）。这里自己按章节字数
+   累加算出目标章节，用 goTo(章节下标) 跳——这条路桌面和手机上都实测有效。 */
+async function goToFrac(frac) {
+  const v = S.view
+  if (!v) return
+  const f = clamp(frac, 0, 1)
+  const secs = (v.book && v.book.sections) || []
+  if (!secs.length) {
+    try { await v.goToFraction(f) } catch (e) { /* 没辙就先放着 */ }
+    return
+  }
+  const sizes = secs.map(s => Number(s.size) || 0)
+  const tot = sizes.reduce((a, b) => a + b, 0)
+  let idx = 0
+  let acc = 0
+  if (tot > 0) {
+    const target = f * tot
+    idx = secs.length - 1
+    for (let i = 0; i < secs.length; i++) {
+      if (acc + sizes[i] > target) { idx = i; break }
+      acc += sizes[i]
+    }
+  } else {
+    idx = Math.min(secs.length - 1, Math.floor(f * secs.length))
+  }
+  try { await v.goTo(idx) } catch (e) { return }
+  // goTo 是"发起即返回"，等它真的换完页再谈章内偏移
+  await new Promise((r) => setTimeout(r, 250))
+  const size = sizes[idx] || 0
+  if (size > 0 && tot > 0) {
+    const within = clamp((f * tot - acc) / size, 0, 0.99)
+    if (within > 0.02) {
+      try { await v.renderer.scrollToAnchor(within) } catch (e) { /* 章内偏一点不成就落章首 */ }
+    }
+  }
 }
 
 /* ── 位置：字符偏移 ↔ 进度 ─────────────────────────────── */
@@ -417,6 +474,13 @@ function bookCSS(c) {
       margin: 0 !important; padding: 0 !important;
       -webkit-text-size-adjust: 100%;
     }
+    /* 光给 body 加 !important 没用：书自带的样式表常给 p / div.calibre 自己写死字体，
+       子元素自己的声明永远赢过"继承来的"值，所以手机上换字体看着没反应。
+       这里把所有后代都压成同一个字体，代码块留着等宽。 */
+    body, body * { font-family: ${c.face} !important; }
+    code, pre, kbd, samp, tt, code * {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+    }
     p, li, blockquote, dd, div {
       font-size: inherit; line-height: ${c.lh};
       margin: 0 0 ${c.ps}px 0 !important;
@@ -435,8 +499,7 @@ function applyStyles() {
   document.documentElement.style.setProperty('--paper', c.paper)
   document.documentElement.style.setProperty('--ink', c.ink)
   document.documentElement.style.setProperty('--pad', `${Math.round(c.mg * c.size)}px`)
-  const wrap = $('#view-wrap')
-  if (wrap) wrap.style.padding = `${Math.round(c.mg * c.size * 0.6)}px ${Math.round(c.mg * c.size)}px`
+  document.documentElement.style.setProperty('--pad-v', `${Math.round(c.mg * c.size * 0.6)}px`)
   if (S.view && S.view.renderer && typeof S.view.renderer.setStyles === 'function') {
     S.view.renderer.setStyles(bookCSS(c))
   }
@@ -477,13 +540,18 @@ function saveLayout() {
 }
 
 /** 滚动模式滚 dy 像素：走 foliate 自己的 scrollToAnchor
-    （它的滚动盒子挂在 closed shadow root 里，外部拿不到；start/viewSize 是公开的 getter） */
+    （它的滚动盒子挂在 closed shadow root 里，外部拿不到；start/viewSize 是公开的 getter）
+    返回 false 表示"这个方向已经到头了"，交给调用方去翻章。 */
 function scrollStep(dy) {
   const r = S.view && S.view.renderer
   if (!r || typeof r.scrollToAnchor !== 'function') return false
   const size = Number(r.viewSize) || 0
   if (!size) return false
-  r.scrollToAnchor(clamp((Number(r.start) + dy) / size, 0, 1))
+  const start = Number(r.start) || 0
+  const page = Number(r.size) || size
+  if (dy > 0 && start + page >= size - 4) return false   // 已经到底
+  if (dy < 0 && start <= 0) return false                 // 已经到顶
+  r.scrollToAnchor(clamp((start + dy) / size, 0, 1))
   return true
 }
 
@@ -601,12 +669,19 @@ function turn(dir) {
   else S.view.prev()
 }
 
-/** 滚轮：翻页模式下一页一动；滚动模式往下滚 */
+/** 滚轮：翻页模式下一页一动；滚动模式往下滚，滚到头就接下一章 */
 function onWheel(e) {
   if (S.flow === 'scrolled') {
     const px = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1
-    if (!scrollStep(e.deltaY * px)) return
+    const dy = e.deltaY * px
+    if (!dy) return
     e.preventDefault()
+    if (scrollStep(dy)) return
+    // 到底/到顶了：再滚就翻章（触控板一次滑动会连发几十个，给个冷却）
+    const now = Date.now()
+    if (now - (onWheel.edge || 0) < 700) return
+    onWheel.edge = now
+    turn(dy > 0 ? 1 : -1)
     return
   }
   if (!e.deltaY && !e.deltaX) return
@@ -620,9 +695,14 @@ function onWheel(e) {
 }
 
 /** 点左三分之一往回、点右三分之一往前（滚动模式下点哪儿都不翻页）。
- *  最底下那一条留给"叫出底栏"，不拿来翻页——否则想点「书架」先翻过去一页。 */
+ *  最底下那一条留给"叫出底栏"，不拿来翻页——否则想点「书架」先翻过去一页。
+ *  手机上的点击现在由 paginator 在正文里先接住（它才拿得到 iframe 里的触摸），
+ *  处理完会抛 tap/swiped 上来；这条 click 路只剩"鼠标点在正文外的页边距"和桌面端。 */
+let ignoreClickUntil = 0
+
 function onTapTurn(e) {
   if (document.body.dataset.pane !== 'reader-pane') return
+  if (performance.now() < ignoreClickUntil) return
   if (e.clientY > window.innerHeight - 84) { barsShow(); return }
   if (S.flow === 'scrolled') return
   if (e.target && e.target.closest && e.target.closest('a[href]')) return
@@ -671,6 +751,46 @@ function hookDoc(doc) {
   doc.addEventListener('click', onTapTurn)
 }
 $('#view').addEventListener('load', (e) => hookDoc(e.detail && e.detail.doc))
+
+// 正文里那层（paginator）把"点了一下 / 横着划了一下"抛上来：它已经处理完翻页了，
+// 这里只管底栏，并且挡住紧跟其后的 click，免得一次点击翻两页。
+$('#view').addEventListener('tap', (e) => {
+  ignoreClickUntil = performance.now() + 500
+  if (document.body.dataset.pane !== 'reader-pane') return
+  const d = e.detail || {}
+  if (Number(d.clientY) > window.innerHeight - 84) return barsShow()   // 最下面一条：叫底栏
+  if (d.zone === 'middle') barsToggle()                                // 中间：有就收、没有就叫
+})
+$('#view').addEventListener('swiped', () => {
+  ignoreClickUntil = performance.now() + 500
+})
+
+/* ── 全屏：能真全屏的就全屏，iPhone 上说清楚该怎么办 ───────────
+   iOS 的 Safari 不给网页调 requestFullscreen（只有 iPad 和安卓/桌面浏览器给），
+   所以 iPhone 上唯一"没有状态栏和地址栏"的办法是"添加到主屏幕"，
+   那之后 manifest 里的 standalone 生效，系统状态栏压在正文上（真沉浸）。 */
+function isStandalone() {
+  return !!(window.navigator.standalone
+    || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches))
+}
+
+function toggleFull() {
+  const el = document.documentElement
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document)
+    return
+  }
+  const req = el.requestFullscreen || el.webkitRequestFullscreen
+  if (req) {
+    Promise.resolve(req.call(el)).catch(() => toast('这台设备不给网页全屏', 3200))
+    return
+  }
+  if (isStandalone()) return toast('已经是全屏了（从主屏幕图标打开的那种）', 3200)
+  toast('iPhone 的 Safari 不给网页全屏：点底部「分享」→「添加到主屏幕」，'
+    + '以后从桌面图标打开，就没有地址栏和状态栏了', 7000)
+}
+
+$('#full').addEventListener('click', toggleFull)
 
 document.addEventListener('keydown', (e) => {
   if (document.body.dataset.pane !== 'reader-pane') return

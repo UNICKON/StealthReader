@@ -173,7 +173,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(404, b"nf", "text/plain")
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".md": "text/plain; charset=utf-8",
-                 ".json": "application/json"}.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
+                 ".json": "application/json", ".webmanifest": "application/manifest+json",
+                 ".png": "image/png"}.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
         with open(full, "rb") as f:
             data = f.read()
         extra = {"Cache-Control": "no-cache"}

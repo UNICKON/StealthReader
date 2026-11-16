@@ -448,6 +448,8 @@ export class Paginator extends HTMLElement {
     #scrollBounds
     #touchState
     #touchScrolled
+    #lastSectionTurn = 0
+    #lastOffset = 0
     #lastVisibleRange
     constructor() {
         super()
@@ -556,7 +558,12 @@ export class Paginator extends HTMLElement {
         this.#footer = this.#root.getElementById('footer')
 
         this.#observer.observe(this.#container)
-        this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
+        // 本地补丁（StealthReader）：记下最后一次真实滚动位置。内容撑开（#expand 改内层尺寸）时
+        // 浏览器会把滚动位置夹回去，撑开之后要拿它把位置放回来，否则翻过去的一页会被弹回上一页。
+        this.#container.addEventListener('scroll', () => {
+            this.#lastOffset = this.start
+            this.dispatchEvent(new Event('scroll'))
+        })
         this.#container.addEventListener('scroll', debounce(() => {
             if (this.scrolled) {
                 if (this.#justAnchored) this.#justAnchored = false
@@ -670,7 +677,14 @@ export class Paginator extends HTMLElement {
         }
         this.#view = new View({
             container: this,
-            onExpand: () => this.#scrollToAnchor(this.#anchor),
+            // 本地补丁（StealthReader）：内容撑开时把滚动位置放回刚看的那一页。
+            // 上游是拿 #anchor 重新定位，而 #anchor 常常还停在上一页的范围，
+            // 于是刚翻过去的一页会被弹回来（手机上的手感就是翻页乱跳）。
+            onExpand: () => {
+                const want = this.#lastOffset
+                if (!Number.isFinite(want) || Math.abs(this.start - want) <= 2) return
+                try { this.#scrollTo(want, 'page') } catch (e) { /* 还没有 view */ }
+            },
         })
         this.#container.append(this.#view.element)
         return this.#view
@@ -824,49 +838,115 @@ export class Paginator extends HTMLElement {
             })
         })
     }
+    // 本地补丁（StealthReader）——手机上的翻页触控改成"成熟阅读器"那套：
+    //   · 点左侧 3 成往回、点右侧 3 成往前、点中间叫/收底栏（事件抛给外面，由 app.js 决定）；
+    //   · 横着划（超过 24px 且明显比竖向长）翻一页，不再让正文跟着手指停在两页之间；
+    //   · 竖着划、双指、捏过放大的、点链接的，一律不翻页；
+    //   · 滚动模式仍然交给浏览器原生滚动，只在滚到头还想往下看时续下一章。
+    #touchOf(e) {
+        return (e.changedTouches && e.changedTouches[0])
+            || (e.touches && e.touches[0]) || null
+    }
     #onTouchStart(e) {
-        const touch = e.changedTouches[0]
+        const touch = this.#touchOf(e)
+        const target = e.target
         this.#touchState = {
             x: touch?.screenX, y: touch?.screenY,
+            cx: touch?.clientX, cy: touch?.clientY,
             t: e.timeStamp,
-            vx: 0, xy: 0,
+            vx: 0, vy: 0,
+            dx: 0, dy: 0,
+            moved: false,
+            pinched: false,
+            multitouch: false,
+            link: !!(target && target.closest && target.closest('a[href]')),
         }
     }
     #onTouchMove(e) {
         const state = this.#touchState
+        if (!state) return
         if (state.pinched) return
-        state.pinched = globalThis.visualViewport.scale > 1
-        if (this.scrolled || state.pinched) return
+        state.pinched = globalThis.visualViewport?.scale > 1
+        if (state.pinched) return
         if (e.touches.length > 1) {
+            state.multitouch = true
             if (this.#touchScrolled) e.preventDefault()
             return
         }
-        e.preventDefault()
-        const touch = e.changedTouches[0]
+        const touch = this.#touchOf(e)
+        if (!touch) return
         const x = touch.screenX, y = touch.screenY
-        const dx = state.x - x, dy = state.y - y
-        const dt = e.timeStamp - state.t
+        const dx = (state.x ?? x) - x, dy = (state.y ?? y) - y
         state.x = x
         state.y = y
-        state.t = e.timeStamp
-        state.vx = dx / dt
-        state.vy = dy / dt
-        this.#touchScrolled = true
-        this.scrollBy(dx, dy)
+        state.dx += dx
+        state.dy += dy
+        if (Math.abs(state.dx) > 10 || Math.abs(state.dy) > 10) state.moved = true
+        if (this.scrolled) return          // 滚动模式：竖向交给浏览器原生滚，别吃事件
+        // 只横着划才吃事件：竖向留给人滚动/系统手势，别把整屏拖成橡皮筋
+        if (!state.moved) return
+        if (Math.abs(state.dx) > Math.abs(state.dy)) {
+            this.#touchScrolled = true
+            e.preventDefault()
+        }
     }
     #onTouchEnd() {
         this.#touchScrolled = false
-        if (this.scrolled) return
-
-        // XXX: Firefox seems to report scale as 1... sometimes...?
-        // at this point I'm basically throwing `requestAnimationFrame` at
-        // anything that doesn't work
-        requestAnimationFrame(() => {
-            const state = this.#touchState          // 本地补丁：没有 touchstart 就没有它
-            if (!state) return
-            if (globalThis.visualViewport.scale === 1)
-                this.snap(state.vx, state.vy)
-        })
+        const state = this.#touchState
+        this.#touchState = null
+        if (!state) return
+        if (this.scrolled) return this.#turnAtSectionEdge(state)
+        if (state.pinched || state.multitouch || state.link) return
+        const { dx, dy } = state
+        if (!state.moved) return this.#tapAt(state.cx, state.cy)
+        if (Math.abs(dx) < 24 || Math.abs(dx) < Math.abs(dy) * 1.2) return
+        this.#touchTurn(dx > 0 ? 1 : -1)     // 手指往左 = 看下一页
+    }
+    /** 点一下：左右三分之一翻页，中间那一竖条抛给外面（叫底栏）。
+     *  按屏幕宽度算，不用宿主元素的盒子——分页时整卷内容是横向排开的，
+     *  那个盒子会跟着整卷宽度涨到几千像素（真机触摸给的 clientX 是干净的，
+     *  走 CDP 灌事件时会带上这卷的偏移，所以只做兜底夹取）。 */
+    #tapAt(cx, cy) {
+        const w = globalThis.innerWidth || this.viewSize || 1
+        const x = Math.max(0, Math.min(w, Number(cx) || w / 2))
+        const zone = x < w * 0.3 ? 'prev' : x > w * 0.7 ? 'next' : 'middle'
+        this.dispatchEvent(new CustomEvent('tap', {
+            detail: { zone, x, y: Number(cy) || 0, clientY: Number(cy) || 0 },
+            bubbles: true, composed: true,
+        }))
+        if (zone === 'prev') this.#touchTurn(-1)
+        else if (zone === 'next') this.#touchTurn(1)
+    }
+    #touchTurn(dir) {
+        this.dispatchEvent(new CustomEvent('swiped', {
+            detail: { dir }, bubbles: true, composed: true,
+        }))
+        if (dir > 0) this.next()
+        else this.prev()
+    }
+    /** 滚动模式：已经滚到头，手指还往上推（或者已经贴顶还往下拉）→ 接上下一章/上一章。
+     *  foliate 自己不会这么干，而手指在 iframe 里滑是浏览器原生滚动，
+     *  滚到边界之后不会再有 scroll 事件，所以只能在这里看手势。 */
+    #turnAtSectionEdge(state) {
+        if (!this.#view) return
+        if (state.pinched || state.multitouch) return
+        const { dx, dy } = state
+        if (Math.abs(dy) < 30 || Math.abs(dy) < Math.abs(dx) * 1.2) return
+        const now = performance.now()
+        if (now - this.#lastSectionTurn < 900) return
+        // 正文既可能由 #container 滚，也可能由 iframe 自己的 document 滚，两头都认
+        const doc = this.#view.document?.documentElement
+        const innerAtBottom = doc ? doc.scrollTop + doc.clientHeight >= doc.scrollHeight - 4 : true
+        const innerAtTop = doc ? doc.scrollTop <= 0 : true
+        const atBottom = (this.viewSize - this.end <= 4) && innerAtBottom
+        const atTop = this.start <= 0 && innerAtTop
+        if (dy > 0 && atBottom) {
+            this.#lastSectionTurn = now
+            this.#touchTurn(1)
+        } else if (dy < 0 && atTop) {
+            this.#lastSectionTurn = now
+            this.#touchTurn(-1)
+        }
     }
     // allows one to process rects as if they were LTR and horizontal
     #getRectMapper() {
@@ -958,6 +1038,7 @@ export class Paginator extends HTMLElement {
     #afterScroll(reason) {
         const range = this.#getVisibleRange()
         this.#lastVisibleRange = range
+        this.#lastOffset = this.start
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
             this.#anchor = range
