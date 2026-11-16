@@ -929,8 +929,14 @@ export class Paginator extends HTMLElement {
         x = Math.max(0, Math.min(span, x))
         const zone = !turn ? 'middle'
             : x < span * 0.3 ? 'prev' : x > span * 0.7 ? 'next' : 'middle'
+        // 竖着的坐标同样只报"在这一页的第几成"，不报原始 clientY：
+        // 有的环境给的 clientY 也带偏移（滚动模式里会是整篇文档的坐标），
+        // 换算成比例之后，外面判"点在不在最下面那一条"就不会被偏移带跑。
+        const doc = this.#view && this.#view.document
+        const docH = doc ? (doc.documentElement.clientHeight || 0) : 0
+        const yf = docH > 0 ? (Number(cy) || 0) / docH : null
         this.dispatchEvent(new CustomEvent('tap', {
-            detail: { zone, x, y: Number(cy) || 0, clientY: Number(cy) || 0, raw },
+            detail: { zone, x, y: Number(cy) || 0, clientY: Number(cy) || 0, raw, yf },
             bubbles: true, composed: true,
         }))
         if (!turn) return                    // 滚动模式里没有"点左三分之一翻页"这回事

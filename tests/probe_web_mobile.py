@@ -334,14 +334,69 @@ def main():
         check("抖动那一下也没被当成划动去翻页（%s）" % p_mid, view(cdp)["pos"] == p_mid,
               "%s vs %s" % (p_mid, view(cdp)["pos"]))
 
+        def bare():
+            return cdp.js("document.body.classList.contains('bare')")
+
+        def ensure_bars(shown):
+            """把底栏摆到"开着/收着"。用真点去摆：直接改类名会被上一次 barsShow
+               留下的 2.6 秒自动收起计时器打断，测出来的状态就不稳。"""
+            for _ in range(3):
+                if (not bare()) == shown:
+                    return True
+                tap(cdp, W // 2, int(H * 0.45))
+                time.sleep(0.35)
+            return (not bare()) == shown
+
         print("\n— 点最下面那一条：叫底栏，不翻页 —")
+        ensure_bars(False)                                  # 先收起来，从"收着"开始点
         before = view(cdp)["pos"]
         tap(cdp, W // 2, H - 30)
-        time.sleep(0.4)
-        check("摸一下屏幕底部，底栏浮出来",
-              not cdp.js("document.body.classList.contains('bare')"))
+        time.sleep(0.45)
+        check("摸一下屏幕底部，底栏浮出来", not bare())
         check("底部那一条不会顺手翻页（%s）" % before, view(cdp)["pos"] == before,
               "%s vs %s" % (before, view(cdp)["pos"]))
+
+        # 真人报的正是这一条：「单击唤起底栏有了，再单击收起还没实现」。底栏一升起来，
+        # 屏幕最下面那一块就归它了（它压在上面）；再加上 iOS 点完补发的 mousemove
+        # 也会把底栏弹回来——两条路都让"收起"收不动。下面把每个位置都真点一遍。
+        print("\n— 底栏升起来之后，再点一下要能收回去 —")
+        check("先把底栏摆成开着的", ensure_bars(True))
+        tap(cdp, W // 2, H - 30)                              # 点在底栏自己身上
+        time.sleep(0.45)
+        check("点底栏那块（屏幕最下面）能收回去", bare())
+
+        tap(cdp, W // 2, int(H * 0.87))                       # 贴着底栏的正文
+        time.sleep(0.45)
+        check("贴着底栏那一行正文，点一下叫出底栏", not bare())
+        tap(cdp, W // 2, int(H * 0.87))
+        time.sleep(0.45)
+        check("同一位置再点一下，收回去", bare())
+
+        tap(cdp, W // 2, int(H * 0.45))                       # 正中间
+        time.sleep(0.45)
+        check("中间点一下，叫出来", not bare())
+        tap(cdp, W // 2, int(H * 0.45))
+        time.sleep(0.45)
+        check("中间再点一下，收回去", bare())
+
+        # 四周页边距（正文外那几像素）以前点了什么都不会发生，现在也算"点了一下正文"
+        tap(cdp, W // 2, 5)
+        time.sleep(0.45)
+        check("最上面那条页边距，点一下叫出来", not bare())
+        tap(cdp, W // 2, 5)
+        time.sleep(0.45)
+        check("页边距上再点一下，收回去", bare())
+
+        # 底栏上的按钮还是按钮：点「目录」要开面板，不能顺手把底栏收掉
+        check("底栏再摆成开着的", ensure_bars(True))
+        box = json.loads(cdp.js("JSON.stringify(document.querySelector('#toc').getBoundingClientRect())"))
+        tap(cdp, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
+        time.sleep(0.5)
+        check("点底栏上的「目录」还是照常开面板",
+              cdp.js("!document.querySelector('#toc-panel').hidden"))
+        check("点按钮不会把底栏顺手收掉", not bare())
+        cdp.js("document.querySelector('#toc-close').click(); 1")
+        time.sleep(0.3)
 
         print("\n— 上下滚：滚到底要接下一章 —")
         cdp.js("document.querySelector('[data-act=\"flow-scroll\"]').click(); 1")
@@ -442,9 +497,9 @@ def main():
         first_title = view(cdp)["title"]
         sha2, size2 = add_second_book()
         check("替身服务器备好了第 2 本书（%d KB）" % (size2 // 1024), bool(sha2))
-        tap(cdp, W // 2, H - 30)
-        time.sleep(0.3)
-        tap(cdp, 40, H - 30)          # 左下角「← 书架」
+        ensure_bars(True)                                     # 底栏得先露出来，按钮才点得到
+        box = json.loads(cdp.js("JSON.stringify(document.querySelector('#back').getBoundingClientRect())"))
+        tap(cdp, int(box["x"] + box["width"] / 2), int(box["y"] + box["height"] / 2))
         cdp.wait_js("!document.querySelector('#shelf-pane').hidden", 10, "回到书架")
         check("手机上点「← 书架」能回去", cdp.js("!document.querySelector('#shelf-pane').hidden"))
 

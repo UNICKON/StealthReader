@@ -718,13 +718,20 @@ let ignoreClickUntil = 0
 function onTapTurn(e) {
   if (document.body.dataset.pane !== 'reader-pane') return
   if (performance.now() < ignoreClickUntil) return
-  if (e.clientY > window.innerHeight - 84) { barsShow(); return }
-  if (S.flow === 'scrolled') return
+  if (e.clientY > window.innerHeight - 84) {
+    if (document.body.classList.contains('bare')) barsShow()
+    else barsHide()
+    return
+  }
   if (e.target && e.target.closest && e.target.closest('a[href]')) return
   const w = window.innerWidth
   const x = e.clientX
-  if (x < w * 0.3) return turn(-1)
-  if (x > w * 0.7) return turn(1)
+  // 左右三分之一翻页（滚动模式不翻页），其余地方——包括四周的页边距——点了就收/叫底栏
+  if (S.flow !== 'scrolled') {
+    if (x < w * 0.3) return turn(-1)
+    if (x > w * 0.7) return turn(1)
+  }
+  barsToggle()
 }
 
 /* ── 沉浸：底栏平时收起来 ───────────────────────────────
@@ -747,15 +754,27 @@ function barsToggle() {
   if (document.body.classList.contains('bare')) barsShow()
   else barsHide()
 }
+// 鼠标挪到底部就把底栏叫出来——只在"真有鼠标"的设备上这么干。
+// iOS 每次点完还会补发一串 mousemove/mousedown/click（兼容事件），手指点在屏幕底部时
+// 那条 mousemove 就被当成"鼠标移到底部"，把刚落下去的底栏又弹回来：于是"再点一下收起"
+// 在底部那一块永远收不起来。触屏上这条整个不参与，底栏交给 tap / click 那两条路。
+const canHover = window.matchMedia ? window.matchMedia('(hover: hover)').matches : true
+let lastTouchAt = 0
+document.addEventListener('touchstart', () => { lastTouchAt = performance.now() },
+  { passive: true, capture: true })
 document.addEventListener('mousemove', (e) => {
+  if (!canHover) return
+  if (performance.now() - lastTouchAt < 800) return   // 手指刚点过：这是兼容事件，不是鼠标
   if (document.body.dataset.pane !== 'reader-pane') return
   if (e.clientY > window.innerHeight - 110) barsShow()
 })
-document.addEventListener('touchstart', (e) => {
-  if (document.body.dataset.pane !== 'reader-pane') return
-  const t = (e.touches && e.touches[0]) || null
-  if (t && t.clientY > window.innerHeight - 110) barsShow()
-}, { passive: true })
+
+// 底栏升起来之后，点它的空白处就收回去——它压在屏幕上，不接这一下的话
+// "再点一下收起"在底部那一块永远点不动（按钮自己有自己的事，不拦）。
+document.querySelector('#hud').addEventListener('click', (e) => {
+  if (e.target && e.target.closest && e.target.closest('button')) return
+  barsHide()
+})
 
 // 书的内容在 iframe 里，滚轮/点击到不了外层：挂到每一篇加载出来的 doc 上
 const hookedDocs = new WeakSet()
@@ -764,6 +783,15 @@ function hookDoc(doc) {
   hookedDocs.add(doc)
   doc.addEventListener('wheel', onWheel, { passive: false })
   doc.addEventListener('click', onTapTurn)
+}
+
+/** 这一下点的是不是"最下面那一条"（留给叫底栏，不拿来翻页）。
+ *  优先用 paginator 折好的 yf（页内比例），它不怕不同环境给的 clientY 偏移；
+ *  yf 明显不像比例（没有 / 被偏移带歪）时退回原始 clientY。 */
+function bottomStrip(d) {
+  const yf = Number(d && d.yf)
+  if (Number.isFinite(yf) && yf > 0 && yf < 1.4) return yf > 0.88
+  return Number(d && d.clientY) > window.innerHeight - 84
 }
 
 /** 外层的几个监听挂到（可能刚换过的）foliate-view 上。
@@ -777,8 +805,11 @@ function bindView(el) {
     ignoreClickUntil = performance.now() + 500
     if (document.body.dataset.pane !== 'reader-pane') return
     const d = e.detail || {}
-    if (Number(d.clientY) > window.innerHeight - 84) return barsShow()   // 最下面一条：叫底栏
-    if (d.zone === 'middle') barsToggle()                                // 中间：有就收、没有就叫
+    // 底栏正开着：再点一下正文就收起来——**不管点在中间还是最下面那一条**。
+    // 以前这里对"最下面一条"一律 barsShow()，可底栏一升起来，那一条正好被它自己占住，
+    // 于是"点一下叫出来、再点一下收回去"只能work一次。
+    if (!document.body.classList.contains('bare')) return barsHide()
+    if (d.zone === 'middle' || bottomStrip(d)) barsShow()
   })
   el.addEventListener('swiped', () => {
     ignoreClickUntil = performance.now() + 500
