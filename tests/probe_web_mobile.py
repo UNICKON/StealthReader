@@ -53,12 +53,16 @@ window.__docs = () => {
 
 READ = """JSON.stringify((() => {
   const t = (f, d) => { try { return f() } catch (e) { return d } };
-  const r = document.querySelector('#view').renderer;
+  const v = document.querySelector('#view');
+  const root = (window.__shadows || []).find(s => s.host === v) || null;
+  const r = v.renderer;
   const docs = window.__docs();
   const d = docs[0] || null;
   const p = d && (d.querySelector('p') || d.body);
   return {
     docs: docs.length,
+    paginators: root ? root.querySelectorAll('foliate-paginator').length : -1,
+    title: t(() => v.book.metadata.title, null),
     chars: d ? (d.body.textContent || '').trim().length : 0,
     text: d ? (d.body.textContent || '').trim().slice(0, 40) : '',
     font: p ? getComputedStyle(p).fontFamily : null,
@@ -83,13 +87,25 @@ def check(name, cond, extra=""):
         print("  FAIL %s  << %s" % (name, extra))
 
 
-def tap(cdp, x, y):
-    """真的发一串触摸事件（不是 dispatchEvent 假造）：headless 里也算真触摸。"""
+def tap(cdp, x, y, jitter=0):
+    """真的发一串触摸事件（不是 dispatchEvent 假造）：headless 里也算真触摸。
+
+    jitter>0 时中途走一小段再松手——真机上"点一下"几乎总会带上十几像素抖动，
+    这正是"点了没反应"的病根，所以要能复现。
+    """
     cdp.call("Input.dispatchTouchEvent", {
         "type": "touchStart",
         "touchPoints": [{"x": x, "y": y, "radiusX": 3, "radiusY": 3, "force": 1}],
     })
-    time.sleep(0.06)
+    time.sleep(0.05)
+    if jitter:
+        for i in (1, 2):
+            cdp.call("Input.dispatchTouchEvent", {
+                "type": "touchMove",
+                "touchPoints": [{"x": x + jitter * i / 2, "y": y + jitter * i / 2,
+                                 "radiusX": 3, "radiusY": 3, "force": 1}],
+            })
+            time.sleep(0.02)
     cdp.call("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
 
 
@@ -117,6 +133,33 @@ def view(cdp):
 def real_errs(cdp):
     raw = json.loads(cdp.js("JSON.stringify(window.__errs||[])") or "[]")
     return [e for e in raw if "ResizeObserver loop" not in str(e)]
+
+
+def add_second_book():
+    """往替身服务器里塞第 2 本真 epub：验"回书架换一本书"到底换没换。
+
+    从 config.json 里那几本书挑（按体积从小到大，跳过替身服务器已经在用的那本），
+    所以任何一台机器上跑都不用另备素材。
+    """
+    import hashlib
+    try:
+        with open(os.path.join(HERE, "..", "config.json"), encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return None, 0
+    paths = [p for p in (cfg.get("local_book_positions") or {}) if os.path.isfile(p)]
+    paths.sort(key=lambda q: os.path.getsize(q))
+    for p in paths:
+        try:
+            data = open(p, "rb").read()
+        except Exception:
+            continue
+        sha = hashlib.sha256(data).hexdigest()
+        if sha in mock.BLOBS:
+            continue                       # 替身服务器已经拿它当"第 1 本"了
+        mock.BLOBS[sha] = {"bytes": data, "name": "第二本.epub"}
+        return sha, len(data)
+    return None, 0
 
 
 def main():
@@ -263,19 +306,33 @@ def main():
         p3 = view(cdp)
         check("往右划翻回上一页（%s → %s）" % (p2["pos"], p3["pos"]), p3["pos"] != p2["pos"],
               "%s vs %s" % (p2["pos"], p3["pos"]))
-        # 中间那一下：正文那层抛 tap 事件上来 → 底栏有/无。
-        # 真机触摸在 iframe 里给的 clientX 是干净的；CDP 灌进去的会带上整卷横向偏移
-        # （+4000 多），所以这里直接派一个"中间"的 tap 事件，验事件到了以后的界面反应。
-        tap_mid = ("document.querySelector('#view').dispatchEvent("
-                   "new CustomEvent('tap', {detail: {zone: 'middle', clientY: 400},"
-                   " bubbles: true, composed: true})); 1")
+        # 中间那一下：真触摸（不是假造事件）→ 底栏有/无。
+        print("\n— 单击屏幕中间：叫出底栏 / 再单击收起 —")
+        # 顺手记下最近一次 tap 的分区：失败时能看出是"没抛事件"还是"抛错分区"
+        cdp.js("window.__lastTap = null;"
+               "document.querySelector('#view').addEventListener('tap', (e) => {"
+               " window.__lastTap = {zone: e.detail.zone, x: e.detail.x, raw: e.detail.raw,"
+               " start: document.querySelector('#view').renderer.start}; }); 1")
         cdp.js("document.body.classList.add('bare'); 1")
-        cdp.js(tap_mid)
-        time.sleep(0.4)
-        check("中间那一下能叫出底栏", not cdp.js("document.body.classList.contains('bare')"))
-        cdp.js(tap_mid)
-        time.sleep(0.4)
-        check("再点一下中间又收回去", cdp.js("document.body.classList.contains('bare')"))
+        tap(cdp, W // 2, int(H * 0.45))
+        time.sleep(0.45)
+        last_zone = json.loads(cdp.js("JSON.stringify(window.__lastTap)") or "null")
+        check("单击中间，底栏出来", not cdp.js("document.body.classList.contains('bare')"), last_zone)
+        p_mid = view(cdp)["pos"]
+        tap(cdp, W // 2, int(H * 0.45))
+        time.sleep(0.45)
+        check("再单击一下又收回去", cdp.js("document.body.classList.contains('bare')"))
+        check("这两下都没顺手翻页（%s）" % p_mid, view(cdp)["pos"] == p_mid,
+              "%s vs %s；zone=%s" % (p_mid, view(cdp)["pos"], last_zone))
+        # 真机上点一下会带十几像素抖动：以前累积超过 10px 就不算"点"，
+        # 结果屏幕上点了半天什么都不发生。这里把那个抖动原样灌进去。
+        cdp.js("document.body.classList.add('bare'); 1")
+        tap(cdp, W // 2, int(H * 0.45), jitter=12)
+        time.sleep(0.45)
+        check("手抖了 12px 的单击，照样叫得出底栏",
+              not cdp.js("document.body.classList.contains('bare')"))
+        check("抖动那一下也没被当成划动去翻页（%s）" % p_mid, view(cdp)["pos"] == p_mid,
+              "%s vs %s" % (p_mid, view(cdp)["pos"]))
 
         print("\n— 点最下面那一条：叫底栏，不翻页 —")
         before = view(cdp)["pos"]
@@ -315,6 +372,16 @@ def main():
         s3 = view(cdp)
         check("滚到底继续往下，换到下一章（%r → %r）" % (text_before[:16], (s3["text"] or "")[:16]),
               s3["text"] != text_before and (s3["chars"] > 0), "%s vs %s" % (text_before, s3["text"]))
+        # 滚动模式下点一下正文：以前这条分支直接 return，点哪儿都没反应，
+        # 只有最底下那一条能叫出底栏。
+        cdp.js("document.body.classList.add('bare'); 1")
+        s_tap = view(cdp)
+        tap(cdp, W // 2, int(H * 0.45))
+        time.sleep(0.45)
+        check("上下滚模式下单击中间也能叫出底栏",
+              not cdp.js("document.body.classList.contains('bare')"))
+        check("滚动模式下点中间不会翻章（start %s → %s）" % (s_tap["start"], view(cdp)["start"]),
+              view(cdp)["start"] == s_tap["start"], "%s vs %s" % (s_tap["start"], view(cdp)["start"]))
         cdp.js("document.querySelector('[data-act=\"flow-page\"]').click(); 1")
         time.sleep(0.9)
 
@@ -337,11 +404,16 @@ def main():
                                 "const r = await fetch('/r/manifest.webmanifest');"
                                 "const j = await r.json();"
                                 "return JSON.stringify({status: r.status, display: j.display,"
+                                " override: j.display_override || null,"
                                 " icons: (j.icons||[]).length, start: j.start_url});})()",
                                 await_promise=True) or "{}")
         check("manifest 拿得到、display=standalone（%s）" % got,
               got.get("status") == 200 and got.get("display") == "standalone"
               and got.get("icons", 0) >= 2, got)
+        # 装到主屏幕之后：安卓/桌面先试 fullscreen（连状态栏/任务栏一起没有），
+        # iOS 不认 display_override，落到 display: standalone。
+        check("装成 App 后先要真全屏（display_override 首项 fullscreen）",
+              (got.get("override") or [None])[0] == "fullscreen", got.get("override"))
         icon = json.loads(cdp.js("(async () => {"
                                  "const r = await fetch('/r/icons/icon-192.png');"
                                  "const b = await r.blob();"
@@ -366,11 +438,37 @@ def main():
         check("能全屏的设备上真的调了 requestFullscreen", cdp.js("window.__fs") == 1)
 
         print("\n— 回书架 —")
+        first_text = view(cdp)["text"]          # 书1 的正文，换书之后要拿它对比
+        first_title = view(cdp)["title"]
+        sha2, size2 = add_second_book()
+        check("替身服务器备好了第 2 本书（%d KB）" % (size2 // 1024), bool(sha2))
         tap(cdp, W // 2, H - 30)
         time.sleep(0.3)
         tap(cdp, 40, H - 30)          # 左下角「← 书架」
         cdp.wait_js("!document.querySelector('#shelf-pane').hidden", 10, "回到书架")
         check("手机上点「← 书架」能回去", cdp.js("!document.querySelector('#shelf-pane').hidden"))
+
+        print("\n— 换一本书：屏幕上不能还是上一本 —")
+        cdp.wait_js("document.querySelectorAll('.book').length>1", 15, "书架两本")
+        idx = cdp.js("Array.from(document.querySelectorAll('.book'))"
+                     ".findIndex(b => b.textContent.indexOf('第二本') >= 0)")
+        check("书架上有第 2 本（第 %s 行）" % idx, idx is not None and int(idx) >= 0, idx)
+        cdp.js("document.querySelectorAll('.book')[%d].click(); 1" % max(int(idx or 0), 0))
+        cdp.wait_js("window.__docs && window.__docs().length>0", 30, "第 2 本正文")
+        time.sleep(2.2)
+        b2 = view(cdp)
+        check("换书后只剩一份正文（renderer %s 个 / iframe %s 个）"
+              % (b2["paginators"], b2["docs"]),
+              b2["paginators"] == 1 and b2["docs"] == 1, b2)
+        check("书名也换了（%r → %r）" % (first_title, b2["title"]),
+              bool(b2["title"]) and b2["title"] != first_title, b2["title"])
+        if (b2["chars"] or 0) < 20:            # 这本的头一页是空白封面，翻一页再看正文
+            cdp.js("document.querySelector('#view').next(); 1")
+            time.sleep(1.3)
+            b2 = view(cdp)
+        check("正文也换了（%r → %r）" % ((first_text or "")[:14], (b2["text"] or "")[:14]),
+              bool(b2["text"]) and b2["text"] != first_text and b2["chars"] > 50, b2["text"][:24])
+        check("进度也跟着新书重算（%s）" % b2["pos"], "/" in (b2["pos"] or ""), b2["pos"])
 
         real = real_errs(cdp)
         check("整轮没有 JS 报错", real == [], real[:3])

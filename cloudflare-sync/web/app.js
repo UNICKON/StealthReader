@@ -188,14 +188,29 @@ async function loadShelf() {
 
 /* ── 打开一本书（只拉这一本） ──────────────────────────── */
 
+/** 换书必须把 <foliate-view> 整个换成新的。
+ *  foliate 的 view.open() 只会再 append 一个 renderer 到自己的 shadow root 里，旧的
+ *  （连同它那本书的 iframe）仍然留着，于是"回书架再打开第 2 本，屏幕上还是第 1 本"——
+ *  两本叠在一起，看得见的是先打开的那本。换元素 = 旧的连 shadow 树一起丢掉，内存也还回去。 */
+function freshView() {
+  const old = $('#view')
+  const el = document.createElement('foliate-view')
+  el.id = 'view'
+  if (old && old.parentNode) old.parentNode.replaceChild(el, old)
+  else $('#view-wrap').appendChild(el)
+  bindView(el)
+  S.view = el
+  return el
+}
+
 async function openBook(book) {
   show('reader-pane')
   $('#pos').textContent = '打开中…'
-  const view = $('#view')
+  const view = freshView()
   S.book = book
-  S.view = view
   S.pos = book.pos || 0
   S.total = book.total || 0
+  S.index = null                       // 换书了，上一本的章节表不能留着
   S.dirty = false
 
   // 桌面端抽全文时算的章节表：拿到就能按"第几个字"精确定位，也能把 total 校准成桌面端那套
@@ -750,29 +765,41 @@ function hookDoc(doc) {
   doc.addEventListener('wheel', onWheel, { passive: false })
   doc.addEventListener('click', onTapTurn)
 }
-$('#view').addEventListener('load', (e) => hookDoc(e.detail && e.detail.doc))
 
-// 正文里那层（paginator）把"点了一下 / 横着划了一下"抛上来：它已经处理完翻页了，
-// 这里只管底栏，并且挡住紧跟其后的 click，免得一次点击翻两页。
-$('#view').addEventListener('tap', (e) => {
-  ignoreClickUntil = performance.now() + 500
-  if (document.body.dataset.pane !== 'reader-pane') return
-  const d = e.detail || {}
-  if (Number(d.clientY) > window.innerHeight - 84) return barsShow()   // 最下面一条：叫底栏
-  if (d.zone === 'middle') barsToggle()                                // 中间：有就收、没有就叫
-})
-$('#view').addEventListener('swiped', () => {
-  ignoreClickUntil = performance.now() + 500
-})
+/** 外层的几个监听挂到（可能刚换过的）foliate-view 上。
+ *  换书会整个换元素（见 freshView），所以不能只在启动时挂一次，否则第 2 本就没人接事件了。 */
+function bindView(el) {
+  el.addEventListener('load', (e) => hookDoc(e.detail && e.detail.doc))
+
+  // 正文里那层（paginator）把"点了一下 / 横着划了一下"抛上来：它已经处理完翻页了，
+  // 这里只管底栏，并且挡住紧跟其后的 click，免得一次点击翻两页。
+  el.addEventListener('tap', (e) => {
+    ignoreClickUntil = performance.now() + 500
+    if (document.body.dataset.pane !== 'reader-pane') return
+    const d = e.detail || {}
+    if (Number(d.clientY) > window.innerHeight - 84) return barsShow()   // 最下面一条：叫底栏
+    if (d.zone === 'middle') barsToggle()                                // 中间：有就收、没有就叫
+  })
+  el.addEventListener('swiped', () => {
+    ignoreClickUntil = performance.now() + 500
+  })
+}
 
 /* ── 全屏：能真全屏的就全屏，iPhone 上说清楚该怎么办 ───────────
    iOS 的 Safari 不给网页调 requestFullscreen（只有 iPad 和安卓/桌面浏览器给），
-   所以 iPhone 上唯一"没有状态栏和地址栏"的办法是"添加到主屏幕"，
-   那之后 manifest 里的 standalone 生效，系统状态栏压在正文上（真沉浸）。 */
+   连"添加到主屏幕"之后那点 standalone 模式，顶上的状态栏（时间/电量）也去不掉——
+   系统级的，网页没有任何办法。所以 iPhone 上能做到的最沉浸是：从主屏幕图标打开，
+   没有地址栏，正文铺到状态栏底下；安卓/桌面则给真全屏（连状态栏/任务栏一起没有）。 */
 function isStandalone() {
   return !!(window.navigator.standalone
     || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches))
 }
+
+const isIOS = (() => {
+  const p = String(navigator.platform || '')
+  return /iP(hone|ad|od)/.test(p) || /iPhone|iPad|iPod/.test(String(navigator.userAgent || ''))
+    || (navigator.maxTouchPoints > 1 && /Mac/.test(p))     // iPadOS 会把自己报成 Mac
+})()
 
 function toggleFull() {
   const el = document.documentElement
@@ -782,12 +809,18 @@ function toggleFull() {
   }
   const req = el.requestFullscreen || el.webkitRequestFullscreen
   if (req) {
-    Promise.resolve(req.call(el)).catch(() => toast('这台设备不给网页全屏', 3200))
+    Promise.resolve(req.call(el, { navigationUI: 'hide' }))
+      .catch(() => toast('这台设备不给网页全屏', 3200))
     return
   }
-  if (isStandalone()) return toast('已经是全屏了（从主屏幕图标打开的那种）', 3200)
+  if (isStandalone()) {
+    return toast(isIOS
+      ? '已经是「从主屏幕打开」的全屏了。iPhone 顶上的状态栏（时间/电量）系统不让网页去掉，'
+        + '正文已经铺到它底下——这是 iPhone 上能做到的最沉浸'
+      : '已经是「从主屏幕打开」的全屏了', 6000)
+  }
   toast('iPhone 的 Safari 不给网页全屏：点底部「分享」→「添加到主屏幕」，'
-    + '以后从桌面图标打开，就没有地址栏和状态栏了', 7000)
+    + '以后从桌面图标打开就没有地址栏了（顶上的状态栏系统不让去；安卓上连它一起没有）', 7000)
 }
 
 $('#full').addEventListener('click', toggleFull)

@@ -1353,3 +1353,106 @@ Safari 标签页里地址栏仍然只在滚动时收起，这一点改代码改�
 所以这一轮**没能在真的桌面程序里点一次「立即同步」**；验到的是引擎（假账本 + 真合并）、探针
 （真 Qt 对话框）和 Worker 自测。桌面那半边只是接线：快照多带两个字段、应用时写回 `feed_auth.json`
 再刷新来源对象，没有动阅读 / 渲染 / 排版任何一行。
+---
+
+## 30. 第七轮：手机上的三件事——换书串页、单击叫底栏、全屏到底能做到哪一步（2026-11-16）
+
+真人原话：「**全屏不能做到连顶部的系统栏也没有吗。2.现在手机打开书1后回到目录打开另一本书，看到的还是书1 3.单击唤起功能栏，再单击收起。**」
+
+三件事的根子完全不同：第 2 件是渲染器没换（真 bug），第 3 件是两条指纹级的手感 bug，
+第 1 件是**系统不让**——iPhone 上做不到，安卓/电脑能做到。下面分开说。
+
+### 30.1 打开第二本书，屏幕上还是第一本
+
+**根因**：`foliate-view.open()` 从来**不清理上一个 renderer**。它只做
+`this.#root.append(new foliate-paginator())`，于是同一个 `<foliate-view>` 的影子根里
+越挂越多，第一个 paginator（和它的 iframe）还在原位，**后开的书被压在下面**。
+复现出来的 DOM 是：
+
+```
+{docs: 2, paginators: 2, title: "当下的力量（白金版）",
+ text: "雨\n\n [马来]黄锦树 著",  pos: "0% · 0 / 111,854 字"}
+```
+
+书名、进度都已经是新书了，**屏幕上的字还是旧书**——这正是真人看到的"看到的还是书1"。
+
+**改法**（`web/app.js`）：换书时连整个元素一起换，不给旧 renderer 留位置。
+
+| 位置 | 改法 |
+| --- | --- |
+| 新函数 `freshView()` | `document.createElement('foliate-view')` → 设 `id="view"` → `old.parentNode.replaceChild(el, old)`（找不到父节点就退化成 append） → `bindView(el)` → `S.view = el` |
+| `openBook()` | `const view = $('#view')` → `const view = freshView()`；顺手 `S.index = null`（别留着上一本的章节表） |
+| 新函数 `bindView(el)` | 原来挂在 `#view` 上的三个监听（`load`→`hookDoc`、`tap`→底栏、`swiped`→防误点）搬进来，换元素后重新挂一遍；`relocate`/`error` 仍在 `openBook` 里按本挂 |
+
+**变异验证**（证明这条探针抓得住这个 bug）：把 `freshView()` 改成"第二次起复用旧元素"，
+`probe_web_mobile.py` 立刻掉到 **50 / 2**，失败的正是这两条：
+
+```
+FAIL 换书后只剩一份正文（renderer 2 个 / iframe 2 个）
+FAIL 正文也换了（'树顶《雨》作品二号…' → '树顶《雨》作品二号…'）
+```
+
+改回来 **52 / 0**。
+
+**一个必须说清楚的细节**：探针里第二本书（《当下的力量》）**第一页是空白封面**
+（只有图，没有字），所以"换书后看不到字"不等于没换书。探针因此分两步：
+先确认 `renderer = 1 / iframe = 1`、书名换了，再往后翻一页比正文
+（`版权信息 / 书名:当下的力量（白金版）`）。真机上也一样——翻一页就是新书。
+
+### 30.2 点一下叫不出底栏（或者叫出来了，但顺手翻了一页）
+
+三处都是"手感"层面的：
+
+| 症状 | 根因 | 改法 |
+| --- | --- | --- |
+| 手指带十几像素抖动就点不出底栏 | `#onTouchEnd` 用的是 `state.moved`（累计位移 >10px 就算"划动"），而翻页又要求 `|dx| ≥ 24`——**10–24px 这一段既不算点也不算划，什么都不会发生** | 换成 `TAP_SLOP = 14`：`|dx| < 14 && |dy| < 14` 就当"点一下" |
+| 上下滚模式下点正文完全没反应（只有最底下一条能叫出底栏） | `#onTouchEnd` 直接 `return this.#turnAtSectionEdge(state)`，那条路径**从不抛 `tap`** | `#turnAtSectionEdge` 里对"小位移"补发 `#tapAt(cx, cy, false)`；`turn=false` 表示"只抛事件，不翻页" |
+| 分区判错（中间点成了"下一页"） | 报上来的 `clientX` 有两种口径：有的环境给屏幕坐标，有的是**整卷坐标**（分页时正文横向排开，能到几千） | `#tapAt` 先按页宽取模折回当前页：`((x - start) % size + size) % size`；屏幕坐标下 `start` 是页宽的整数倍，取模等于没动，两种口径都对 |
+
+分区规则**没有改**：左右各 30% 翻页，中间那一条才叫底栏。
+（如果改成"点哪儿都叫底栏"，刚打开书想点右边翻页的那一下就会变成弹底栏。）
+
+**变异验证**：只把 `TAP_SLOP` 那条判据退回 `if (!state.moved)`，探针 **51 / 1**，
+唯一失败的是「手抖了 12px 的单击，照样叫得出底栏」；改回来 **52 / 0**。
+
+### 30.3 全屏：iPhone 上做不到"连状态栏一起没有"，安卓/电脑可以
+
+这条**必须说实话**，因为它是系统限制，不是没写代码：
+
+| 环境 | 顶上的状态栏（时间/电量） | 地址栏 |
+| --- | --- | --- |
+| iPhone Safari（网页） | **去不掉**（iOS 不提供元素级全屏 API） | 去不掉 |
+| iPhone「添加到主屏幕」后 | **去不掉**（PWA 也只到 `standalone`；`display_override` iOS 不认） | 去掉 |
+| 安卓 Chrome / 桌面 Chrome（页内按钮） | 去掉（`requestFullscreen({navigationUI:'hide'})`） | 去掉 |
+| 安卓/桌面「安装成 App」后 | 去掉（manifest `display_override: ["fullscreen","standalone"]`） | 去掉 |
+
+所以这一轮做的是"能给的全给"：
+
+- `manifest.webmanifest` 加 `"display_override": ["fullscreen", "standalone"]`
+  （`display` 仍留 `"standalone"`——老设备不认 override 时还有退路）。
+- `toggleFull()` 重写：真能全屏就先真全屏（带 `navigationUI: 'hide'`）；已是主屏幕 App 就给对应提示
+  （iOS 那句明说「顶上的状态栏系统不让网页去掉，正文已经铺到它底下」）；两者都不是就教"分享 → 添加到主屏幕"。
+- iPhone 上**能做的**已经做了：`viewport-fit=cover` + `black-translucent` + `env(safe-area-inset-*)`，
+  正文铺到状态栏底下、不被它压住字。这就是 iPhone 上的极限。
+
+### 30.4 这一轮的探针
+
+| 探针 | 结果 | 这一轮多了什么 |
+| --- | --- | --- |
+| `probe_web_mobile.py` | **52 / 0**（原 40 / 0） | 中间单击出底栏 / 再单击收起 / 两下都不翻页；**带 12px 抖动**的单击也认；上下滚模式单击也能叫底栏且不翻章；回书架换第 2 本后 `renderer=1 / iframe=1`、书名换、正文换、进度重算；manifest 的 `display_override` 首项是 fullscreen |
+| `probe_web_stats.py` | 27 / 0 | — |
+| `probe_web_upload_stats.py` | 28 / 0 | — |
+| `check_web_assets.py` | 32 / 0（部署后） | 部署前是 30 / 2：线上还是旧 `app.js` / `paginator.js` |
+| `probe_reader_ui.py` | 45 / 0 | — |
+
+Worker 已重新部署：版本 **`22e5e5c8-7631-466e-b2c0-aa06aa1934f9`**（`sync.noteklip.org`）。
+
+### 30.5 没验到的（说清楚）
+
+- **没在真 iPhone 上点。** 验的是 390×844 + iPhone UA + **真触摸事件**（CDP `Input.dispatchTouchEvent`，
+  不是 `dispatchEvent` 假造）的模拟器。分区、抖动、滚动模式这几条都是行为级的，模拟器能验；
+  "手指按下去的延迟感"这种只有真机能感觉。
+- **iPhone 的状态栏去不掉这件事，是系统限制**，本轮只能在文案里说清楚，代码上做不到。
+  安卓/桌面的真全屏路径只验到"确实调了 `requestFullscreen`"（stub 计数），没有真设备截图。
+- 桌面程序这台机器仍然起不来（`0xC0000135`，同 §29.6），所以这一轮也没能在真的桌面窗口里看效果；
+  桌面侧一行没改（改的是 `cloudflare-sync/web/` 下网页端与 vendored 的 paginator）。

@@ -1,5 +1,9 @@
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+// 手指"点一下"的时候真机总带几像素抖动，累积到十几像素很常见。这个阈值以内的移动
+// 一律当点击（叫/收底栏），超过才算划动。
+const TAP_SLOP = 14
+
 const debounce = (f, wait, immediate) => {
     let timeout
     return (...args) => {
@@ -898,7 +902,11 @@ export class Paginator extends HTMLElement {
         if (this.scrolled) return this.#turnAtSectionEdge(state)
         if (state.pinched || state.multitouch || state.link) return
         const { dx, dy } = state
-        if (!state.moved) return this.#tapAt(state.cx, state.cy)
+        // 以前只有"一个 move 事件都没有"才算点击（moved 在累积超过 10px 时就置位），
+        // 于是真机上抖了十来像素的一下点击既不翻页也不叫底栏——屏幕上像死了。
+        // 现在按位移判：抖动范围内一律当点击。
+        if (Math.abs(dx) < TAP_SLOP && Math.abs(dy) < TAP_SLOP)
+            return this.#tapAt(state.cx, state.cy)
         if (Math.abs(dx) < 24 || Math.abs(dx) < Math.abs(dy) * 1.2) return
         this.#touchTurn(dx > 0 ? 1 : -1)     // 手指往左 = 看下一页
     }
@@ -906,14 +914,26 @@ export class Paginator extends HTMLElement {
      *  按屏幕宽度算，不用宿主元素的盒子——分页时整卷内容是横向排开的，
      *  那个盒子会跟着整卷宽度涨到几千像素（真机触摸给的 clientX 是干净的，
      *  走 CDP 灌事件时会带上这卷的偏移，所以只做兜底夹取）。 */
-    #tapAt(cx, cy) {
+    /** 点一下：左右三分之一翻页，中间那一竖条抛给外面（叫底栏）。
+     *  报上来的 clientX 有两种口径：有的环境给屏幕坐标（0..屏宽），有的是"整卷坐标"
+     *  ——分页时整卷内容是横向排开的，能到几千。两种口径按页宽取模都能折回当前这一页：
+     *  屏幕坐标下 start 是页宽的整数倍，取模等于没动。 */
+    #tapAt(cx, cy, turn = true) {
         const w = globalThis.innerWidth || this.viewSize || 1
-        const x = Math.max(0, Math.min(w, Number(cx) || w / 2))
-        const zone = x < w * 0.3 ? 'prev' : x > w * 0.7 ? 'next' : 'middle'
+        const raw = Number(cx)
+        const step = Number(this.size) > 1 ? Number(this.size) : w
+        const start = Number(this.start) || 0
+        let x = Number.isFinite(raw) ? raw : step / 2
+        if (turn) x = (((x - start) % step) + step) % step
+        const span = turn ? step : w
+        x = Math.max(0, Math.min(span, x))
+        const zone = !turn ? 'middle'
+            : x < span * 0.3 ? 'prev' : x > span * 0.7 ? 'next' : 'middle'
         this.dispatchEvent(new CustomEvent('tap', {
-            detail: { zone, x, y: Number(cy) || 0, clientY: Number(cy) || 0 },
+            detail: { zone, x, y: Number(cy) || 0, clientY: Number(cy) || 0, raw },
             bubbles: true, composed: true,
         }))
+        if (!turn) return                    // 滚动模式里没有"点左三分之一翻页"这回事
         if (zone === 'prev') this.#touchTurn(-1)
         else if (zone === 'next') this.#touchTurn(1)
     }
@@ -931,6 +951,10 @@ export class Paginator extends HTMLElement {
         if (!this.#view) return
         if (state.pinched || state.multitouch) return
         const { dx, dy } = state
+        // 滚动模式里点一下（没划）：以前这条分支直接 return，正文上点哪儿都没反应，
+        // 只有最底下那一条能叫出底栏。现在把点击照常抛上去，由外面决定叫/收。
+        if (!state.link && Math.abs(dx) < TAP_SLOP && Math.abs(dy) < TAP_SLOP)
+            return this.#tapAt(state.cx, state.cy, false)
         if (Math.abs(dy) < 30 || Math.abs(dy) < Math.abs(dx) * 1.2) return
         const now = performance.now()
         if (now - this.#lastSectionTurn < 900) return
