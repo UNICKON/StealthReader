@@ -175,6 +175,7 @@ class H(BaseHTTPRequestHandler):
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".md": "text/plain; charset=utf-8",
                  ".json": "application/json", ".webmanifest": "application/manifest+json",
+                 ".woff2": "font/woff2", ".woff": "font/woff",
                  ".png": "image/png"}.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
         with open(full, "rb") as f:
             data = f.read()

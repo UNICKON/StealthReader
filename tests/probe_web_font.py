@@ -4,19 +4,23 @@
     python tests/probe_web_font.py
 
 为什么不能只看 computed fontFamily：那只是"浏览器被告知要用的字体列表"，
-设备上没装就会静默落到同一张字形上——这正是"点了没反应"的真身。
+名字认不认得是另一件事——名字认得但字形没换，正文看着就是没反应。
 CJK 每个字都是全角，advance width 恒等于 1em，量宽也量不出来，
 所以这里把同一串字真画进 canvas、比像素指纹。
 
+宋 / 楷 / 圆 现在**随包发**（web/fonts/，见 tests/build_fonts.py），所以本机四档都该是四种字形，
+不依赖这台机器装没装中文字体。断言按这个来：
+
 1) 手指点得到：Aa 打开面板、「字体」那一行在视口里、四个按钮 elementFromPoint 命中自己
-2) 点下去 CSS 真的进了 iframe（宋/黑/楷/圆各自的 family）
-3) **画出来的字形真的不一样**：宋/黑/楷 在本机必须互不相同
-4) 换了设备没装的那一档，界面必须**当场说明**（按钮虚线 + 面板里点名 + 点它给提示），
-   而不是静默无变化
-5) 翻页/换章之后字体还在，没被书自带的样式打回去；字号也确实跟着变
+2) 点下去 CSS 真的进了 iframe（SR Serif / SR Kai / SR Round 各自生效）
+3) **画出来的字形真的不一样**：四档四种墨迹指纹
+4) 自备字体真的送到了正文里：`fonts.check` 认得、woff2 真被请求过
+5) 书自带的 `!important` 抢不走字体（手机上报的就是这条）
+6) 翻页/换章之后字体还在；字号也确实跟着变
 """
 import json
 import os
+import re
 import sys
 import time
 
@@ -57,37 +61,51 @@ window.__docs = () => {
 
 # 读正文文档：字体族、字号、以及"同样这串字用这个 family 画出来"的像素指纹
 READ = """(function () {
-  var out = {docs: 0};
+  window.__out = null;
   var docs = window.__docs();
-  out.docs = docs.length;
   var d = docs[0];
-  if (!d) { return JSON.stringify(out); }
-  var p = d.querySelector('p') || d.body;
-  var cv = document.createElement('canvas');
-  cv.width = 760; cv.height = 90;
-  var g = cv.getContext('2d', {willReadFrequently: true});
-  var ink = function (family) {
+  if (!d) { window.__out = JSON.stringify({docs: 0}); return 1; }
+  (async function () {
+    var out = {docs: docs.length, ok: true};
+    var p = d.querySelector('p') || d.body;
+    var cs = d.defaultView.getComputedStyle(p);
+    out.family = cs.fontFamily || '';
+    out.size = parseFloat(cs.fontSize);
+    // 自备字体是按需下载的：量墨迹之前先把它等下来，否则量到的是兜底字形（假阴性）
+    var first = out.family.split(',')[0].trim();
+    try { await d.fonts.load('56px ' + first, '\u6c38\u548c\u4e5d\u5e74\u5c81\u5728\u7678\u4e11'); } catch (e) {}
+    var cv = d.createElement('canvas');
+    cv.width = 760; cv.height = 90;
+    var g = cv.getContext('2d', {willReadFrequently: true});
     g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
-    g.fillStyle = '#000'; g.font = '56px ' + family; g.textBaseline = 'top';
-    g.fillText('永和九年岁在癸丑暮春之初', 2, 6);
+    g.fillStyle = '#000'; g.font = '56px ' + out.family; g.textBaseline = 'top';
+    g.fillText('\u6c38\u548c\u4e5d\u5e74\u5c81\u5728\u7678\u4e11\u66ae\u6625\u4e4b\u521d', 2, 6);
     var px = g.getImageData(0, 0, cv.width, cv.height).data;
     var h = 2166136261 >>> 0, n = 0;
     for (var i = 0; i < px.length; i += 4) {
       if (px[i] < 200) { n++; }
       h ^= px[i]; h = Math.imul(h, 16777619) >>> 0;
     }
-    return {hash: h.toString(16), ink: n};
-  };
-  var fam = d.defaultView.getComputedStyle(p).fontFamily;
-  out.ok = true;
-  out.family = fam;
-  out.size = parseFloat(d.defaultView.getComputedStyle(p).fontSize);
-  out.ink = ink(fam);
-  out.text = (d.body.textContent || '').replace(/\\s+/g, '').slice(0, 24);
-  out.start = (function () {
-    try { return Number(document.querySelector('#view').renderer.start); } catch (e) { return null; }
+    out.ink = {hash: h.toString(16), ink: n};
+    out.text = (d.body.textContent || '').replace(/\\s+/g, '').slice(0, 24);
+    out.start = (function () {
+      try { return Number(document.querySelector('#view').renderer.start); } catch (e) { return null; }
+    })();
+    out.faces = ['SR Serif', 'SR Kai', 'SR Round'].map(function (f) {
+      var ok = false;
+      try { ok = d.fonts.check('16px "' + f + '"', '\u6c38\u548c\u4e5d\u5e74'); } catch (e) {}
+      return f + '=' + ok;
+    });
+    out.reqs = [];
+    try {
+      out.reqs = d.defaultView.performance.getEntriesByType('resource')
+        .filter(function (e) { return /woff2/.test(e.name); })
+        .map(function (e) { return e.name.split('/').pop(); });
+    } catch (e) {}
+    out.fontStatus = (function () { try { return d.fonts.status; } catch (e) { return '?'; } })();
+    window.__out = JSON.stringify(out);
   })();
-  return JSON.stringify(out);
+  return 1;
 })()"""
 
 BTN = """(function () {
@@ -103,9 +121,7 @@ BTN = """(function () {
     inView: (r.top >= 0) && (r.bottom <= window.innerHeight),
     hitSelf: (hit === el),
     hitTag: hit ? hit.tagName : null,
-    off: el.classList.contains('off'),
     on: el.classList.contains('on'),
-    title: el.title || '',
     label: (el.textContent || '').trim(),
   });
 })()"""
@@ -132,8 +148,16 @@ def tap(cdp, x, y):
     cdp.call("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
 
 
-def read(cdp):
-    return json.loads(cdp.js(READ) or "{}")
+def read(cdp, timeout=8.0):
+    """异步读：先触发，再等页面把结果写成窗口变量（自备字体要先下载完才量得准）。"""
+    cdp.js(READ)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        raw = cdp.js("window.__out")
+        if raw and raw != "null":
+            return json.loads(raw)
+        time.sleep(0.15)
+    return {}
 
 
 def btn(cdp, face):
@@ -189,18 +213,23 @@ def main():
                   info.get("inView"), info)
             check("「%s」手指按下去命中的是它自己" % info.get("label"), info.get("hitSelf"),
                   "%s %s" % (info.get("hitTag"), info.get("title")))
-        check("提示行存在（没装字体时要用它说明）",
-              cdp.js("!!document.querySelector('#font-note')"))
 
         print("\n— 2) 点下去 CSS 真的进了正文 —")
         seen = {}
-        for face, want in (("serif", "Songti"), ("sans", "PingFang"),
-                           ("kai", "Kaiti"), ("round", "Yuanti")):
+        for face, want in (("serif", "SR Serif"), ("sans", "PingFang"),
+                           ("kai", "SR Kai"), ("round", "SR Round")):
             info = btn(cdp, face)
             tap(cdp, info["cx"], info["cy"])
-            time.sleep(0.6)
+            time.sleep(2.4 if face != 'sans' else 0.6)
             v = read(cdp)
             seen[face] = v
+            reqs = v.get("reqs") or []
+            if face != "sans":
+                pat = {"serif": r"^sr-serif\.woff2$", "round": r"^sr-round\.woff2$",
+                       "kai": r"^lxgwwenkailite-regular-subset-\d+\.woff2$"}[face]
+                hit = [n for n in reqs if re.search(pat, n)]
+                check("选「%s」真的去下了这一档的字体文件（%d 个分片）"
+                      % (info["label"], len(hit)), bool(hit), reqs[:6])
             check("选「%s」后正文的字体族里带着 %s" % (info["label"], want),
                   want in (v.get("family") or ""), (v.get("family") or "")[:60])
             check("选「%s」后按钮变成选中态" % info["label"], btn(cdp, face)["on"])
@@ -210,40 +239,35 @@ def main():
         distinct = len(set(inks.values()))
         check("宋/黑/楷 的墨迹指纹互不相同（%s）" % inks,
               len({inks.get("serif"), inks.get("sans"), inks.get("kai")}) == 3, inks)
-        print("     三个主字体的不同字形数：%d；含「圆」共 %d 种" % (distinct, len(set(inks.values()))))
+        check("「圆」也有自己的字形，不再是黑的复制品（%s vs %s）"
+              % (inks.get("round"), inks.get("sans")),
+              inks.get("round") != inks.get("sans"), inks)
+        check("四档一共四种字形（%d）" % distinct, distinct == 4, inks)
 
-        print("\n— 4) 设备没装的那一档，界面当场说明 —")
-        offs = []
-        for face in ("serif", "sans", "kai", "round"):
-            info = btn(cdp, face)
-            is_dup = inks.get(face) == inks.get("sans") and face != "sans"
-            offs.append(info.get("off"))
-            check("「%s」%s" % (info["label"],
-                               "跟黑一样 → 标成没装" if is_dup else "有独立字形 → 不标"),
-                  bool(info.get("off")) == bool(is_dup),
-                  "off=%s dup=%s" % (info.get("off"), is_dup))
-        note = cdp.js("(document.querySelector('#font-note')||{}).textContent || ''")
-        if any(offs):
-            check("面板里点名说了哪一档没装（%s）" % note, "没装" in note, note)
-            # 点它要给提示，不能静默无变化
-            for face in ("serif", "sans", "kai", "round"):
-                if btn(cdp, face).get("off"):
-                    info = btn(cdp, face)
-                    cdp.js("document.querySelector('#toast').hidden = true")
-                    tap(cdp, info["cx"], info["cy"])
-                    time.sleep(0.4)
-                    toast = cdp.js("(document.querySelector('#toast')||{}).textContent || ''")
-                    check("点没装的那一档会说清楚（%s）" % toast, "没装" in toast, toast)
-                    break
-        else:
-            check("这台设备四个字体都装齐了（不需要提示）", True)
-
+        print("\n— 4) 三档自备字体都真的送到了正文里 —")
+        # fonts 只在用到时才下载，所以"当前这一档认不认得"要用当前 family 断言，
+        # 其余两档看它们有没有被请求过（section 2 里每档都点过）。
+        v = read(cdp)
+        reqs = v.get("reqs") or []
+        families = {
+            "serif": [n for n in reqs if n == "sr-serif.woff2"],
+            "kai": [n for n in reqs if n.startswith("lxgwwenkailite-regular-subset-")],
+            "round": [n for n in reqs if n == "sr-round.woff2"],
+        }
+        for fam, files in families.items():
+            check("「%s」的字体文件被请求过（%d 个）" % (fam, len(files)), bool(files),
+                  sorted(reqs)[:6])
+        cur = (v.get("family") or "").split(",")[0].strip().strip("'\"")
+        check("当前这一档就能在书里解析（%s）" % cur, cur in ("SR Serif", "SR Kai", "SR Round"),
+              v.get("family"))
+        check("font 状态是 loaded（%s）" % v.get("fontStatus"), v.get("fontStatus") == "loaded",
+              v.get("fontStatus"))
         print("\n— 5) 书自带的 !important 抢不走字体（手机上报的就是这一条）—")
         cdp.js("document.querySelector('[data-act=\"face-kai\"]').click(); 1")
         time.sleep(0.8)
         base5 = read(cdp)
         check("先确认现在是楷体（%s）" % (base5.get("family") or "")[:30],
-              "Kaiti" in (base5.get("family") or ""), (base5.get("family") or "")[:50])
+              "SR Kai" in (base5.get("family") or ""), (base5.get("family") or "")[:50])
         # 模拟中文 EPUB 常见的写法：更具体的选择器 + !important 把字体写死
         cdp.js("""(() => {
           const d = window.__docs()[0];
@@ -256,7 +280,7 @@ def main():
         time.sleep(0.8)
         v5 = read(cdp)
         check("书的 !important 塞进来之后，正文还是楷体（%s）"
-              % (v5.get("family") or "")[:30], "Kaiti" in (v5.get("family") or ""),
+              % (v5.get("family") or "")[:30], "SR Kai" in (v5.get("family") or ""),
               (v5.get("family") or "")[:60])
         check("字形也没被书抢走（指纹 %s）" % ((base5.get("ink") or {}).get("hash")),
               (v5.get("ink") or {}).get("hash") == (base5.get("ink") or {}).get("hash"),
@@ -271,7 +295,7 @@ def main():
         time.sleep(1.4)
         after = read(cdp)
         check("翻一页之后还是楷体（%s）" % (after.get("family") or "")[:40],
-              "Kaiti" in (after.get("family") or ""), (after.get("family") or "")[:40])
+              "SR Kai" in (after.get("family") or ""), (after.get("family") or "")[:40])
         check("确实翻过去了（start %.3f → %.3f）" % (before.get("start") or 0, after.get("start") or 0),
               (after.get("start") or 0) > (before.get("start") or 0),
               (before.get("start"), after.get("start")))

@@ -1699,84 +1699,72 @@ Qt 5.15 的 windows 平台插件只有 **GDI** 和 **FreeType** 两个字体引�
   上一轮同在 530/532 时还有「本周时长 = 本周这几天的合计」，那条与当天是周几有关，
   本轮 `main.py` 未动它也自己绿了）、`probe_reader_ui.py` **45 / 0**、`probe_text_render.py` **9 / 0**。
 
-## 33. 手机上换字体没反应：从"以为没装"到"层叠输了"（2026-11-19）
+## 33. 手机上换字体没反应 → 变成"字体随包发"（2026-11-19）
 
-真人：「手机还是没法改字体」。iPhone 上具体现象：**宋 / 黑 / 楷 / 圆 四档看着一模一样**
-（电脑上宋、楷、黑三档是有区别的，只有圆没有）。同一个面板里，**字号 A+ 是有效的**。
+真人从 iPhone 上报：宋 / 黑 / 楷 / 圆 四档看着一模一样；同一个面板里**字号 A+ 是有效的**。
+（电脑上宋、楷、黑三档有区别，只有「圆」没有——Windows 不装圆体。）
 
-### 33.1 两个事实凑在一起，只剩一种解释
+### 33.1 为什么不再指望系统字体
 
-- 面板没有「这台设备没装：…」那行小字 → `faceSupport()` 认为四档都有独立字形；
-- 正文换成宋/楷却一个像素都不变；
-- **字号能变**。
+一轮排查里排掉了这些：
 
-字号和字体在同一份注入样式里（`body` 的 `font-size`、`body, body *` 的 `font-family`）。
-字号能赢、字体赢不了，只可能是**字体那条被别的东西压掉了**——
-中文 EPUB 常见的写法 `p.calibre { font-family: "方正…" !important }`，
-选择器比 `body *`（0,0,1）更具体，两边都 `!important` 时它赢，而字号没有书跟它抢。
+- 样式通道是通的（字号能变就证明 `setStyles` 进得去）；
+- 量宽度没用：汉字全角，**advance width 恒等于 1em**，56px 下 12 个字的四档全是 480.00px；
+- 用 canvas 墨迹指纹能分出字体，但在 iOS 上它和**正文排版不是同一套回退**：
+  面板说四档都有独立字形，正文却一个像素都不变；
+- 层叠确实也可能输（书里 `p.calibre { font-family: … !important }` 比 `body *` 更具体），
+  这条已经用 inline `!important`（`forceFamily()`）堵死，并且探针有反证；
+- 堵完层叠，手机上仍然不换 → 剩下的解释只有一个：**iOS 只把一部分系统字体开放给网页**，
+  `Songti SC` / `Kaiti SC` / `Yuanti SC` 这些名字不能指望。
 
-### 33.2 为什么以前的探针看不见
+真人的结论也很干脆：不要那些"提示性"的前端改动，**把字体发过去**。
 
-`probe_web_mobile.py` 只断言 computed `fontFamily` 里带 "Songti" 字样——那只是"被告知该用哪套字体"，
-分辨率落到哪张字形它根本不反映。想用宽度抓也不行：汉字全角，**advance width 恒等于 1em**，
-56px 下 12 个字的四档全是 480.00px，一个像素不差。
+### 33.2 现在怎么做
 
-改用 canvas 墨迹指纹（同一串字画进 canvas，取像素算 FNV-1a）。Windows 实测：
+    tests/build_fonts.py   →   cloudflare-sync/web/fonts/*.woff2 + web/fonts.css
 
-| 档 | 落到 | 指纹 | 着墨 |
+三套，全部 SIL OFL，许可证一起进包（`web/fonts/LICENSE-*.txt`）：
+
+| 档 | 字体 | 形态 | 体积 |
 |---|---|---|---|
-| 宋 | SimSun | `dd278100` | 7,173 |
-| 黑 | Microsoft YaHei | `88b9869f` | 12,231 |
-| 楷 | KaiTi | `1bfbf7b8` | 6,451 |
-| 圆 | **Microsoft YaHei（兜底）** | `88b9869f` | 12,231 |
+| 宋 | Noto Serif SC | 简中全集单文件 | 1.44 MB |
+| 圆 | ZCOOL 庆科黄油体 | 简中全集单文件 | 1.68 MB |
+| 楷 | 霞鹜文楷 Lite | 按 unicode-range 切 97 片 | 3.86 MB |
 
-「圆」和「黑」是同一张字形（Windows 没有 YouYuan），这就是"点了没反应"的最小复现。
+合计 102 个文件 / 6.99 MB。**黑体不发**：系统那套（苹方 / 雅黑）本来就是黑体，再发一份纯属浪费流量。
 
-### 33.3 顺手踩的坑：字体栈里加"可能装了的"名字会反噬
+接入的两个坑（都在代码注释里写死了，别再踩）：
 
-一度把 HarmonyOS Sans / MiSans / OPPOSans 塞进 `sans` 栈。结果**「黑」整段掉到系统兜底字形**：
+1. `@font-face` 只对**声明它的那个 document** 生效 —— 必须注进书的 iframe，不能只放外层页面；
+2. iframe 里相对路径按 iframe 自己的地址解析 —— `fonts.css` 里的地址写成 `__FONT_BASE__` 占位，
+   `app.js` 在运行时换成绝对 URL。`app.js` 启动时 `fetch('fonts.css')` 一次，拿不到就退回系统字体。
 
-- 旧栈（'PingFang SC','Microsoft YaHei',…）→ `88b9869f` = 雅黑 ✅
-- 新栈（前面加了那几个）→ `a653ba0d` = 和 `sans-serif` 一模一样 ❌
-- 只加一个、雅黑排第三 → `88b9869f` ✅
+字体只在**用到时才下载**：选「宋」才下 1.44 MB，选「楷」才下它的分片；缓存之后不再下。
+`FACES` 里三档都以自身字体开头，系统同名与通用族排在后面兜底。
 
-不是"列表太长"（CSS 侧 181 字符照样接受）。真因：**只要有一个只装了拉丁子集的家族排在中文名前，
-它先认领这段文字，汉字再逐字落到兜底**。这种故障用中文墨迹量不出来，坏得没有声音。
-结论：字体栈要短，中文名靠前，不确定覆盖中文的一个都别加。
+### 33.3 同时删掉的东西
 
-### 33.4 这轮改了两处
+那些"解释性"的前端改动全部移除，`web/` 回到只有功能的形态：
+面板上的「这台设备没装：…」、虚线按钮样式、`title` 提示、点了没装的 toast、
+以及那个 `?fontdiag=1` 诊断行和它的 canvas 指纹检测（`faceSupport` / `glyphInk`）。
+`forceFamily()` 留着——它是功能（把字体压到书自带的 `!important` 之上），不是提示。
 
-1. **字体名换成 iOS 上确定有的那几档**：`PingFang SC / Heiti SC / Hiragino Sans GB`（黑）、
-   `Songti SC / STSong`（宋）、`Kaiti SC / STKaiti / Kaiti TC`（楷）、`Yuanti SC / Yuanti TC`（圆）。
-2. **`forceFamily()`：逐元素写 inline `!important`**。层叠里只有 inline 的 important 高于
-   author 的 important，书怎么写都抢不走。挂在两处：`applyStyles()`（换字体时）和
-   `hookDoc()`（每章新 iframe 加载时）。`code/pre/kbd/samp/tt` 跳过，保持等宽。
-   字号不受影响（本来就是我们从 `body` 给、书不抢）。
+### 33.4 验到什么程度
 
-### 33.5 探针与回归
+- `tests/probe_web_font.py` **36 / 36**（真触摸、390×844 DPR3、iPhone UA）：
+  逐档断言「点这一档 → 真的去下了这一档的字体文件」；四档**四种**墨迹指纹；
+  往正文塞 `!important` 写死字体后仍是楷体；翻页后仍在；`A+` 字号变大；整轮无 JS 报错。
+  （量墨迹前会先 `fonts.load()` 等字体落地，否则量到的是兜底字形——这条是踩过的假阴性。）
+- 回归：`probe_web_mobile.py` **65 / 0**、`probe_web_stats.py` **27 / 0**、
+  `probe_web_upload_stats.py` **28 / 0**。
+- 部署：Version ID `da2bd14d-9ed9-4635-b8e8-01d38f3ac8ac`，105 个资源。
+  线上取回比对 sha256：`app.js` 65,706 / `style.css` 10,030 / `fonts.css` 106,828 /
+  `fonts/sr-serif.woff2` 1,509,736 / `fonts/sr-round.woff2` 1,765,712 —— 全部与本地一致。
+- **手机上还没验**：这一轮改的是"字体不再依赖手机"。真机效果等真人回报。
 
-- `tests/probe_web_font.py`：**33 / 33**。在原来 30 条基础上加了三条针对本轮的：
-  往正文里塞一条 `p, div, span, body, body * { font-family: "Times New Roman" !important }`
-  （模拟书的写法），断言 `p` 的 computed 仍是楷体、墨迹指纹仍是 `1bfbf7b8`。
-  **还验了这条断言有没有牙**：把 `forceFamily` 临时关掉再跑，它确实变红
-  （computed 变成 `"Times New Roman"`），恢复后变绿。
-- 回归：`probe_web_mobile.py` **65 / 0**、`probe_web_stats.py` **27 / 0**。
-- 部署：Version ID `cd3ec2e2-69bf-4608-97b2-88fce0df42c2`，
-  app.js 70,316 / style.css 10,094 / index.html 6,045 字节，线上取回三份 sha256 与本地一致。
+### 33.5 换字体 / 加字体怎么做
 
-### 33.6 手机上的回报：圆被标出来了，其余三档仍无变化
+    python tests/build_fonts.py      # 重新打包（需要 npm，会临时 npm pack 三个包）
 
-真人换了新版之后：「圆」下面出现「这台设备没装：圆」，另外三档切换仍然没效果。
-这一条证明两件事：(1) 新代码确实在他手机上跑；(2) `faceSupport()` 判「圆」是对的
-（iOS 没有 Yuanti，落回 PingFang，和「黑」同一张字形）。
-
-于是把面板那行改成常驻的「正文当前：<第一个字体名>」——换字体没反应时，它能一次分开两种原因：
-显示我们选的那个 → 样式赢了、是设备不认这个字体名；显示别的（PingFang/书的字体）→ 还有人压着我们。
-这一行不加任何开关，本地 `probe_web_font.py` 33/33、`probe_web_mobile.py` 65/0。
-
-### 33.7 还没验到的那一步
-
-**手机上没验过**。我提议传一个"只在地址带 `?fontdiag=1` 时才显示一行"的诊断，
-真人选择不传、直接改。所以本轮结论是"本地把层叠这条路堵死了"，
-如果他手机上仍然四档一样，剩下的解释就只有"iOS 里那几套字体名对网页不可见"，
-那时只有一条路：随包发 WOFF2 子集（按 unicode-range 切片，中文书典型 1–2 MB），单独立项。
+改字体只改 `PACKAGES` / `KAI_PKG`，跑完把 `web/fonts/` 和 `web/fonts.css` 一起提交即可。
+想换掉「圆」那种不喜欢的字面，换包最省事——不要手改 woff2。

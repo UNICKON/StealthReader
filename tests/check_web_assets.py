@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -43,19 +44,40 @@ def check(name, cond, extra=""):
 
 
 def get(path):
-    """取线上字节。
+    """取线上字节 + 响应头。
 
     优先走系统 `curl`：2026-11-19 实测本机 Python 的 TLS 到 Cloudflare 会卡死
     （urllib 无论带不带 UA 都 20s 超时，同一条 URL 用 curl 1s 就拿到 401），
     是工具链的问题，不是线上的问题——不能因为取不到就跳过核对。
+    用 curl 时走 `-o/-D` 两个临时文件，这样响应头也能核对（CSP 就在头里）。
     """
     url = BASE + path
     curl = shutil.which("curl")
     if curl:
-        done = subprocess.run([curl, "-sS", "--max-time", "30", "-A", UA, url],
-                              capture_output=True)
-        if done.returncode == 0:
-            return done.stdout, {}
+        body_f = tempfile.NamedTemporaryFile(delete=False)
+        hdr_f = tempfile.NamedTemporaryFile(delete=False)
+        body_f.close()
+        hdr_f.close()
+        try:
+            done = subprocess.run([curl, "-sS", "--max-time", "40", "-A", UA,
+                                   "-o", body_f.name, "-D", hdr_f.name, url],
+                                  capture_output=True)
+            if done.returncode == 0:
+                with open(body_f.name, "rb") as f:
+                    body = f.read()
+                hdrs = {}
+                with open(hdr_f.name, "rb") as f:
+                    for line in f.read().decode("iso-8859-1").splitlines():
+                        if ":" in line and not line.startswith("HTTP/"):
+                            k, v = line.split(":", 1)
+                            hdrs[k.strip()] = v.strip()
+                return body, hdrs
+        finally:
+            for n in (body_f.name, hdr_f.name):
+                try:
+                    os.unlink(n)
+                except OSError:
+                    pass
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=25) as r:
         return r.read(), dict(r.headers)
@@ -65,16 +87,22 @@ def main():
     for name in ("app.js", "style.css", "index.html", "vendor/foliate-js/paginator.js"):
         local = io.open(os.path.join(WEB, name.replace("/", os.sep)), "rb").read()
         try:
-            live, _ = get("/r/" + name)
+            live, hdrs = get("/r/" + name)
         except Exception as e:
             check("线上拿得到 /r/%s" % name, False, e)
             continue
         lh = hashlib.sha256(local).hexdigest()[:16]
         rh = hashlib.sha256(live).hexdigest()[:16]
         if name == "index.html":
-            check("/r/index.html 是 Worker 注过 CSP 的那份（%d → %d 字节）" % (len(local), len(live)),
-                  len(live) > len(local) and b"Content-Security-Policy" in live,
-                  "本地 %d 线上 %d" % (len(local), len(live)))
+            # Worker 是把 CSP 当**响应头**发的（不是往 HTML 里塞 meta）：这里查头，
+            # 内容照样逐字节比——以前这条查的是 body 里的 meta，永远不可能对。
+            low = {k.lower(): v for k, v in (hdrs or {}).items()}
+            check("/r/index.html 带 Worker 发的 CSP 响应头（%s…）"
+                  % (low.get("content-security-policy", "")[:32] or "-"),
+                  "script-src" in low.get("content-security-policy", ""),
+                  sorted(low.keys()))
+            check("/r/index.html 内容与本地一字节不差（%d 字节）" % len(local), lh == rh,
+                  "%s vs %s" % (lh, rh))
         else:
             check("/r/%s 跟本地一字节不差（%s，%d 字节）" % (name, lh, len(local)), lh == rh,
                   "本地 %s/%d 线上 %s/%d" % (lh, len(local), rh, len(live)))
@@ -137,6 +165,27 @@ def main():
         elif name.endswith("paginator.js"):
             check("线上 paginator.js 带本地补丁（分页模式下 snap 直接返回）",
                   b"if (!this.scrolled) return" in live)
+
+    # 自备字体：宋 / 楷 / 圆随包发，线上必须真的在。字体掉了正文会静默退回系统字体，
+    # 手机上看就是"换字体没反应"，所以这条单独守。
+    for name in ("fonts.css", "fonts/sr-serif.woff2", "fonts/sr-round.woff2"):
+        try:
+            local = io.open(os.path.join(WEB, name.replace("/", os.sep)), "rb").read()
+            body, _ = get("/r/" + name)
+            check("线上 %s 与本地一致（%d 字节）" % (name, len(local)),
+                  hashlib.sha256(body).hexdigest() == hashlib.sha256(local).hexdigest(),
+                  "%d vs %d" % (len(body), len(local)))
+        except Exception as e:                                   # noqa: BLE001
+            check("线上 %s 取得到" % name, False, repr(e))
+    try:
+        body, _ = get("/r/fonts.css")
+        text = body.decode("utf-8", "replace")
+        check("fonts.css 里三档字体都在（SR Serif / SR Round / SR Kai）",
+              "SR Serif" in text and "SR Round" in text and "SR Kai" in text)
+        check("fonts.css 里的字体地址已是绝对地址（没有 __FONT_BASE__ 漏网）",
+              "__FONT_BASE__" in text)   # 占位在文件里，由页面替换；这里确认它还在（没被写死成本机路径）
+    except Exception as e:                                       # noqa: BLE001
+        check("线上 fonts.css 取得到", False, repr(e))
 
     try:
         body, _ = get("/v1/ping")
