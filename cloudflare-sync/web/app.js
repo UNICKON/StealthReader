@@ -763,13 +763,20 @@ function paintValues() {
   }
   const note = $('#font-note')
   if (note) {
-    if (missing.length) {
-      note.hidden = false
-      note.textContent = '这台设备没装：' + missing.join('、') + '（点了画面上不会有变化）'
-    } else {
-      note.hidden = true
-      note.textContent = ''
+    const parts = []
+    if (missing.length) parts.push('这台设备没装：' + missing.join('、'))
+    // 「正文当前」= 正文那个段落真正赢下来的第一个字体名。
+    // 换字体没反应时，这一行正好区分两种完全不同的原因：
+    //   显示我们选的那个（Songti SC…）→ 样式赢了，是这台设备不认这个字体名（字形没变）
+    //   显示别的（PingFang SC / 书的字体）→ 还有东西压在我们的样式上面
+    const docs = bookDocs()
+    if (docs.length) {
+      const p = docs[0].querySelector('p') || docs[0].body
+      const fam = docs[0].defaultView.getComputedStyle(p).fontFamily || ''
+      parts.push('正文当前：' + fam.split(',')[0].trim().replace(/^["']|["']$/g, ''))
     }
+    note.hidden = !parts.length
+    note.textContent = parts.join(' · ')
     // 排障开关：地址后面加 ?fontdiag=1，这一行改成显示**正文那个文档里排版量出来的**
     // 四档行高。canvas 和排版在 iOS 上可能不是同一套回退，所以这里不走 canvas。
     if (/[?&]fontdiag/.test(location.search)) {
