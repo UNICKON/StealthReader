@@ -12,6 +12,8 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -41,7 +43,20 @@ def check(name, cond, extra=""):
 
 
 def get(path):
-    req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
+    """取线上字节。
+
+    优先走系统 `curl`：2026-11-19 实测本机 Python 的 TLS 到 Cloudflare 会卡死
+    （urllib 无论带不带 UA 都 20s 超时，同一条 URL 用 curl 1s 就拿到 401），
+    是工具链的问题，不是线上的问题——不能因为取不到就跳过核对。
+    """
+    url = BASE + path
+    curl = shutil.which("curl")
+    if curl:
+        done = subprocess.run([curl, "-sS", "--max-time", "30", "-A", UA, url],
+                              capture_output=True)
+        if done.returncode == 0:
+            return done.stdout, {}
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=25) as r:
         return r.read(), dict(r.headers)
 

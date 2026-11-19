@@ -12,12 +12,19 @@ const fmt = (n) => (Number(n) || 0).toLocaleString('zh-CN')
 const DEVICE = ('web-' + String(navigator.platform || 'browser').toLowerCase().replace(/[^a-z0-9]+/g, ''))
   .slice(0, 24)
 
-// 字体：都是系统里就有的，按 苹果 / Windows / Android 的顺序挑到一个算一个
+// 字体：都是系统里就有的。**列表要短、中文名要排在前面**——
+// 2026-11-19 实测：往后面塞一堆"可能装了的"名字反而有害，只要有一个只在拉丁文上匹配的
+// 家族（HarmonyOS Sans / MiSans / OPPOSans 这类常常只装了拉丁子集）排在中文字体前面，
+// 中文就会整段落到系统兜底字形上，看着就是"换了字体没反应"。
+// 所以这里只留确定能覆盖中文的几个，顺序按 苹果 / Windows / Android。
+// 注意：**别往里加只装了拉丁子集的家族**（HarmonyOS Sans / MiSans / OPPOSans 这类），
+// 它们会先把文字认领走，汉字再逐字落到兜底，看着就是"换了字体没反应"，而且坏得没有声音。
+// 设备上到底有没有，`faceSupport()` 会真的画一次字来判，不靠这张表猜。
 const FACES = {
-  serif: `'Songti SC','SimSun','Noto Serif CJK SC','Source Han Serif SC',serif`,
-  sans: `'PingFang SC','Microsoft YaHei','Noto Sans CJK SC','Helvetica Neue',sans-serif`,
-  kai: `'Kaiti SC','KaiTi','STKaiti','Noto Serif CJK SC',serif`,
-  round: `'Yuanti SC','YouYuan','Hiragino Maru Gothic ProN','Microsoft YaHei',sans-serif`,
+  serif: `'Songti SC','STSong','SimSun','Noto Serif CJK SC','Noto Serif SC','Source Han Serif SC',serif`,
+  sans: `'PingFang SC','Heiti SC','Microsoft YaHei','Hiragino Sans GB','Noto Sans CJK SC','Noto Sans SC',sans-serif`,
+  kai: `'Kaiti SC','STKaiti','Kaiti TC','KaiTi','Noto Serif CJK SC',serif`,
+  round: `'Yuanti SC','Yuanti TC','PingFang SC','Microsoft YaHei',sans-serif`,
 }
 
 // 配色：纸色 + 墨色成对给，别让正文和底色分家
@@ -29,6 +36,80 @@ const PAPERS = {
   blue: { bg: '#1b2430', ink: '#c9d4e2' },
   night: { bg: '#14161a', ink: '#c9c9c9' },
   black: { bg: '#000000', ink: '#a6a6a6' },
+}
+
+/* foliate 的影子根是 closed 的（`el.shadowRoot` 拿到 null），正文 iframe 藏在里面。
+   这里在 attachShadow 时记一笔，后面量字体、排障时才有办法摸到正文那个文档。 */
+const SHADOWS = []
+try {
+  const origAttach = Element.prototype.attachShadow
+  Element.prototype.attachShadow = function (init) {
+    const root = origAttach.call(this, init)
+    try { SHADOWS.push(root) } catch (e) { /* 记不下就算了 */ }
+    return root
+  }
+} catch (e) { /* 没有 attachShadow 的浏览器不需要这个 */ }
+
+/** 所有能摸到的正文文档（书是按章节一帧一帧塞进 iframe 的） */
+function bookDocs() {
+  const docs = []
+  const scan = (root) => {
+    let frames = []
+    try { frames = root.querySelectorAll('iframe') } catch (e) { frames = [] }
+    for (const f of frames) {
+      try { if (f.contentDocument && f.contentDocument.body) docs.push(f.contentDocument) } catch (e) {}
+    }
+    let all = []
+    try { all = root.querySelectorAll('*') } catch (e) { all = [] }
+    for (const el of all) if (el.shadowRoot) scan(el.shadowRoot)
+  }
+  scan(document)
+  for (const s of SHADOWS) scan(s)
+  return docs
+}
+
+/* 这台设备到底有没有这个字体：把同一串字真画进 canvas，比像素指纹。
+   CJK 每个字都是全角，量 advance width 永远是 1em —— 量宽量不出字体差别，只能比墨迹。
+   指纹跟「黑」一样 = 换了个名字但落在同一张字形上 = 点了画面上不会有变化。 */
+const GLYPH_SAMPLE = '永和九年岁在癸丑暮春之初'
+let FACE_OK = null
+
+function glyphInk(family) {
+  try {
+    const cv = document.createElement('canvas')
+    cv.width = 760
+    cv.height = 90
+    const g = cv.getContext('2d', { willReadFrequently: true })
+    if (!g) return null
+    g.fillStyle = '#fff'
+    g.fillRect(0, 0, cv.width, cv.height)
+    g.fillStyle = '#000'
+    g.font = '56px ' + family
+    g.textBaseline = 'top'
+    g.fillText(GLYPH_SAMPLE, 2, 6)
+    const d = g.getImageData(0, 0, cv.width, cv.height).data
+    let h = 2166136261 >>> 0
+    for (let i = 0; i < d.length; i += 4) {
+      h ^= d[i]
+      h = Math.imul(h, 16777619) >>> 0
+    }
+    return h.toString(16)
+  } catch (e) {
+    return null                    // 隐私模式/无 canvas：当"不知道"，别乱标
+  }
+}
+
+/** { serif: true/false, ... }：每个字体在这台设备上是不是真的换了一张字形 */
+function faceSupport() {
+  if (FACE_OK) return FACE_OK
+  FACE_OK = {}
+  const base = glyphInk(FACES.sans)
+  for (const key of Object.keys(FACES)) {
+    if (key === 'sans') { FACE_OK[key] = true; continue }
+    const ink = glyphInk(FACES[key])
+    FACE_OK[key] = (ink === null || base === null) ? true : ink !== base
+  }
+  return FACE_OK
 }
 
 const SET_KEY = 'sr.settings.v1'
@@ -632,6 +713,29 @@ function applyStyles() {
   if (S.view && S.view.renderer && typeof S.view.renderer.setStyles === 'function') {
     S.view.renderer.setStyles(bookCSS(c))
   }
+  for (const doc of bookDocs()) forceFamily(doc)
+}
+
+const MONO_TAGS = { CODE: 1, PRE: 1, KBD: 1, SAMP: 1, TT: 1 }
+
+/** 把字体真的按到正文每个元素上——用 **inline !important**。
+
+ *  为什么不能只靠注入的 `body, body * { font-family: … !important }`：
+ *  书自带的样式表常写成 `p.calibre { font-family: "方正…" !important }`，选择器比 `body *` 更具体，
+ *  两边都带 !important 时它赢——表现就是**字号能变（字号没人跟我们抢）、字体一点不变**。
+ *  层叠里只有 inline 的 !important 比 author 的 !important 更高，所以这里逐元素写一遍。
+ *  只在换字体 / 新章节加载时跑，代价是一次遍历。 */
+function forceFamily(doc) {
+  if (!doc || !doc.documentElement) return
+  const family = (FACES[(S.values || {}).face] || FACES.sans)
+  doc.documentElement.style.setProperty('font-family', family, 'important')
+  const walk = (el) => {
+    if (!el || MONO_TAGS[el.tagName]) return
+    try { el.style.setProperty('font-family', family, 'important') } catch (e) { return }
+    const kids = el.children
+    for (let i = 0; i < kids.length; i++) walk(kids[i])
+  }
+  if (doc.body) walk(doc.body)
 }
 
 function paintValues() {
@@ -647,6 +751,80 @@ function paintValues() {
     if (a.startsWith('face-')) b.classList.toggle('on', a.slice(5) === S.values.face)
     else if (a.startsWith('paper-')) b.classList.toggle('on', a.slice(6) === S.values.paper)
   }
+  // 「点了没反应」要当场说清楚：这台设备没装的字体，按钮画成虚线、面板里点明
+  const ok = faceSupport()
+  const missing = []
+  for (const b of document.querySelectorAll('#tools [data-act^="face-"]')) {
+    const act = b.dataset.act || ''
+    const good = ok[act.slice(5)] !== false
+    b.classList.toggle('off', !good)
+    b.title = good ? '' : '这台设备没装这个字体，点了不会有变化'
+    if (!good) missing.push(b.textContent)
+  }
+  const note = $('#font-note')
+  if (note) {
+    if (missing.length) {
+      note.hidden = false
+      note.textContent = '这台设备没装：' + missing.join('、') + '（点了画面上不会有变化）'
+    } else {
+      note.hidden = true
+      note.textContent = ''
+    }
+    // 排障开关：地址后面加 ?fontdiag=1，这一行改成显示**正文那个文档里排版量出来的**
+    // 四档行高。canvas 和排版在 iOS 上可能不是同一套回退，所以这里不走 canvas。
+    if (/[?&]fontdiag/.test(location.search)) {
+      note.hidden = false
+      note.textContent = fontDiag()
+    }
+  }
+}
+
+/** 排障用：在**正文那个文档里**量，不看外层页面。
+ *  报三样：(1) 正文 <p> 现在赢的 font-family 到底是什么（如果书的样式赢了我们，这里看到的是书的字体）
+ *  (2) 四档字体在这台设备上画出来的像素指纹首 8 位（一样 = 同一张字形）
+ *  (3) docs / setStyles，确认样式通道通不通。 */
+function fontDiag() {
+  const docs = bookDocs()
+  const d = docs[0]
+  if (!d) return 'fontdiag: 没找到正文文档（docs=0）'
+  const ink = (family, text) => {
+    const cv = d.createElement('canvas')
+    cv.width = 760
+    cv.height = 90
+    const g = cv.getContext('2d', { willReadFrequently: true })
+    if (!g) return 'n/a'
+    g.fillStyle = '#fff'
+    g.fillRect(0, 0, cv.width, cv.height)
+    g.fillStyle = '#000'
+    g.font = '56px ' + family
+    g.textBaseline = 'top'
+    g.fillText(text || '永和九年岁在癸丑暮春之初', 2, 6)
+    let px
+    try { px = g.getImageData(0, 0, cv.width, cv.height).data } catch (e) { return 'blocked' }
+    let h = 2166136261 >>> 0
+    for (let i = 0; i < px.length; i += 4) { h ^= px[i]; h = Math.imul(h, 16777619) >>> 0 }
+    return h.toString(16).slice(0, 8)
+  }
+  const marks = [['宋', 'serif'], ['黑', 'sans'], ['楷', 'kai'], ['圆', 'round']]
+    .map(([label, k]) => label + '=' + ink(FACES[k]))
+  // 拉丁字宽：中文全角量不出字体，拉丁的 advance 每套字体不同，是第二条独立线索。
+  // 必须写 inline !important —— 我们自己的 bookCSS 有 `body * { font-family: … !important }`，
+  // 不重要的 inline 会被它压掉，四个量出来会一模一样。
+  const probe = d.createElement('span')
+  probe.textContent = 'Hamburgefonstiv'
+  probe.style.cssText = 'position:absolute;left:-9999px;top:0;white-space:nowrap;font-size:100px'
+  d.body.appendChild(probe)
+  const widths = ['serif', 'sans', 'kai', 'round'].map((k) => {
+    probe.style.setProperty('font-family', FACES[k], 'important')
+    return Math.round(probe.getBoundingClientRect().width)
+  })
+  const p = d.querySelector('p') || d.body
+  const cs = d.defaultView.getComputedStyle(p)
+  d.body.removeChild(probe)
+  return 'diag ' + marks.join(' ') + ' | 拉丁宽 ' + widths.join('/')
+    + ' | 正文 ' + Math.round(parseFloat(cs.fontSize)) + 'px ' + cs.fontFamily.slice(0, 44)
+    + ' | docs=' + docs.length
+    + ' | setStyles=' + (S.view && S.view.renderer && typeof S.view.renderer.setStyles === 'function')
 }
 
 /* ── 版式：左右翻页 / 上下滚动、单栏 / 双栏 ─────────────── */
@@ -731,13 +909,22 @@ $('#tools').addEventListener('click', (e) => {
   if (act === 'flow-scroll') return setLayout('scrolled')
   if (act === 'cols-1') return setLayout(null, 1)
   if (act === 'cols-2') return setLayout(null, 2)
-  if (act.startsWith('face-')) return saveSettings({ face: act.slice(5) })
+  if (act.startsWith('face-')) {
+    const key = act.slice(5)
+    const label = (e.target.textContent || '').trim()
+    if (faceSupport()[key] === false) {
+      // 还是记下这个选择（换了设备可能就有了），但当场告诉人"这台改不动"，不要假装成功
+      toast(`这台设备没装「${label}」，正文不会变`)
+    }
+    return saveSettings({ face: key })
+  }
   if (act.startsWith('paper-')) return saveSettings({ paper: act.slice(6) })
   if (!STEP[act]) return
   saveSettings(STEP[act]())
 })
 
-$('#open-tools').addEventListener('click', () => { $('#tools').hidden = !$('#tools').hidden })
+$('#open-tools').addEventListener('click', () => { $('#tools').hidden = !$('#tools').hidden;
+  if (!$('#tools').hidden) paintValues() })
 
 /** 回书架：先把界面切过去，再去推网络。
  *  以前是"await 推完才切"，网一抖（401/超时/412）就什么都不发生，看着像按钮坏了。 */
@@ -897,6 +1084,7 @@ function hookDoc(doc) {
   hookedDocs.add(doc)
   doc.addEventListener('wheel', onWheel, { passive: false })
   doc.addEventListener('click', onTapTurn)
+  forceFamily(doc)          // 新章节（新 iframe）也要按上当前字体
 }
 
 /** 这一下点的是不是"最下面那一条"（留给叫底栏，不拿来翻页）。
